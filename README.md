@@ -1,5 +1,11 @@
 # md-semantic-search
 
+[![npm version](https://img.shields.io/npm/v/md-semantic-search.svg)](https://www.npmjs.com/package/md-semantic-search)
+[![npm downloads](https://img.shields.io/npm/dm/md-semantic-search.svg)](https://www.npmjs.com/package/md-semantic-search)
+[![publish](https://github.com/chelslava/md-semantic-search/actions/workflows/publish.yml/badge.svg)](https://github.com/chelslava/md-semantic-search/actions/workflows/publish.yml)
+[![node](https://img.shields.io/node/v/md-semantic-search.svg)](https://nodejs.org)
+[![license](https://img.shields.io/npm/l/md-semantic-search.svg)](./LICENSE)
+
 **Local, private semantic (vector) search over any folder of Markdown files.**
 
 Find passages by *meaning*, not just keywords — and across languages (ask in
@@ -156,6 +162,21 @@ Switching models invalidates the stored vectors automatically — the next
 
 No external services, no database — the whole index is one JSON file and search
 is an in-memory dot-product sweep.
+
+## Releasing (maintainers)
+
+Publishing is automated by [`.github/workflows/publish.yml`](./.github/workflows/publish.yml):
+pushing a `vX.Y.Z` tag publishes that version to npm with provenance.
+
+One-time setup: add a repo secret `NPM_TOKEN` — an npm **automation / granular**
+token with *bypass 2FA* enabled (npmjs.com → Account → Access Tokens).
+
+```bash
+npm version patch     # bumps package.json + creates the git tag
+git push --follow-tags
+```
+
+The workflow checks that the tag matches `package.json` before publishing.
 
 ## License
 
