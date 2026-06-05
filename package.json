@@ -1,6 +1,6 @@
 {
   "name": "md-semantic-search",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local, private semantic (vector) search over any folder of Markdown files. Finds passages by meaning — cross-lingual — using transformers.js. No API keys, no cloud, no vector database.",
   "type": "module",
   "bin": {
