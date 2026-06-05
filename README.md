@@ -163,21 +163,6 @@ Switching models invalidates the stored vectors automatically — the next
 No external services, no database — the whole index is one JSON file and search
 is an in-memory dot-product sweep.
 
-## Releasing (maintainers)
-
-Publishing is automated by [`.github/workflows/publish.yml`](./.github/workflows/publish.yml):
-pushing a `vX.Y.Z` tag publishes that version to npm with provenance.
-
-One-time setup: add a repo secret `NPM_TOKEN` — an npm **automation / granular**
-token with *bypass 2FA* enabled (npmjs.com → Account → Access Tokens).
-
-```bash
-npm version patch     # bumps package.json + creates the git tag
-git push --follow-tags
-```
-
-The workflow checks that the tag matches `package.json` before publishing.
-
 ## License
 
 MIT © chelslava
