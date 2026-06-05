@@ -1,0 +1,48 @@
+{
+  "name": "md-semantic-search",
+  "version": "0.1.0",
+  "description": "Local, private semantic (vector) search over any folder of Markdown files. Finds passages by meaning — cross-lingual — using transformers.js. No API keys, no cloud, no vector database.",
+  "type": "module",
+  "bin": {
+    "md-semantic-search": "bin/cli.mjs",
+    "mdss": "bin/cli.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "RESEARCH.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "semantic-search",
+    "vector-search",
+    "embeddings",
+    "markdown",
+    "rag",
+    "transformers",
+    "e5",
+    "local",
+    "offline",
+    "cli"
+  ],
+  "author": "chelslava",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chelslava/md-semantic-search.git"
+  },
+  "homepage": "https://github.com/chelslava/md-semantic-search#readme",
+  "bugs": {
+    "url": "https://github.com/chelslava/md-semantic-search/issues"
+  },
+  "dependencies": {
+    "@xenova/transformers": "^2.17.2"
+  }
+}

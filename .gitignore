@@ -1,0 +1,10 @@
+node_modules/
+.cache/
+models/
+
+# Generated indexes (default location is <db>/.mdss). These are derived
+# artifacts — rebuild with `mdss index`. Ignore any that land in-repo.
+.mdss/
+*.mdss-index.json
+vectors.json
+.hashes.json
