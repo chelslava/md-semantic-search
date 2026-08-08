@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Embedding model registry.
  *

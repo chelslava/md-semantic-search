@@ -128,7 +128,35 @@ and only re-embeds what changed — a no-op re-index of 46 files is sub-second.
 Changing the model invalidates all vectors and forces a clean rebuild
 (dimensions and prefix semantics differ).
 
-## 6. Reproducing
+## 6. Experiment C — does cross-encoder re-ranking help?
+
+First-pass ranking (cosine + RRF) scores every chunk *independently*. A
+cross-encoder reads the query and each candidate **together**, capturing
+pairwise relevance — at the cost of one forward pass per candidate. We compared
+top-1 with and without `--rerank` (`Xenova/bge-reranker-base`, single-class
+XLMRoBERTa, raw logit = relevance score) on the real bilingual wiki:
+
+| Query | Top-1 without rerank | Top-1 with rerank | Effect |
+|-------|----------------------|-------------------|--------|
+| как добавить новую страницу в базу знаний | AGENTS.md (cos 0.817) | **KB Update Rule** (rr −1.38) | rerank finds the procedural doc, not the generic rules page |
+| семантический поиск по базе | AGENTS.md (cos 0.861) | **md-semantic-search overview** (rr +3.52) | rerank promotes the project page that *is* the answer |
+| правила обновления базы знаний агентами | AGENTS.md (cos 0.858) | **KB Update Rule** (rr +2.33) | same pattern: targeted doc wins over the umbrella page |
+
+**Findings:**
+
+- **RRF scores barely separate** — every first-pass score sat in ~0.02–0.03, so
+  a generic rules page (AGENTS.md) kept winning because its many overlapping
+  chunks dominated RRF. The reranker's logits span a **~7-point range**
+  (−3.8…+3.5), giving confident separation.
+- **In all three queries the reranker fixed top-1**, promoting the document
+  that actually answers the question (procedure/overview pages) over the
+  umbrella rules page that merely *mentions* the words.
+- **Cost:** a second ~280 MB model + one batched forward pass per candidate.
+  The candidate pool is capped (default `max(20, k*3)`), and the reranker is
+  lazy — nothing loads unless `--rerank` is requested. On a 856-chunk index
+  the re-rank pass stays sub-second once the model is cached.
+
+## 7. Reproducing
 
 ```bash
 # Build with the default, then with the heavy model, and compare a known query:
@@ -142,7 +170,7 @@ mdss search --db ./your-wiki --semantic "the same paraphrase"
 Use `--semantic` to see the raw vector ranking (no lexical fusion) when
 evaluating a model — that isolates embedding quality from the keyword lane.
 
-## 7. Recommendations
+## 8. Recommendations
 
 | If you want… | Use |
 |--------------|-----|
@@ -150,3 +178,4 @@ evaluating a model — that isolates embedding quality from the keyword lane.
 | Maximum cross-lingual quality, disk/time no object | `bge-m3` |
 | Smallest footprint and your queries are same-language & literal | `e5-small` (with eyes open) |
 | Best precision on exact identifiers | keep hybrid on (don't pass `--semantic`) |
+| Sharpest top-k on a larger corpus | add `--rerank` (cross-encoder, +280 MB) |

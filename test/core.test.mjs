@@ -6,6 +6,7 @@ import path from 'node:path';
 import {
   splitFrontmatter, extractTitle, chunkMarkdown, globToRegExp,
   walkMarkdown, cosine, parseFile, resolveModel,
+  encodeVec, decodeVec, isBinaryIndex,
 } from '../src/core.mjs';
 
 test('splitFrontmatter: strips leading YAML block', () => {
@@ -71,6 +72,31 @@ test('chunkMarkdown: drops chunks with <24 non-whitespace chars', () => {
   const chunks = chunkMarkdown(body);
   assert.equal(chunks.length, 1);
   assert.equal(chunks[0].heading, 'Real');
+});
+
+test('chunkMarkdown: single unbroken paragraph > maxChunk is hard-wrapped (issue #24)', () => {
+  const chunks = chunkMarkdown('# Big\n\n' + 'y'.repeat(5000), 1400);
+  assert.ok(chunks.length >= 3, `5000 chars should split into >=3 chunks, got ${chunks.length}`);
+  assert.ok(chunks.every(c => c.text.length <= 1400), 'every chunk within maxChunk');
+  assert.ok(chunks.every(c => c.heading === 'Big'), 'heading preserved after hard wrap');
+  assert.equal(chunks.map(c => c.text.length).reduce((a, b) => a + b, 0), 5000, 'no content lost');
+});
+
+test('chunkMarkdown: hard wrap prefers word boundaries (issue #24)', () => {
+  const chunks = chunkMarkdown('# Big\n\n' + Array.from({ length: 100 }, () => 'word').join(' '), 1400);
+  assert.ok(chunks.every(c => c.text.length <= 1400), 'every chunk within maxChunk');
+  assert.ok(chunks.every(c => !/\b.{1401,}/.test(c.text)), 'no single word over 1400 chars');
+  // the unbroken paragraph contains only spaces and 'word'; a word-boundary
+  // wrap must never leave a fragment split mid-word
+  const joined = chunks.map(c => c.text).join(' ');
+  assert.ok(!joined.includes('wordwo'), 'no mid-word fragments');
+});
+
+test('chunkMarkdown: unbroken paragraph split even inside a multi-paragraph section (issue #24)', () => {
+  const body = `# Big\n\n${'a'.repeat(500)}\n\n${'b'.repeat(5000)}\n\n${'c'.repeat(500)}`;
+  const chunks = chunkMarkdown(body, 1400);
+  assert.ok(chunks.every(c => c.text.length <= 1400), 'every chunk within maxChunk');
+  assert.ok(chunks.length >= 4, `500+5000+500 chars split into >=4 chunks, got ${chunks.length}`);
 });
 
 test('globToRegExp: * matches within a path segment only', () => {
@@ -149,6 +175,59 @@ test('cosine: L2-normalized vectors == dot product', () => {
   assert.ok(Math.abs(cosine(u, v) - 0.6) < 1e-12);
   assert.ok(Math.abs(cosine(u, u) - 1) < 1e-12);
   assert.ok(Math.abs(cosine(u, [-1, 0, 0]) + 1) < 1e-12);
+});
+
+test('encodeVec/decodeVec: round-trip preserves float32 values (issue #4)', () => {
+  const vec = [0.5, -0.25, 0.75, 1, 0, -1, 3.14159, 2.71828];
+  const b64 = encodeVec(vec);
+  assert.equal(typeof b64, 'string', 'encoded vector is a base64 string');
+  assert.ok(b64.length > 0);
+
+  const back = decodeVec(b64);
+  assert.ok(back instanceof Float32Array, 'decoded vector is a Float32Array');
+  assert.equal(back.length, vec.length);
+  for (let i = 0; i < vec.length; i++) {
+    // float32 rounding: 3.14159 → 3.14159012… — within 1e-5 is plenty
+    assert.ok(Math.abs(back[i] - vec[i]) < 1e-5, `dim ${i}: ${back[i]} vs ${vec[i]}`);
+  }
+});
+
+test('encodeVec: binary is ~4x smaller than decimal JSON (issue #4)', () => {
+  // 768-dim vector — the default e5-base dimension
+  const dim = 768;
+  const vec = Array.from({ length: dim }, (_, i) => Math.sin(i) * 0.5);
+  const binary = encodeVec(vec);
+  const decimal = JSON.stringify(vec);
+
+  const ratio = decimal.length / binary.length;
+  assert.ok(ratio > 3, `binary ${binary.length} chars vs decimal ${decimal.length} — ratio ${ratio.toFixed(1)}x`);
+  assert.ok(ratio < 5, 'sanity: base64 overhead keeps ratio well under 5x');
+});
+
+test('encodeVec/decodeVec: cosine deltas below 1e-4 vs decimal (issue #4)', () => {
+  const dim = 768;
+  const mk = (seed) => {
+    const v = new Float64Array(dim);
+    let h = seed;
+    for (let i = 0; i < dim; i++) { h = (h * 31 + 7) >>> 0; v[i] = ((h % 1000) / 500) - 1; }
+    const norm = Math.hypot(...v);
+    return Array.from(v, x => x / norm);
+  };
+  const a = mk(1), b = mk(2), q = mk(3);
+
+  const decimal = cosine(q, a) + cosine(q, b);
+  const binaryA = decodeVec(encodeVec(a));
+  const binaryB = decodeVec(encodeVec(b));
+  const binary = cosine(q, binaryA) + cosine(q, binaryB);
+
+  assert.ok(Math.abs(decimal - binary) < 1e-4,
+    `cosine delta ${Math.abs(decimal - binary).toExponential(2)} must be < 1e-4`);
+});
+
+test('isBinaryIndex: format field gates binary decoding (issue #4)', () => {
+  assert.equal(isBinaryIndex({ format: 'binary-v1' }), true);
+  assert.equal(isBinaryIndex({}), false, 'legacy index without format field');
+  assert.equal(isBinaryIndex({ format: 'decimal' }), false);
 });
 
 test('parseFile: title from frontmatter, rel path, sections', () => {

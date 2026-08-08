@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Build / refresh the semantic index for a folder of markdown files.
  * Incremental at TWO levels:
@@ -10,7 +11,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { walkMarkdown, parseFile, embed, resolveModel } from './core.mjs';
+import { walkMarkdown, parseFile, embed, resolveModel, decodeVec, encodeVec } from './core.mjs';
+
+/**
+ * @typedef {Object} IndexChunk
+ * @property {string} file
+ * @property {string} title
+ * @property {string} heading
+ * @property {string} text
+ * @property {number[]|Float32Array} [vec]
+ * @property {string} [chunkHash]
+ */
 
 const md5 = s => crypto.createHash('md5').update(s).digest('hex');
 const sha256 = s => crypto.createHash('sha256').update(s).digest('hex');
@@ -19,6 +30,11 @@ const sha256 = s => crypto.createHash('sha256').update(s).digest('hex');
  * Read JSON, falling back to `fb` when the file is missing or corrupt.
  * A corrupt-but-present file is reported through `warn` (default: silent) so a
  * torn write or manual edit doesn't silently wipe the previous index state.
+ * @template T
+ * @param {string} p
+ * @param {T} fb
+ * @param {(msg:string)=>void} [warn]
+ * @returns {T}
  */
 const loadJSON = (p, fb, warn = () => {}) => {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')); }
@@ -53,14 +69,23 @@ function normalize(s) {
  * prefix. Because the model participates in the key, switching models
  * invalidates every chunk (full rebuild) - by design. CRLF/whitespace-only
  * edits of a section do NOT change its hash, so its vector is reused.
- * @param {{id:string, passagePrefix?:string}} model - resolved model descriptor
- * @param {string} modelName - alias or id as passed on the CLI
+ *
+ * The pinned revision (id@revision, default "main") is part of the key too, so
+ * a @revision bump invalidates the vectors embedded by the old revision
+ * (issue #27) - the README's "pinned ids invalidate the index" promise.
+ *
+ * NOTE: the CLI alias (e.g. "e5-base") is deliberately NOT part of the key —
+ * only `model.id` + `revision` + `passagePrefix` determine embedding
+ * semantics, so hashing is identical for alias and raw-id spellings (issue #6).
+ * Adding `revision` to the key (0.5.0) changes stored hash values vs ≤0.4.x →
+ * a one-time re-index of changed sections on upgrade.
+ * @param {{id:string, revision?:string, passagePrefix?:string}} model - resolved model descriptor
  * @param {{title:string, heading:string, text:string}} chunk
  */
-export function chunkHash(model, modelName, chunk) {
+export function chunkHash(model, chunk) {
   const input = [
     model.id,
-    modelName || '',
+    model.revision || 'main',
     model.passagePrefix || '',
     normalize(chunk.title),
     normalize(chunk.heading),
@@ -87,6 +112,13 @@ export async function buildIndex(opts) {
     offline = false, embedFn = embed,
   } = opts;
   const model = resolveModel(modelName);
+  // Model identity INCLUDES the pinned revision (issue #27): the README's
+  // "pinned ids invalidate the index too (the revision is part of the model
+  // key)" must hold. Default (unpinned) models resolve to revision "main", so
+  // plain `--model e5-base` keeps the historical `model` value... except the
+  // upgrade path: pre-0.5 indexes stored `model` WITHOUT `@main`, so they get
+  // one full rebuild on upgrade (same migration the 0.4.0 chunkHash change did).
+  const modelIdentity = `${model.id}@${model.revision || 'main'}`;
   const vectorsPath = path.join(indexDir, 'vectors.json');
   const hashesPath = path.join(indexDir, '.hashes.json');
 
@@ -94,10 +126,21 @@ export async function buildIndex(opts) {
 
   const files = walkMarkdown(db, ignore);
   const oldHashes = loadJSON(hashesPath, {}, log);
+  /** @type {{format?:string, model?:string|null, chunks:IndexChunk[]}} */
   const oldIndex = loadJSON(vectorsPath, { chunks: [], model: null }, log);
 
-  // If the model changed, all stored vectors are incompatible → full rebuild.
-  const modelChanged = oldIndex.model && oldIndex.model !== model.id;
+  // v0.4.0+ stores vectors as base64 Float32Array (issue #4); legacy ≤0.3.x
+  // indexes hold decimal arrays. Normalize the old format to plain arrays so
+  // the chunk-level reuse path (vecByChunkHash) sees numbers either way.
+  if (oldIndex.format === 'binary-v1') {
+    for (const c of oldIndex.chunks) {
+      if (typeof c.vec === 'string') c.vec = decodeVec(c.vec);
+    }
+  }
+
+  // If the model (id OR pinned revision) changed, all stored vectors are
+  // incompatible → full rebuild (issue #27: a @revision bump must invalidate).
+  const modelChanged = oldIndex.model && oldIndex.model !== modelIdentity;
 
   const oldByFile = new Map();
   // chunk-level cache: hash of the passage input -> stored vector. Built from
@@ -109,7 +152,7 @@ export async function buildIndex(opts) {
     for (const c of oldIndex.chunks) {
       if (!oldByFile.has(c.file)) oldByFile.set(c.file, []);
       oldByFile.get(c.file).push(c);
-      const key = c.chunkHash || chunkHash(model, modelName, c);
+      const key = c.chunkHash || chunkHash(model, c);
       if (c.vec) vecByChunkHash.set(key, c.vec);
     }
   }
@@ -117,29 +160,53 @@ export async function buildIndex(opts) {
   const newHashes = {};
   const chunks = [];
   const toEmbed = [];
-  let reused = 0, reusedChunks = 0, changedFiles = 0;
+  let reused = 0, reusedChunks = 0, changedFiles = 0, skipped = 0;
 
   for (const abs of files) {
-    const raw = fs.readFileSync(abs, 'utf8');
     const rel = path.relative(db, abs).split(path.sep).join('/');
-    const h = md5(raw);
-    newHashes[rel] = h;
+    /** @type {IndexChunk[]} */
+    let parsed = [];
+    try {
+      const raw = fs.readFileSync(abs, 'utf8');
+      const h = md5(raw);
+      newHashes[rel] = h;
 
-    if (!modelChanged && oldHashes[rel] === h && oldByFile.has(rel)) {
-      const old = oldByFile.get(rel);
-      // Backfill chunkHash for chunks that predate the chunk-level cache, so
-      // the persisted index is self-contained and no recompute is needed later.
-      for (const c of old) {
-        if (!c.chunkHash) c.chunkHash = chunkHash(model, modelName, c);
+      if (!modelChanged && oldHashes[rel] === h && oldByFile.has(rel)) {
+        const old = oldByFile.get(rel);
+        // Backfill chunkHash for chunks that predate the chunk-level cache, so
+        // the persisted index is self-contained and no recompute is needed later.
+        for (const c of old) {
+          if (!c.chunkHash) c.chunkHash = chunkHash(model, c);
+        }
+        for (const c of old) {
+          if (c.vec) {
+            chunks.push(c);
+            reused++;
+          } else {
+            // Vec-less chunk (legacy index or a corrupt write): reusing it as-is
+            // would persist a broken index that crashes every search with
+            // `cosine(qVec, c.vec)` on undefined. Re-embed it instead (issue #25).
+            toEmbed.push(c);
+            chunks.push(c);
+          }
+        }
+        continue;
       }
-      chunks.push(...old);
-      reused += old.length;
+      changedFiles++;
+      parsed = parseFile(abs, db);
+    } catch (e) {
+      // One unreadable file (EACCES, EISDIR after a race, a broken symlink)
+      // must not abort the whole run: skip it with a warning and keep going
+      // (issue #36). The file stays out of newHashes AND out of the index, so
+      // its old chunks drop exactly like a deleted file's do — and it is
+      // retried (and re-warned) on the next run once it becomes readable again.
+      delete newHashes[rel];
+      skipped++;
+      log(`warning: skipping ${rel} (${e.code || e.message})`);
       continue;
     }
-    changedFiles++;
-    const parsed = parseFile(abs, db);
     for (const c of parsed) {
-      const key = chunkHash(model, modelName, c);
+      const key = chunkHash(model, c);
       const cached = vecByChunkHash.get(key);
       if (cached) {
         c.vec = cached;
@@ -171,13 +238,16 @@ export async function buildIndex(opts) {
 
   const dim = chunks[0]?.vec?.length ?? model.dim ?? 0;
   const index = {
-    model: model.id,
+    format: 'binary-v1',           // vec stored as base64 Float32Array (issue #4)
+    model: modelIdentity,          // id@revision — revision is part of the key (#27)
     modelAlias: modelName || 'e5-base',
     dim,
     db,
     built: new Date().toISOString(),
     chunkCount: chunks.length,
-    chunks,
+    // ~4× smaller on disk than decimal JSON: 768-dim float = 3072 B → 4096 B
+    // base64, vs ~8-10 chars per number for decimal.
+    chunks: chunks.map(c => ({ ...c, vec: c.vec ? encodeVec(c.vec) : undefined })),
   };
 
   atomicWrite(vectorsPath, JSON.stringify(index));
@@ -185,6 +255,7 @@ export async function buildIndex(opts) {
 
   return {
     files: files.length,
+    skipped,
     chunks: chunks.length,
     reused,
     reusedChunks,

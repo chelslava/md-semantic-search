@@ -2,8 +2,12 @@ node_modules/
 .cache/
 models/
 
+# Local tool state (oh-my-claudecode / oh-my-open-code) — not part of the repo.
+.omc/
+.omo/
+
 # Generated indexes (default location is <db>/.mdss). These are derived
-# artifacts — rebuild with `mdss index`. Ignore any that land in-repo.
+# artifacts - rebuild with `mdss index`. Ignore any that land in-repo.
 .mdss/
 *.mdss-index.json
 vectors.json

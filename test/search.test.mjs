@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { buildIndex } from '../src/indexer.mjs';
-import { search, tokenize, keywordScores, rrf } from '../src/search.mjs';
+import { search, searchIndex, loadIndex, tokenize, keywordScores, rrf } from '../src/search.mjs';
+import { decodeVec } from '../src/core.mjs';
 
 function fakeEmbed(texts) {
   return texts.map((t) => {
@@ -31,11 +32,23 @@ async function makeIndex() {
   return { dir, idx };
 }
 
-test('tokenize: lowercase, min length 3, unicode, strips function words', () => {
+test('tokenize: lowercase, min length 2, unicode, strips function words', () => {
   assert.deepEqual(tokenize('The cat and the hat'), ['cat', 'hat']);
-  assert.deepEqual(tokenize('ab cd e'), []);
+  assert.deepEqual(tokenize('in of to it is'), []);
   assert.deepEqual(tokenize('Привет мир'), ['привет', 'мир']);
-  assert.deepEqual(tokenize('C++ win32-api'), ['win32', 'api']);
+  assert.deepEqual(tokenize('C++ win32-api'), ['c++', 'win32-api']);
+});
+
+test('tokenize: short identifiers survive the 2-char floor (issue #22)', () => {
+  // go/io/jq are plain 2-letter words but real search terms — kept.
+  // V8/d3/es7 are code-y (digit) — kept. is/to/in/of/it are STOP — dropped.
+  assert.deepEqual(tokenize('go io V8 d3 jq es7 is to in of it'),
+    ['go', 'io', 'v8', 'd3', 'jq', 'es7']);
+  // C#/C++ keep their symbols (issue #22).
+  assert.deepEqual(tokenize('C# and C++ are languages, go is a toolchain, io is Node'),
+    ['c#', 'c++', 'languages', 'go', 'toolchain', 'io', 'node']);
+  // Tokens must start with a letter/digit — markdown noise never becomes a token.
+  assert.deepEqual(tokenize('## Heading\n---\nfoo\n+++'), ['heading', 'foo']);
 });
 
 test('keywordScores: counts query terms found in chunk text', () => {
@@ -46,6 +59,26 @@ test('keywordScores: counts query terms found in chunk text', () => {
   const s = keywordScores(chunks, 'win32 buffer');
   assert.equal(s[0], 2);
   assert.equal(s[1], 0);
+});
+
+test('keywordScores: content word "код" is NOT a stop-word (issue #7)', () => {
+  const chunks = [
+    { title: '', heading: '', text: 'как устроен код и его структура' },
+    { title: '', heading: '', text: 'рецепты выпечки хлеба' },
+  ];
+  const s = keywordScores(chunks, 'код структура');
+  assert.equal(s[0], 2, '"код" and "структура" both overlap the code chunk');
+  assert.equal(s[1], 0);
+});
+
+test('keywordScores: exact token overlap, no substring matching (issue #7)', () => {
+  const chunks = [
+    { title: '', heading: '', text: 'a window closes over the yard' },
+    { title: '', heading: '', text: 'the win is a rare victory marker' },
+  ];
+  const s = keywordScores(chunks, 'win');
+  assert.equal(s[0], 0, '"win" must NOT match "window" via substring');
+  assert.equal(s[1], 1, '"win" token present verbatim in second chunk');
 });
 
 test('rrf: fuses rankings by position with k=60, skips non-positive scores', () => {
@@ -125,6 +158,195 @@ test('search: legacy index without model fields still works (validation fallback
 
     const results = await search({ indexDir: idx, cacheDir: dir, query: 'guide', k: 3, embedFn: fakeEmbed });
     assert.equal(results.length, 3, 'search proceeds on a legacy index');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('search: legacy decimal vectors.json loads and ranks identically (issue #4)', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const binaryResults = await search({ indexDir: idx, cacheDir: dir, query: 'coffee', k: 3, embedFn: fakeEmbed });
+
+    // convert the binary index to the legacy ≤0.3.x shape: decimal arrays, no format field
+    const index = JSON.parse(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'));
+    delete index.format;
+    for (const c of index.chunks) c.vec = [...decodeVec(c.vec)];
+    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
+
+    const legacyResults = await search({ indexDir: idx, cacheDir: dir, query: 'coffee', k: 3, embedFn: fakeEmbed });
+
+    assert.equal(legacyResults.length, binaryResults.length, 'same hit count');
+    assert.deepEqual(
+      legacyResults.map(r => r.file),
+      binaryResults.map(r => r.file),
+      'identical ranking order',
+    );
+    for (let i = 0; i < binaryResults.length; i++) {
+      assert.ok(Math.abs(legacyResults[i].cosine - binaryResults[i].cosine) < 1e-4,
+        `cosine delta at rank ${i} < 1e-4`);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('loadIndex/searchIndex: parse once, reuse across queries (issues #14+#2)', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const loaded = loadIndex(idx);
+    assert.ok(loaded.index.chunks.length >= 3, 'index parsed once');
+    assert.equal(loaded.model.id, 'Xenova/multilingual-e5-base', 'model resolved from index');
+
+    const q1 = await searchIndex({ loaded, cacheDir: dir, query: 'coffee', k: 3, embedFn: fakeEmbed });
+    const q2 = await searchIndex({ loaded, cacheDir: dir, query: 'hockey', k: 3, embedFn: fakeEmbed });
+    assert.equal(q1[0].file, 'a.md', 'coffee ranks a.md first');
+    assert.equal(q2[0].file, 'b.md', 'hockey ranks b.md first');
+
+    // results identical to the one-shot path (same parse, same ranking)
+    const oneShot = await search({ indexDir: idx, cacheDir: dir, query: 'coffee', k: 3, embedFn: fakeEmbed });
+    assert.deepEqual(q1.map(r => r.file), oneShot.map(r => r.file), 'loadIndex path == one-shot path');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('loadIndex: throws with clear message when index is missing', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-noidx2-'));
+  try {
+    assert.throws(() => loadIndex(path.join(dir, '.mdss')), /No index at .*\.mdss.*Run `mdss index` first/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('search: --path glob restricts results to matching files (issue #13)', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const opts = { indexDir: idx, cacheDir: dir, query: 'guide', k: 3, embedFn: fakeEmbed };
+    const all = await search(opts);
+    assert.equal(all.length, 3, 'no filter → all three files match "guide"');
+
+    const onlyA = await search({ ...opts, path: 'a.md' });
+    assert.ok(onlyA.length >= 1 && onlyA.every(r => r.file === 'a.md'), 'path a.md keeps only a.md');
+
+    const aOrB = await search({ ...opts, path: ['a.md', 'b.md'] });
+    assert.equal(aOrB.length, 2);
+    assert.ok(aOrB.every(r => r.file === 'a.md' || r.file === 'b.md'), 'multiple path globs are OR-ed');
+
+    const none = await search({ ...opts, path: 'zz/**' });
+    assert.equal(none.length, 0, 'non-matching glob → no results');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('search: --since filters by file mtime (issue #13)', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const old = new Date('2020-01-01T00:00:00Z');
+    fs.utimesSync(path.join(dir, 'a.md'), old, old); // a.md aged to 2020
+    // b.md / c.md keep their fresh creation mtime
+
+    const opts = { indexDir: idx, cacheDir: dir, query: 'guide', k: 3, embedFn: fakeEmbed, since: '2021-01-01' };
+    const res = await search(opts);
+    assert.equal(res.length, 2, 'a.md (2020) excluded, b.md + c.md kept');
+    assert.ok(res.every(r => r.file !== 'a.md'));
+    assert.deepEqual(res.map(r => r.file).sort(), ['b.md', 'c.md']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('search: invalid --since value throws a clear error (issue #13)', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    await assert.rejects(
+      () => search({ indexDir: idx, cacheDir: dir, query: 'guide', embedFn: fakeEmbed, since: 'not-a-date' }),
+      /Invalid --since date/,
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('search: results carry matches — query terms found in each chunk (issue #13)', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const res = await search({ indexDir: idx, cacheDir: dir, query: 'coffee hockey', k: 5, embedFn: fakeEmbed });
+    const a = res.find(r => r.file === 'a.md');
+    const b = res.find(r => r.file === 'b.md');
+    assert.ok(a, 'a.md present in results');
+    assert.ok(b, 'b.md present in results');
+    assert.ok(Array.isArray(a.matches) && a.matches.includes('coffee'), 'a.md matches include "coffee"');
+    assert.ok(Array.isArray(b.matches) && b.matches.includes('hockey'), 'b.md matches include "hockey"');
+    assert.ok(!a.matches.includes('hockey'), 'a.md does not match "hockey"');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** Run an async fn with process.stderr captured; returns {value, stderr}. */
+async function captureStderr(fn) {
+  const chunks = [];
+  const orig = process.stderr.write;
+  process.stderr.write = (s) => { chunks.push(String(s)); return true; };
+  try {
+    const value = await fn();
+    return { value, stderr: chunks.join('') };
+  } finally {
+    process.stderr.write = orig;
+  }
+}
+
+test('loadIndex: corrupt vectors.json gets a clear error naming the file (issue #20)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-corrupt-'));
+  try {
+    const idx = path.join(dir, '.mdss');
+    fs.mkdirSync(idx, { recursive: true });
+    fs.writeFileSync(path.join(idx, 'vectors.json'), '{ not valid json !!!');
+    assert.throws(
+      () => loadIndex(idx),
+      /vectors\.json is not valid JSON.*mdss index/,
+      'error names the file and the fix, no raw stack trace',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('search: stale index warns on stderr but still returns results (issue #20)', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    // touch a file AFTER the index was built → index is now stale
+    fs.writeFileSync(path.join(dir, 'b.md'), '# Sports\n\n## Hockey\n\nsports guide hockey match puck arena edited\n');
+    const { stderr } = await captureStderr(async () => {
+      const res = await search({ indexDir: idx, cacheDir: dir, query: 'hockey', k: 3, embedFn: fakeEmbed });
+      assert.ok(res.length > 0, 'results still returned on a stale index');
+      return res;
+    });
+    assert.match(stderr, /warning: index is .* older than the newest change in .*mdss-search-/);
+    assert.match(stderr, /mdss index/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('loadIndex: fresh index produces no stale warning (issue #20)', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const chunks = [];
+    const orig = process.stderr.write;
+    process.stderr.write = (s) => { chunks.push(String(s)); return true; };
+    let loaded;
+    try {
+      loaded = loadIndex(idx);
+    } finally {
+      process.stderr.write = orig;
+    }
+    assert.ok(loaded.index, 'fresh index loads fine');
+    assert.ok(!chunks.some(c => /older than the newest change/.test(c)),
+      'no stale warning on a fresh index');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

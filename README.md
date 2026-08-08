@@ -44,6 +44,13 @@ measurements that shaped its defaults.
   uploaded anywhere.
 - 📦 **Zero infra.** One JSON index, brute-force cosine in memory. No Pinecone,
   no Qdrant, no pgvector. Scales fine to thousands of chunks.
+- 🗜️ **Compact index.** Vectors are stored as base64 `Float32Array` blobs
+  instead of decimal JSON — ~3.2× smaller index files and ~12× faster loads
+  on a real corpus. Old decimal indexes are read transparently and migrated
+  on the next `index` run.
+- 🖥️ **Daemon mode.** `mdss serve` keeps the parsed index AND the embedding
+  model warm in memory across queries (no ~280 MB reload per search), with an
+  optional `--watch` flag that re-indexes incrementally when your notes change.
 
 ## Requirements
 
@@ -73,6 +80,40 @@ cd md-semantic-search
 npm install
 node bin/cli.mjs --help
 ```
+
+## Library usage
+
+The package exports a stable programmatic API (no CLI required) — for scripts,
+agents, and editors that want to run many queries in one process.
+
+```js
+import { buildIndex, search, loadIndex, searchIndex, resolveModel, MODELS } from 'md-semantic-search';
+
+// 1. Build (or refresh) an index — same as `mdss index --db ./docs`.
+await buildIndex({ db: './docs', indexDir: './.mdss', cacheDir: '~/.cache/mdss' });
+
+// 2a. One-shot search — parses the index on every call (same as `mdss search`).
+const hits = await search({
+  indexDir: './.mdss', cacheDir: '~/.cache/mdss',
+  query: 'how do I rotate the API token', k: 6,
+});
+for (const h of hits) console.log(h.file, h.heading, h.cosine);
+
+// 2b. Repeated queries in one process — parse the index ONCE and reuse it.
+//     The embedding model is cached in-process too (issue #2).
+const idx = loadIndex('./.mdss');                          // parse once
+const r1 = await searchIndex({ loaded: idx, cacheDir: '~/.cache/mdss', query: 'failover runbook' });
+const r2 = await searchIndex({ loaded: idx, cacheDir: '~/.cache/mdss', query: 'backup schedule' });
+//                                                          ^^ reuses parsed chunks + warm model
+```
+
+The extractor pipeline is cached per model id (see `getExtractor`), so the
+second and later queries skip both the file read and the model load.
+
+Also exported: `resolveModel`, `MODELS`, `DEFAULT_MODEL`, `chunkHash`,
+`tokenize`, `keywordScores`, `rrf`, `cosine`, `encodeVec`/`decodeVec`,
+`walkMarkdown`/`parseFile`/`chunkMarkdown`, `splitFrontmatter`, `extractTitle`,
+`globToRegExp`. Types come from JSDoc (`// @ts-check` + `checkJs`).
 
 ## Usage
 
@@ -111,19 +152,84 @@ Top 3 for: "how do I add a new translation language"
 2. ...
 ```
 
+### Reranking (optional, sharper results)
+
+The default ranking scores each chunk *independently* (vector cosine + lexical
+overlap fused with RRF). A **cross-encoder** instead reads the query and the
+passage **together**, capturing pairwise relevance that independent scores can
+miss — at the cost of one forward pass per candidate.
+
+```bash
+mdss search --db /path/to/your/markdown "how do I rotate the api token" --rerank
+```
+
+- The first pass pulls a wider candidate pool (default `max(20, k*3)` chunks),
+  the cross-encoder (`Xenova/bge-reranker-base`, ~280 MB, downloaded on first
+  use) re-scores them as query↔passage pairs, and the best `k` survive.
+- Results from a re-ranked search carry a `rerankScore` field in `--json` mode.
+- Programmatic use: `rerank: true` in `search()`/`searchIndex()`, `rerankPool`
+  to size the pool, or `rerankFn` to swap in your own scorer. The API server
+  accepts `"rerank": true` in the `/search` body.
+- The reranker is lazy: nothing loads unless `--rerank` is actually requested,
+  so searches without it pay zero extra cost.
+
+
+### 3. Serve (daemon, warm index + model)
+
+```bash
+mdss serve --db /path/to/your/markdown [--port 8747] [--host 127.0.0.1] [--watch]
+```
+
+`serve` is the long-running mode for editors, scripts, or anything that asks
+many questions in a row: the index is parsed **once** and the embedding model
+stays loaded in memory, so every request skips the ~280 MB model load and the
+full `vectors.json` parse. `--watch` polls the base for file changes (mtime,
+no extra dependencies) and re-runs the incremental re-index automatically.
+
+```bash
+# query it with curl…
+curl -X POST localhost:8747/search -d '{"query":"rotate api token","k":5}'
+curl localhost:8747/health          # → {ok, chunks, model, dim, built, watching}
+```
+
+Or from a script / editor extension:
+
+```js
+const r = await fetch('http://localhost:8747/search', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ query: 'failover runbook', k: 3 }),
+});
+const { results } = await r.json();
+```
+
+The API is unauthenticated — by default it binds to **loopback only**
+(`127.0.0.1`), so other machines on your LAN cannot reach it. Pass `--host
+0.0.0.0` (or `MDSS_HOST`) only if you intend to expose it on a network, and put
+a reverse proxy (or at least a firewall rule) in front of it. Request bodies
+are capped at 64 KB (oversized → `413`), and malformed JSON gets a clear `400`
+instead of being silently swallowed.
+
 ### Options
 
 | Flag | Meaning |
 |------|---------|
 | `--db <dir>` | Folder of `.md` files (or set `MDSS_DB`). Can be anywhere on disk. |
 | `--index-dir <dir>` | Where to store the index (default: `<db>/.mdss`). |
-| `--cache-dir <dir>` | Model cache dir (default: package `.cache`, or `MDSS_CACHE_DIR`). |
+| `--cache-dir <dir>` | Model cache dir (default: `$XDG_CACHE_HOME/mdss` → `~/.cache/mdss`, or `%LOCALAPPDATA%\mdss` on Windows; override with `MDSS_CACHE_DIR`). |
 | `--model <name\|id>` | Embedding model (default `e5-base`). See `mdss models`. |
 | `--ignore <glob>` | Skip files/paths; repeatable. e.g. `--ignore "log.md" --ignore "**/archive/**"`. |
-| `--k <n>` | Number of results (default 6). |
-| `--json` | Machine-readable output. |
+| `--path <glob>` | Search only files matching glob; repeatable. e.g. `--path "docs/**"`. |
+| `--since <date>` | Search only files modified at/after date (`YYYY-MM-DD` or ISO 8601). |
+| `--k <n>` | Number of results, positive integer (default 6). |
+| `--json` | Machine-readable output (each hit includes `matches` — the query terms found in the chunk). |
 | `--semantic` | Pure vector ranking, skip lexical fusion. |
+| `--rerank` | Re-rank the candidate pool with a cross-encoder (`Xenova/bge-reranker-base`, ~280 MB model, downloaded on first use). Slower, sharper results — see *Reranking* below. |
+| `--port <n>` | HTTP port for `serve` (default 8747, or `MDSS_PORT`). |
+| `--host <ip>` | Bind address for `serve` (default `127.0.0.1` — loopback only; use `0.0.0.0` to expose on the LAN, or `MDSS_HOST`). |
+| `--watch` | `serve`: re-index incrementally when files change (mtime poll). |
 | `--offline` | Never download the model — require a cached one (or `MDSS_OFFLINE=1`). |
+| `--version` | Print the installed version. |
 
 ### The base can live outside the project
 
