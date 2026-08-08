@@ -245,3 +245,29 @@ test('parseFile: title from frontmatter, rel path, sections', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('parseFile: accepts pre-read content, skips the second disk read (issue #35)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-parseraw-'));
+  try {
+    const f = path.join(dir, 'a.md');
+    fs.writeFileSync(f, '# A\n\n## Section\n\n' + 'b'.repeat(30));
+
+    const raw = fs.readFileSync(f, 'utf8');
+    // Remove the file BEFORE parsing: parseFile must work purely from `raw`
+    // (a second readFileSync would throw ENOENT — buildIndex reads once for
+    // the md5 fast-path check and must not read the file again).
+    fs.rmSync(f);
+    const parsed = parseFile(f, dir, undefined, raw);
+
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].file, 'a.md');
+    assert.equal(parsed[0].heading, 'Section');
+
+    // identical input → identical output regardless of who supplied the bytes
+    fs.writeFileSync(f, raw);
+    assert.deepEqual(parseFile(f, dir), parseFile(f, dir, undefined, raw),
+      'raw-supplied and disk-read parsing are byte-for-byte equivalent');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

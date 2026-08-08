@@ -229,11 +229,14 @@ function hardWrap(text, maxChunk) {
  * @param {string} absPath - absolute file path
  * @param {string} dbDir - base dir (for relative file labels)
  * @param {number} [maxChunk] - chunk size cap (defaults to DEFAULT_MAX_CHUNK)
+ * @param {string} [raw] - already-read file content. When given, the file is
+ *   NOT read from disk again (issue #35: buildIndex already read it for the
+ *   md5 fast-path check, so a changed file was being read twice).
  * @returns {{file:string, title:string, heading:string, text:string}[]}
  */
-export function parseFile(absPath, dbDir, maxChunk) {
-  const raw = fs.readFileSync(absPath, 'utf8');
-  const { frontmatter, body } = splitFrontmatter(raw);
+export function parseFile(absPath, dbDir, maxChunk, raw) {
+  const content = raw ?? fs.readFileSync(absPath, 'utf8');
+  const { frontmatter, body } = splitFrontmatter(content);
   const rel = path.relative(dbDir, absPath).split(path.sep).join('/');
   const title = extractTitle(frontmatter, body, rel);
   return chunkMarkdown(body, maxChunk).map(c => ({

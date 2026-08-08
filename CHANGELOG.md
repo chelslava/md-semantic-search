@@ -35,6 +35,12 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
   Re-ranked results gain a `rerankScore` field.
 
 ### Changed
+- **Issue #35** — `buildIndex` no longer reads a changed file twice: `parseFile`
+  accepts an optional pre-read `raw` content argument (issue #36 already reads
+  every file once for the md5 fast-path check), so re-indexing a changed file
+  is now a single disk read instead of two — most relevant on big corpora and
+  slow/network disks, and it halves the window for mid-file read errors. The
+  public `parseFile(absPath, dbDir, maxChunk)` signature still works unchanged.
 - **Issue #6** — `chunkHash` no longer includes the CLI model *alias*, only the
   resolved model id + passage prefix. The same model spelled as alias or raw id
   now produces identical hashes. NOTE: this invalidates stored chunk hashes, so

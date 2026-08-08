@@ -193,7 +193,10 @@ export async function buildIndex(opts) {
         continue;
       }
       changedFiles++;
-      parsed = parseFile(abs, db);
+      // Pass the already-read content so the file is NOT read a second time
+      // (issue #35: changed files were being read twice — once for the md5
+      // fast-path check, once inside parseFile).
+      parsed = parseFile(abs, db, undefined, raw);
     } catch (e) {
       // One unreadable file (EACCES, EISDIR after a race, a broken symlink)
       // must not abort the whole run: skip it with a warning and keep going
