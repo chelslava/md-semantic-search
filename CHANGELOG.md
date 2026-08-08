@@ -33,6 +33,13 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
   is lazy-loaded on first use (exported as `getReranker`/`rerankScores`);
   candidate pool size is capped by `rerankPool` (default `max(20, k*3)`).
   Re-ranked results gain a `rerankScore` field.
+- **Issue #21** — `mdss stats` prints machine-readable index statistics
+  (format, model, dim, chunk/file counts, index size, build time, age, db)
+  by parsing only `vectors.json` + `.hashes.json` — no model load, no network.
+  Human-friendly by default; `--json` for scripts/CI. `mdss index --json` emits
+  the `buildIndex` return value (`files`, `chunks`, `reused`, `embedded`, …) as
+  JSON instead of the stderr prose, so automation can assert a fully
+  incremental re-index ("0 embedded").
 
 ### Changed
 - **Issue #35** — `buildIndex` no longer reads a changed file twice: `parseFile`

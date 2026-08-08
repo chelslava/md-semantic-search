@@ -242,3 +242,122 @@ test('cli: serve --db /nope → exit 1 before binding (path validated)', () => {
   assert.equal(r.status, 1);
   assert.match(r.stderr, /error: --db is not a directory: .*nope/);
 });
+
+// ---- mdss stats (issue #21) — machine-readable index stats, no model load ----
+
+/** Write a minimal vectors.json + .hashes.json pair so `mdss stats` has
+ * something to parse WITHOUT downloading the embedding model. */
+function writeFakeIndex(dir, extra = {}) {
+  fs.mkdirSync(path.join(dir, '.mdss'), { recursive: true });
+  const built = extra.built || new Date(Date.now() - 60_000).toISOString();
+  fs.writeFileSync(path.join(dir, '.mdss', 'vectors.json'), JSON.stringify({
+    format: 'binary-v1',
+    model: 'Xenova/multilingual-e5-base@main',
+    modelAlias: 'e5-base',
+    dim: 768,
+    db: dir,
+    built,
+    chunkCount: 42,
+    chunks: [
+      { file: 'a.md', heading: 'A', text: 'a', vec: 'AAAA' },
+      { file: 'b.md', heading: 'B', text: 'b', vec: 'BBBB' },
+    ],
+    ...extra,
+  }));
+  fs.writeFileSync(path.join(dir, '.mdss', '.hashes.json'), JSON.stringify(
+    { 'a.md': 'h1', 'b.md': 'h2', 'c.md': 'h3' }));
+}
+
+test('cli: stats --json emits machine-readable fields (issue #21)', () => {
+  const dir = tempDir('stats');
+  try {
+    writeFakeIndex(dir);
+    const r = runCli(['stats', '--db', dir, '--json']);
+    assert.equal(r.status, 0, r.stderr);
+    const s = JSON.parse(r.stdout);
+    assert.equal(s.format, 'binary-v1');
+    assert.equal(s.model, 'Xenova/multilingual-e5-base@main');
+    assert.equal(s.modelAlias, 'e5-base');
+    assert.equal(s.dim, 768);
+    assert.equal(s.chunks, 42);
+    assert.equal(s.files, 3, 'file count from .hashes.json keys');
+    assert.ok(s.indexBytes > 0, 'vectors.json size reported');
+    assert.ok(s.ageSeconds > 0 && s.ageSeconds < 120, `age ~60s, got ${s.ageSeconds}`);
+    assert.equal(s.db, dir);
+    assert.ok(s.indexDir.endsWith('.mdss'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('cli: stats human output shows format/model/chunks/files/built', () => {
+  const dir = tempDir('stats-h');
+  try {
+    writeFakeIndex(dir);
+    const r = runCli(['stats', '--db', dir]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /format: binary-v1/);
+    assert.match(r.stdout, /model: e5-base \(dim 768\)/);
+    assert.match(r.stdout, /chunks: 42 · files: 3/);
+    assert.match(r.stdout, /built: .+ ago/);
+    assert.match(r.stdout, /db: /);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('cli: stats falls back to unique chunk files when .hashes.json is missing', () => {
+  const dir = tempDir('stats-nohash');
+  try {
+    writeFakeIndex(dir);
+    fs.rmSync(path.join(dir, '.mdss', '.hashes.json'));
+    const r = runCli(['stats', '--db', dir, '--json']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout).files, 2, 'from chunk file paths');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('cli: stats with no index → exit 1, clear "No index" error', () => {
+  const dir = tempDir('stats-noindex');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# X\n\ntext\n');
+    const r = runCli(['stats', '--db', dir]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /error: No index at .*vectors\.json\. Run `mdss index` first\./);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('cli: stats with corrupt vectors.json → exit 1, clear JSON error', () => {
+  const dir = tempDir('stats-corrupt');
+  try {
+    fs.mkdirSync(path.join(dir, '.mdss'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.mdss', 'vectors.json'), '{ not json');
+    const r = runCli(['stats', '--db', dir]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /error: .*vectors\.json is not valid JSON/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- mdss index --json (issue #21) — build result as JSON for scripts ----
+
+test('cli: index --json on an empty db → exit 0 with JSON build result (no model load)', () => {
+  const dir = tempDir('idxjson');
+  try {
+    const r = runCli(['index', '--db', dir, '--json']);
+    assert.equal(r.status, 0, r.stderr);
+    const j = JSON.parse(r.stdout);
+    assert.equal(j.files, 0);
+    assert.equal(j.chunks, 0);
+    assert.equal(j.embedded, 0);
+    assert.ok(j.vectorsPath.endsWith('vectors.json'), 'vectorsPath present');
+    assert.equal(j.dim, 768, 'dim from resolved default model');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

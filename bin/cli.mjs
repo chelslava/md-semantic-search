@@ -109,6 +109,7 @@ const HELP = `md-semantic-search (mdss) — local, private semantic search over 
 
 Usage:
   mdss index  --db <dir> [options]            Build/refresh the index
+  mdss stats  --db <dir> [--json]             Index stats without loading the model
   mdss search --db <dir> [options] "query"    Search by meaning
   mdss serve  --db <dir> [--port <n>] [--host <ip>] [--watch]  Daemon: warm model + index
   mdss models                                  List available models
@@ -122,7 +123,7 @@ Options:
   --path <glob>       Search only files matching glob (repeatable). e.g. --path "docs/**".
   --since <date>      Search only files modified at/after date (YYYY-MM-DD or ISO).
   --k <n>             Number of results (search, default 6).
-  --json              Machine-readable output (search).
+  --json              Machine-readable output (index, stats, search).
   --semantic          Pure vector ranking, skip lexical/RRF fusion (search).
   --rerank            Re-rank candidates with a cross-encoder (search; ~280MB model).
   --port <n>          HTTP port for serve (default: ${DEFAULT_PORT}).
@@ -155,6 +156,13 @@ async function cmdIndex(opts) {
     offline: resolveOffline(opts),
     log: s => process.stderr.write(s + '\n'),
   });
+  // Machine-readable build result for scripts/CI (issue #21): the exact
+  // buildIndex return value — lets automation assert "0 embedded" (fully
+  // incremental) or "N skipped" without parsing prose.
+  if (opts.json) {
+    process.stdout.write(JSON.stringify(r, null, 2) + '\n');
+    return;
+  }
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
   const skipped = r.skipped > 0 ? `, ${r.skipped} skipped` : '';
   process.stderr.write(
@@ -162,6 +170,73 @@ async function cmdIndex(opts) {
     `(${r.reused} reused [${r.reusedChunks} chunk-level, ${r.reusedFiles} file-level], ` +
     `${r.embedded} embedded)${skipped}, dim=${r.dim}, ` +
     `model=${r.model}, ${secs}s\n→ ${r.vectorsPath}\n`,
+  );
+}
+
+/**
+ * `mdss stats` — machine-readable index statistics WITHOUT loading the
+ * embedding model: parses only vectors.json + .hashes.json (issue #21).
+ * Gives scripts/CI a cheap sanity check after a re-index (counts, model, dim),
+ * staleness detection (ageSeconds), and index-path/format info for migrations.
+ */
+function cmdStats(opts) {
+  const db = resolveDb(opts);
+  const indexDir = resolveIndexDir(opts, db);
+  const vectorsPath = path.join(indexDir, 'vectors.json');
+  const hashesPath = path.join(indexDir, '.hashes.json');
+  if (!fs.existsSync(vectorsPath)) {
+    die(`No index at ${vectorsPath}. Run \`mdss index\` first.`);
+  }
+  let index;
+  try {
+    index = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
+  } catch (e) {
+    die(`${vectorsPath} is not valid JSON (${e.message}); run \`mdss index\` to rebuild.`);
+  }
+
+  // File count = keys of .hashes.json (per-file md5 map written by buildIndex).
+  // Fall back to unique chunk file paths when the hashes file is missing (a
+  // legacy/corrupt index) rather than dying.
+  let files = 0;
+  try {
+    const hashes = JSON.parse(fs.readFileSync(hashesPath, 'utf8'));
+    files = Object.keys(hashes).length;
+  } catch {
+    files = new Set((index.chunks || []).map(c => c.file)).size;
+  }
+
+  const chunks = index.chunkCount ?? (index.chunks ? index.chunks.length : 0);
+  const builtMs = index.built ? Date.parse(index.built) : NaN;
+  const stats = {
+    indexDir,
+    format: index.format || 'legacy',         // binary-v1 vs pre-0.4 decimal
+    model: index.model || null,               // id@revision (issue #27)
+    modelAlias: index.modelAlias || null,
+    dim: index.dim ?? null,
+    chunks,
+    files,
+    indexBytes: fs.statSync(vectorsPath).size,
+    built: index.built || null,
+    ageSeconds: Number.isFinite(builtMs) ? Math.floor((Date.now() - builtMs) / 1000) : null,
+    db: index.db || db,
+  };
+
+  if (opts.json) {
+    process.stdout.write(JSON.stringify(stats, null, 2) + '\n');
+    return;
+  }
+  const age = stats.ageSeconds === null ? '?' :
+    stats.ageSeconds < 60 ? `${stats.ageSeconds}s` :
+    stats.ageSeconds < 3600 ? `${Math.floor(stats.ageSeconds / 60)}m ${stats.ageSeconds % 60}s` :
+    stats.ageSeconds < 86400 ? `${Math.floor(stats.ageSeconds / 3600)}h ${Math.floor((stats.ageSeconds % 3600) / 60)}m` :
+    `${Math.floor(stats.ageSeconds / 86400)}d`;
+  process.stdout.write(
+    `Index at ${indexDir}\n` +
+    `  format: ${stats.format} · model: ${stats.modelAlias || stats.model || '?'} (dim ${stats.dim ?? '?'})\n` +
+    `  chunks: ${chunks} · files: ${files}\n` +
+    `  size: ${(stats.indexBytes / 1024).toFixed(1)} KiB (vectors.json)\n` +
+    `  built: ${stats.built || '?'} (${age} ago)\n` +
+    `  db: ${stats.db}\n`,
   );
 }
 
@@ -273,6 +348,7 @@ async function main() {
   if (opts.help || !cmd) { process.stdout.write(HELP); return; }
   switch (cmd) {
     case 'index': return cmdIndex(opts);
+    case 'stats': return cmdStats(opts);
     case 'search': return cmdSearch(opts);
     case 'serve': return cmdServe(opts);
     case 'models': return cmdModels();

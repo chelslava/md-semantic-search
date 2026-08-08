@@ -134,6 +134,31 @@ just the new entry). The index output reports the split, e.g.:
 Indexed 64 file(s) → 725 chunks (725 reused [5 chunk-level, 720 file-level], 0 embedded), ... 0.6s
 ```
 
+For scripts/CI, `mdss index --json` emits the build result as JSON (the exact
+`buildIndex` return value: `files`, `chunks`, `reused`, `embedded`, `dim`,
+`model`, `vectorsPath`) instead of the prose — e.g. to assert "0 embedded"
+(fully incremental re-index) in a cron job.
+
+### Inspect the index (`mdss stats`)
+
+`mdss stats` prints index statistics by parsing only `vectors.json` +
+`.hashes.json` — **no model load, no network**, so it's a cheap sanity check
+after a re-index or for staleness detection in scripts:
+
+```bash
+mdss stats --db /path/to/your/markdown
+# Index at /path/to/your/markdown/.mdss
+#   format: binary-v1 · model: e5-base (dim 768)
+#   chunks: 725 · files: 64
+#   size: 42.1 KiB (vectors.json)
+#   built: 2026-08-08T09:42:58.331Z (2m 12s ago)
+#   db: /path/to/your/markdown
+```
+
+`mdss stats --json` prints machine-readable JSON: `indexDir`, `format`
+(`binary-v1` vs legacy `decimal`), `model` (id@revision) / `modelAlias`, `dim`,
+`chunks`, `files`, `indexBytes`, `built`, `ageSeconds`, `db`.
+
 ### 2. Search
 
 ```bash
@@ -222,7 +247,7 @@ instead of being silently swallowed.
 | `--path <glob>` | Search only files matching glob; repeatable. e.g. `--path "docs/**"`. |
 | `--since <date>` | Search only files modified at/after date (`YYYY-MM-DD` or ISO 8601). |
 | `--k <n>` | Number of results, positive integer (default 6). |
-| `--json` | Machine-readable output (each hit includes `matches` — the query terms found in the chunk). |
+| `--json` | Machine-readable output: `index` → build result JSON, `stats` → index stats JSON, `search` → hit list JSON (each hit includes `matches` — the query terms found in the chunk). |
 | `--semantic` | Pure vector ranking, skip lexical fusion. |
 | `--rerank` | Re-rank the candidate pool with a cross-encoder (`Xenova/bge-reranker-base`, ~280 MB model, downloaded on first use). Slower, sharper results — see *Reranking* below. |
 | `--port <n>` | HTTP port for `serve` (default 8747, or `MDSS_PORT`). |
