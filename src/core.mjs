@@ -81,12 +81,37 @@ export function encodeVec(vec) {
 
 /**
  * Decode a base64 vector string back to a Float32Array (binary storage, #4).
+ *
+ * Throws on corrupt input instead of silently producing garbage (issue #40):
+ * - base64 whose byte length is not a multiple of 4 — a truncated string would
+ *   previously decode into a truncated Float32Array (wrong dim, silent NaN
+ *   scores downstream);
+ * - non-finite values (NaN/Infinity) — e.g. from a partial write or bit rot.
+ *
+ * When `dim` is given, a length mismatch is also rejected.
  * @param {string} s
+ * @param {number} [dim] - expected vector length (issue #40)
  * @returns {Float32Array}
  */
-export function decodeVec(s) {
+export function decodeVec(s, dim) {
   const buf = Buffer.from(s, 'base64');
-  return new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
+  if (buf.byteLength % 4 !== 0) {
+    throw new Error(
+      `corrupt base64 vector: ${buf.byteLength} bytes is not a multiple of 4 ` +
+      `(a float32 is 4 bytes) — run \`mdss index\` to rebuild`);
+  }
+  const vec = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
+  if (dim !== undefined && vec.length !== dim) {
+    throw new Error(`corrupt vector: ${vec.length} dims, expected ${dim} — ` +
+      `run \`mdss index\` to rebuild`);
+  }
+  for (let i = 0; i < vec.length; i++) {
+    if (!Number.isFinite(vec[i])) {
+      throw new Error(`corrupt vector: non-finite value at index ${i} ` +
+        `(NaN/Infinity) — run \`mdss index\` to rebuild`);
+    }
+  }
+  return vec;
 }
 
 /**
@@ -97,6 +122,30 @@ export function decodeVec(s) {
 export function isBinaryIndex(index) {
   return index.format === 'binary-v1';
 }
+
+/**
+ * Index schema version (issue #39). Bump on every breaking change to
+ * vectors.json and add a migration step to SCHEMA_MIGRATIONS.
+ *   v0 (implicit): everything written before schemaVersion existed — the
+ *     loader's format heuristics (decimal vs binary-v1 vecs, missing model
+ *     field, missing chunkHash, vec-less chunks) already handle all v0 shapes.
+ *   v1: first explicit version; written by all builds since 0.6.0.
+ */
+export const SCHEMA_VERSION = 1;
+
+/**
+ * Migration table: `SCHEMA_MIGRATIONS[n]` upgrades an index at schema n-1 → n.
+ * Read by loadIndex/buildIndex before use; writing a version newer than the
+ * binary supports is a hard error instead of a silent misparse (issue #39).
+ * @type {Record<number, (index: object) => void>}
+ */
+export const SCHEMA_MIGRATIONS = {
+  // v0 → v1: no structural change — legacy shapes (decimal vecs, missing
+  // model/chunkHash, vec-less chunks) are normalized by the loaders' existing
+  // format heuristics, not by a data rewrite. This entry exists so the table
+  // is explicit: every future format change adds a real step here + a test.
+  1: () => {},
+};
 
 /** Recursively collect .md/.markdown files under dir, honoring ignore globs. */
 export function walkMarkdown(dir, ignore = []) {

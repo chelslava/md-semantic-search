@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { buildIndex } from '../src/indexer.mjs';
 import { search, searchIndex, loadIndex, tokenize, keywordScores, rrf } from '../src/search.mjs';
-import { decodeVec } from '../src/core.mjs';
+import { decodeVec, SCHEMA_VERSION } from '../src/core.mjs';
 
 function fakeEmbed(texts) {
   return texts.map((t) => {
@@ -310,6 +310,145 @@ test('loadIndex: corrupt vectors.json gets a clear error naming the file (issue 
       /vectors\.json is not valid JSON.*mdss index/,
       'error names the file and the fix, no raw stack trace',
     );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('loadIndex: wrong-dim vector is caught with the chunk identity (issue #40)', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    // corrupt the vec of a known chunk: decode, truncate to 3 dims, re-encode.
+    const index = JSON.parse(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'));
+    const c = index.chunks.find(c => c.file === 'a.md');
+    assert.ok(c, 'a.md chunk present');
+    c.vec = Buffer.from(new Float32Array([1, 2, 3]).buffer).toString('base64');
+    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
+
+    assert.throws(
+      () => loadIndex(idx),
+      /chunk a\.md.*corrupt vector: 3 dims, expected 8.*mdss index/,
+      'error names the file/chunk and the rebuild hint',
+    );
+    // and search() surfaces the same error instead of returning NaN scores
+    await assert.rejects(
+      search({ indexDir: idx, cacheDir: dir, query: 'guide', k: 3, embedFn: fakeEmbed }),
+      /chunk a\.md.*corrupt vector/,
+      'search propagates the load error',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('loadIndex: decimal-array chunk with wrong dim is caught too (issue #40)', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    // honest legacy shape: no format field, ALL vecs as decimal arrays — then
+    // corrupt one chunk with a wrong-length decimal array
+    const index = JSON.parse(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'));
+    delete index.format; // make it look like a legacy ≤0.3.x index
+    for (const c of index.chunks) c.vec = [...decodeVec(c.vec)];
+    index.chunks.find(c => c.file === 'b.md').vec = [1, 2, 3];
+    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
+
+    assert.throws(
+      () => loadIndex(idx),
+      /chunk b\.md.*vector has 3 dims, expected 8.*mdss index/,
+      'decimal-array dim mismatch rejected',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('loadIndex: newer schemaVersion → clear upgrade error (issue #39)', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const index = JSON.parse(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'));
+    index.schemaVersion = SCHEMA_VERSION + 1; // written by a future mdss
+    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
+
+    assert.throws(
+      () => loadIndex(idx),
+      new RegExp(`uses schema v${SCHEMA_VERSION + 1}.*supports up to v${SCHEMA_VERSION}.*upgrade md-semantic-search`),
+      'clear upgrade-required error, no silent misparse',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildIndex: writes schemaVersion and re-indexes a legacy v0 index (issue #39)', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    // simulate a pre-schemaVersion index: drop the field, keep binary-v1 shape
+    const index = JSON.parse(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'));
+    delete index.schemaVersion;
+    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
+
+    const r = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    assert.equal(r.files, 3, 'legacy index re-indexed');
+    const written = JSON.parse(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'));
+    assert.equal(written.schemaVersion, SCHEMA_VERSION, 'schemaVersion written back');
+    // and it loads cleanly
+    assert.ok(loadIndex(idx), 'rebuilt index loads');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildIndex: newer schemaVersion refuses to rebuild over a future index (issue #39)', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const index = JSON.parse(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'));
+    index.schemaVersion = SCHEMA_VERSION + 1;
+    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
+
+    await assert.rejects(
+      buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed }),
+      /uses schema v\d+.*upgrade md-semantic-search before re-indexing/,
+      'refuses to clobber an index it cannot understand',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildIndex: corrupt vector in the old index is dropped and re-embedded (issue #40)', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    // corrupt ONE chunk's base64 with a non-finite value (NaN float32)
+    const nanB64 = (() => {
+      const b = Buffer.alloc(4);
+      b.writeFloatLE(NaN, 0);
+      return b.toString('base64');
+    })();
+    const index = JSON.parse(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'));
+    index.chunks.find(c => c.file === 'a.md').vec = nanB64;
+    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
+
+    const stderrChunks = [];
+    const orig = process.stderr.write;
+    process.stderr.write = (s) => { stderrChunks.push(String(s)); return true; };
+    let r;
+    try {
+      r = await buildIndex({
+        db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed,
+        log: s => stderrChunks.push(String(s)),
+      });
+    } finally {
+      process.stderr.write = orig;
+    }
+
+    assert.match(stderrChunks.join(''), /warning: dropping corrupt vector for a\.md.*non-finite/,
+      'corrupt chunk reported');
+    const written = JSON.parse(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'));
+    const fixed = written.chunks.find(c => c.file === 'a.md');
+    assert.equal(decodeVec(fixed.vec).length, 8, 'chunk re-embedded with a full 8-dim vector');
+    // the re-indexed index loads and searches cleanly
+    const loaded = loadIndex(idx);
+    assert.equal(loaded.index.chunks.length, written.chunks.length);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

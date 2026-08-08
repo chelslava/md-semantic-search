@@ -40,6 +40,20 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
   the `buildIndex` return value (`files`, `chunks`, `reused`, `embedded`, …) as
   JSON instead of the stderr prose, so automation can assert a fully
   incremental re-index ("0 embedded").
+- **Issue #39** — `vectors.json` now carries an explicit `schemaVersion`
+  (`SCHEMA_VERSION` in `core.mjs`) plus a migration table
+  (`SCHEMA_MIGRATIONS`). Reading or re-indexing over an index written by a
+  NEWER mdss is a hard, clear error ("upgrade md-semantic-search") instead of
+  a silent misparse; legacy pre-version indexes are read transparently and
+  stamped on the next `index` run. Every future format change must bump the
+  version and add a migration test.
+- **Issue #40** — corrupt vectors are caught at load instead of silently
+  producing NaN scores: `decodeVec` rejects truncated base64 (byte length not
+  a multiple of 4) and non-finite values (NaN/Infinity); `loadIndex` validates
+  every chunk's vector length against `index.dim` (falling back to the model
+  dim) and names the offending chunk in the error. During a re-index a corrupt
+  vector in the old index is dropped with a warning and re-embedded rather
+  than aborting the build.
 
 ### Changed
 - **Issue #35** — `buildIndex` no longer reads a changed file twice: `parseFile`

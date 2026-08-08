@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { walkMarkdown, parseFile, embed, resolveModel, decodeVec, encodeVec } from './core.mjs';
+import { walkMarkdown, parseFile, embed, resolveModel, decodeVec, encodeVec, SCHEMA_VERSION, SCHEMA_MIGRATIONS } from './core.mjs';
 
 /**
  * @typedef {Object} IndexChunk
@@ -126,15 +126,41 @@ export async function buildIndex(opts) {
 
   const files = walkMarkdown(db, ignore);
   const oldHashes = loadJSON(hashesPath, {}, log);
-  /** @type {{format?:string, model?:string|null, chunks:IndexChunk[]}} */
+  /** @type {{schemaVersion?:number, format?:string, model?:string|null, chunks:IndexChunk[]}} */
   const oldIndex = loadJSON(vectorsPath, { chunks: [], model: null }, log);
+
+  // Schema gate (issue #39): refuse to REBUILD over an index written by a
+  // NEWER mdss — we might not understand its format and would destroy data.
+  // Older schemas are migrated via the table (v0 → v1 is a no-op: the legacy
+  // shapes are normalized by the heuristics right below).
+  const oldSchema = oldIndex.schemaVersion ?? 0;
+  if (oldSchema > SCHEMA_VERSION) {
+    throw new Error(
+      `${vectorsPath} uses schema v${oldSchema}, but this mdss writes ` +
+      `v${SCHEMA_VERSION} (index built by a newer version) — upgrade ` +
+      `md-semantic-search before re-indexing.`);
+  }
+  for (let v = oldSchema + 1; v <= SCHEMA_VERSION; v++) {
+    const step = SCHEMA_MIGRATIONS[v];
+    if (step) step(oldIndex);
+  }
 
   // v0.4.0+ stores vectors as base64 Float32Array (issue #4); legacy ≤0.3.x
   // indexes hold decimal arrays. Normalize the old format to plain arrays so
   // the chunk-level reuse path (vecByChunkHash) sees numbers either way.
   if (oldIndex.format === 'binary-v1') {
     for (const c of oldIndex.chunks) {
-      if (typeof c.vec === 'string') c.vec = decodeVec(c.vec);
+      if (typeof c.vec !== 'string') continue;
+      try {
+        c.vec = decodeVec(c.vec);
+      } catch (e) {
+        // A corrupt vector in the OLD index must not abort the re-index: drop
+        // it (vec stays undefined → the file-level fast path re-embeds it, see
+        // the vec-less chunk handling below) and warn (issue #40).
+        log(`warning: dropping corrupt vector for ${c.file}` +
+          (c.heading ? ` › ${c.heading}` : '') + ` (${e.message})`);
+        c.vec = undefined;
+      }
     }
   }
 
@@ -241,6 +267,7 @@ export async function buildIndex(opts) {
 
   const dim = chunks[0]?.vec?.length ?? model.dim ?? 0;
   const index = {
+    schemaVersion: SCHEMA_VERSION, // format gate (issue #39) — bump + add a migration step on change
     format: 'binary-v1',           // vec stored as base64 Float32Array (issue #4)
     model: modelIdentity,          // id@revision — revision is part of the key (#27)
     modelAlias: modelName || 'e5-base',

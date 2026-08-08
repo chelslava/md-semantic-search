@@ -7,7 +7,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { embed, cosine, resolveModel, decodeVec, isBinaryIndex, globToRegExp, walkMarkdown } from './core.mjs';
+import { embed, cosine, resolveModel, decodeVec, isBinaryIndex, globToRegExp, walkMarkdown, SCHEMA_VERSION, SCHEMA_MIGRATIONS } from './core.mjs';
 import { rerankScores } from './rerank.mjs';
 
 // Common ru/en function words — they match everywhere and pollute lexical scores.
@@ -167,6 +167,21 @@ export function loadIndex(indexDir) {
       `${vectorsPath} is not valid JSON (${e.message}); run \`mdss index\` to rebuild.`);
   }
 
+  // Schema gate (issue #39): an index written by a NEWER mdss must not be
+  // misparsed by an older binary — clear upgrade error instead of silent
+  // garbage. Older schemas are migrated step-by-step (v0 legacy shapes are
+  // already handled by the format heuristics below).
+  const schema = index.schemaVersion ?? 0;
+  if (schema > SCHEMA_VERSION) {
+    throw new Error(
+      `${vectorsPath} uses schema v${schema}, but this mdss supports up to ` +
+      `v${SCHEMA_VERSION} (built by a newer version) — upgrade md-semantic-search.`);
+  }
+  for (let v = schema + 1; v <= SCHEMA_VERSION; v++) {
+    const step = SCHEMA_MIGRATIONS[v];
+    if (step) step(index);
+  }
+
   // Validate the model the index was built with. Indexes written by v0.1.x have
   // no "model" field at all — warn instead of silently assuming a default.
   if (!index.model && !index.modelAlias) {
@@ -174,18 +189,41 @@ export function loadIndex(indexDir) {
       'version); assuming the default model. Re-run `mdss index` to refresh.\n');
   }
 
+  const model = resolveModel(index.modelAlias || index.model);
+  // Expected vector length for the dim check (issue #40): the stored index.dim
+  // wins; legacy indexes without dim fall back to the resolved model's dim.
+  const expectedDim = index.dim ?? (model.dim > 0 ? model.dim : undefined);
+
   // v0.4.0+ stores vectors as base64 Float32Array (issue #4); legacy ≤0.3.x
   // indexes hold decimal arrays. Decode the binary format once up front so the
-  // cosine sweep below always sees plain numbers.
-  if (isBinaryIndex(index)) {
-    for (const c of index.chunks) {
-      if (typeof c.vec === 'string') c.vec = decodeVec(c.vec);
+  // cosine sweep below always sees plain numbers. Dim validation runs for BOTH
+  // shapes (issue #40): a wrong-length vector — from a truncated base64, a
+  // mixed-model index, or a partial write — used to silently produce NaN
+  // scores; now it fails loudly at load with the chunk's identity.
+  for (const c of index.chunks) {
+    if (typeof c.vec === 'string') {
+      if (!isBinaryIndex(index)) {
+        throw new Error(`chunk ${c.file}: unexpected base64 vector in a legacy ` +
+          `decimal index — run \`mdss index\` to rebuild`);
+      }
+      try {
+        // decodeVec throws on corrupt base64 (truncated, non-finite, wrong dim)
+        c.vec = decodeVec(c.vec, expectedDim);
+      } catch (e) {
+        const where = c.file + (c.heading ? ` › ${c.heading}` : '');
+        throw new Error(`chunk ${where}: ${e.message}`);
+      }
+    } else if (expectedDim !== undefined && Array.isArray(c.vec) &&
+               c.vec.length !== expectedDim) {
+      const where = c.file + (c.heading ? ` › ${c.heading}` : '');
+      throw new Error(`chunk ${where}: vector has ${c.vec.length} dims, ` +
+        `expected ${expectedDim} — run \`mdss index\` to rebuild`);
     }
   }
 
   warnIfStale(index);
 
-  return { index, model: resolveModel(index.modelAlias || index.model) };
+  return { index, model };
 }
 
 /**

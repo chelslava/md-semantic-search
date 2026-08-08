@@ -159,6 +159,12 @@ mdss stats --db /path/to/your/markdown
 (`binary-v1` vs legacy `decimal`), `model` (id@revision) / `modelAlias`, `dim`,
 `chunks`, `files`, `indexBytes`, `built`, `ageSeconds`, `db`.
 
+Indexes also carry an explicit `schemaVersion` (issue #39): reading or
+re-indexing over an index written by a **newer** mdss fails with a clear
+"upgrade md-semantic-search" error instead of silently misparsing, and corrupt
+vectors (truncated base64, NaN/Infinity, wrong dimension) are rejected at load
+with the offending chunk named — no more silent NaN scores (issue #40).
+
 ### 2. Search
 
 ```bash

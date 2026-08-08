@@ -7,6 +7,7 @@ import {
   splitFrontmatter, extractTitle, chunkMarkdown, globToRegExp,
   walkMarkdown, cosine, parseFile, resolveModel,
   encodeVec, decodeVec, isBinaryIndex,
+  SCHEMA_VERSION, SCHEMA_MIGRATIONS,
 } from '../src/core.mjs';
 
 test('splitFrontmatter: strips leading YAML block', () => {
@@ -190,6 +191,45 @@ test('encodeVec/decodeVec: round-trip preserves float32 values (issue #4)', () =
     // float32 rounding: 3.14159 → 3.14159012… — within 1e-5 is plenty
     assert.ok(Math.abs(back[i] - vec[i]) < 1e-5, `dim ${i}: ${back[i]} vs ${vec[i]}`);
   }
+});
+
+test('decodeVec: truncated base64 throws instead of decoding garbage (issue #40)', () => {
+  // A valid 8-dim float32 vector is 32 bytes → 44 base64 chars. Truncate the
+  // string so Buffer decodes to a non-multiple-of-4 byte length.
+  const b64 = encodeVec([0.5, -0.25, 0.75, 1, 0, -1, 3.14, 2.71]);
+  assert.ok(b64.length > 40);
+  const truncated = b64.slice(0, -3);
+  assert.throws(
+    () => decodeVec(truncated),
+    /corrupt base64 vector: .* not a multiple of 4.*mdss index/,
+    'truncated base64 rejected with the rebuild hint',
+  );
+});
+
+test('decodeVec: non-finite values (NaN/Infinity) are rejected (issue #40)', () => {
+  // encode NaN and Infinity as their float32 byte patterns → base64
+  const b64 = (v) => {
+    const b = Buffer.alloc(4);
+    b.writeFloatLE(v, 0);
+    return b.toString('base64');
+  };
+  assert.throws(() => decodeVec(b64(NaN)), /non-finite value at index 0/);
+  assert.throws(() => decodeVec(b64(Infinity)), /non-finite value at index 0/);
+  assert.throws(() => decodeVec(b64(-Infinity)), /non-finite value at index 0/);
+});
+
+test('decodeVec: dim mismatch is rejected when a dim is given (issue #40)', () => {
+  const b64 = encodeVec([0.5, -0.25, 0.75]); // 3 dims
+  assert.throws(() => decodeVec(b64, 768), /corrupt vector: 3 dims, expected 768/);
+  // no dim → no length check (legacy tolerance)
+  assert.equal(decodeVec(b64).length, 3);
+});
+
+test('SCHEMA_VERSION/SCHEMA_MIGRATIONS: v1 is current and has a migration step (issue #39)', () => {
+  assert.equal(SCHEMA_VERSION, 1);
+  assert.equal(typeof SCHEMA_MIGRATIONS[1], 'function', 'v0→v1 migration step exists');
+  // the step runs without throwing on a legacy-shape index
+  SCHEMA_MIGRATIONS[1]({ format: undefined, chunks: [{ vec: [1, 2, 3] }] });
 });
 
 test('encodeVec: binary is ~4x smaller than decimal JSON (issue #4)', () => {
