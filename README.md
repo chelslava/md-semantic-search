@@ -36,7 +36,10 @@ measurements that shaped its defaults.
 - 🌍 **Cross-lingual.** Multilingual embeddings (default `multilingual-e5-base`).
 - 🧠 **Hybrid ranking.** Reciprocal Rank Fusion of vector similarity (meaning)
   and lexical overlap (exact names like `win32`, `TextIOWrapper`).
-- ⚡ **Incremental.** Per-file md5 — re-indexing only re-embeds changed files.
+- ⚡ **Two-level incremental.** Per-file md5 (unchanged files skip work) **plus**
+  per-chunk hash — inside a *changed* file, sections whose text is unchanged
+  reuse their stored vector. Editing one place in a long file re-embeds only the
+  affected section, not the whole file.
 - 🔒 **Private & offline.** Model downloads once, then no network. Nothing is
   uploaded anywhere.
 - 📦 **Zero infra.** One JSON index, brute-force cosine in memory. No Pinecone,
@@ -81,7 +84,14 @@ mdss index --db /path/to/your/markdown
 
 First run downloads the model (~280 MB). The index is written to `<db>/.mdss/`
 by default (override with `--index-dir`). Re-run after editing your notes — it's
-incremental, so only changed files are re-embedded.
+incremental at two levels: unchanged files are skipped via their md5, and inside
+a changed file only the sections whose text actually changed are re-embedded
+(chunks carry a `chunkHash` in `vectors.json`; an append to a long log re-embeds
+just the new entry). The index output reports the split, e.g.:
+
+```
+Indexed 64 file(s) → 725 chunks (725 reused [5 chunk-level, 720 file-level], 0 embedded), ... 0.6s
+```
 
 ### 2. Search
 
@@ -156,7 +166,10 @@ Switching models invalidates the stored vectors automatically — the next
 2. **Chunk** each file by Markdown headings; oversized sections split on blank
    lines (~1400 chars/chunk).
 3. **Embed** each chunk (`passage:` prefix for E5) → store `{file, heading,
-   text, vec}` in `vectors.json`, plus per-file md5 in `.hashes.json`.
+   text, vec}` in `vectors.json`, plus per-file md5 in `.hashes.json`. Each chunk
+   also stores `chunkHash` (SHA-256 of the exact passage input + model identity),
+   so on re-index an unchanged section inside a modified file reuses its vector
+   instead of being embedded again.
 4. **Search**: embed the query (`query:` prefix), score every chunk by cosine,
    score by lexical term-overlap, then **fuse with RRF**. Return top-k chunks.
 

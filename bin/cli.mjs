@@ -101,7 +101,8 @@ async function cmdIndex(opts) {
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
   process.stderr.write(
     `\nIndexed ${r.files} file(s) → ${r.chunks} chunks ` +
-    `(${r.reused} reused, ${r.embedded} embedded), dim=${r.dim}, ` +
+    `(${r.reused} reused [${r.reusedChunks} chunk-level, ${r.reusedFiles} file-level], ` +
+    `${r.embedded} embedded), dim=${r.dim}, ` +
     `model=${r.model}, ${secs}s\n→ ${r.vectorsPath}\n`,
   );
 }
