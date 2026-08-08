@@ -318,8 +318,14 @@ test('loadIndex: corrupt vectors.json gets a clear error naming the file (issue 
 test('search: stale index warns on stderr but still returns results (issue #20)', async () => {
   const { dir, idx } = await makeIndex();
   try {
-    // touch a file AFTER the index was built → index is now stale
-    fs.writeFileSync(path.join(dir, 'b.md'), '# Sports\n\n## Hockey\n\nsports guide hockey match puck arena edited\n');
+    // touch a file AFTER the index was built → index is now stale. The mtime
+    // must be *clearly* newer than `built`: filesystem mtime granularity varies
+    // (ext4 ns vs overlayfs 1s), and a same-millisecond rewrite may not look
+    // newer than the ISO `built` timestamp on fast CI runners — pin it forward.
+    const f = path.join(dir, 'b.md');
+    fs.writeFileSync(f, '# Sports\n\n## Hockey\n\nsports guide hockey match puck arena edited\n');
+    const future = new Date(Date.now() + 60000);
+    fs.utimesSync(f, future, future);
     const { stderr } = await captureStderr(async () => {
       const res = await search({ indexDir: idx, cacheDir: dir, query: 'hockey', k: 3, embedFn: fakeEmbed });
       assert.ok(res.length > 0, 'results still returned on a stale index');
