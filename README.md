@@ -123,6 +123,7 @@ Top 3 for: "how do I add a new translation language"
 | `--k <n>` | Number of results (default 6). |
 | `--json` | Machine-readable output. |
 | `--semantic` | Pure vector ranking, skip lexical fusion. |
+| `--offline` | Never download the model — require a cached one (or `MDSS_OFFLINE=1`). |
 
 ### The base can live outside the project
 
@@ -157,7 +158,20 @@ mdss models
 | `bge-m3` | `Xenova/bge-m3` | 1024 | ~2.3 GB. Best cross-lingual separation in tests. |
 
 Switching models invalidates the stored vectors automatically — the next
-`index` run does a full rebuild. You can also pass any raw `Xenova/*` id.
+`index` run does a full rebuild.
+
+Weights are downloaded in quantized (q8) form when the model repo ships them
+(all `Xenova/*` repos do — e5-base is ~280 MB, not ~1.1 GB fp32).
+
+You can also pass any raw `Xenova/*` id, optionally pinning a revision:
+
+```bash
+mdss index --db ./docs --model "Xenova/multilingual-e5-small@abc123def"
+```
+
+Pinned ids invalidate the index too (the revision is part of the model key), so
+a `@revision` bump triggers a full rebuild. Custom ids should have quantized
+weights (a `model_quantized.onnx` file) in the repo.
 
 ## How it works
 

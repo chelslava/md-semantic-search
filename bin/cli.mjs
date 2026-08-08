@@ -32,6 +32,7 @@ function parseArgs(argv) {
     else if (a === '--ignore') opts.ignore.push(argv[++i]);
     else if (a === '--json') opts.json = true;
     else if (a === '--semantic') opts.semantic = true;
+    else if (a === '--offline') opts.offline = true;
     else if (a === '-h' || a === '--help') opts.help = true;
     else opts._.push(a);
   }
@@ -57,6 +58,9 @@ function resolveIndexDir(opts, db) {
 const resolveCache = (opts) =>
   path.resolve(opts.cacheDir || process.env.MDSS_CACHE_DIR || DEFAULT_CACHE);
 
+/** --offline flag or MDSS_OFFLINE=1 env → never touch the network. */
+const resolveOffline = (opts) => !!opts.offline || !!process.env.MDSS_OFFLINE;
+
 function die(msg) {
   process.stderr.write(`error: ${msg}\n`);
   process.exit(1);
@@ -78,6 +82,7 @@ Options:
   --k <n>             Number of results (search, default 6).
   --json              Machine-readable output (search).
   --semantic          Pure vector ranking, skip lexical/RRF fusion (search).
+  --offline           Never download the model; require a cached one (env MDSS_OFFLINE=1).
   -h, --help          Show this help.
 
 Examples:
@@ -96,6 +101,7 @@ async function cmdIndex(opts) {
     db, indexDir, cacheDir,
     modelName: opts.model || DEFAULT_MODEL,
     ignore: opts.ignore,
+    offline: resolveOffline(opts),
     log: s => process.stderr.write(s + '\n'),
   });
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
@@ -118,6 +124,7 @@ async function cmdSearch(opts) {
     indexDir, cacheDir, query,
     k: opts.k || 6,
     semanticOnly: !!opts.semantic,
+    offline: resolveOffline(opts),
   });
 
   if (opts.json) { process.stdout.write(JSON.stringify(results, null, 2) + '\n'); return; }

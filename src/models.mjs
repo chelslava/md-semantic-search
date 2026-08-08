@@ -39,14 +39,26 @@ export const MODELS = {
 
 export const DEFAULT_MODEL = 'e5-base';
 
-/** Resolve a model alias OR a raw Xenova/... id into a model descriptor. */
+/**
+ * Resolve a model alias OR a raw HF id into a model descriptor.
+ * A raw id may pin a revision with the `id@revision` syntax (defaults to
+ * `main`), e.g. `--model "Xenova/multilingual-e5-small@a1b2c3d"`.
+ */
 export function resolveModel(name) {
   if (!name) return MODELS[DEFAULT_MODEL];
   if (MODELS[name]) return MODELS[name];
   // Allow passing a raw HF/Xenova id; assume E5-style prefixes unless it's bge.
   const isBge = /bge/i.test(name);
+  let id = name;
+  let revision = 'main';
+  const at = name.indexOf('@');
+  if (at > 0) {
+    id = name.slice(0, at);
+    revision = name.slice(at + 1) || 'main';
+  }
   return {
-    id: name,
+    id,
+    revision,
     dim: 0,
     queryPrefix: isBge ? '' : 'query: ',
     passagePrefix: isBge ? '' : 'passage: ',

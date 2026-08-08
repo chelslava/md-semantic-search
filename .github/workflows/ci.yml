@@ -1,0 +1,53 @@
+name: ci
+
+# Run the test suite and a cheap syntax lint on every push / PR.
+# Tests use a fake embedder (no model download), so the suite is network-free
+# and fast. Node 18 is the minimum supported by the CLI (see README).
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+  lint:
+    # No ESLint config is set up in this repo; "lint" is a syntax check of
+    # every entry module so a broken file fails CI early instead of at runtime.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Syntax check all source modules
+        shell: bash
+        run: |
+          set -e
+          for f in src/*.mjs bin/*.mjs; do
+            node --check "$f"
+          done
+          echo "All modules parse OK"

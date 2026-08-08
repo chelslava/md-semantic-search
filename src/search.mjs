@@ -16,12 +16,12 @@ const STOP = new Set([
   'под', 'так', 'его', 'нет', 'код', 'кода', 'есть',
 ]);
 
-function tokenize(text) {
+export function tokenize(text) {
   const m = text.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu);
   return m ? m.filter(t => !STOP.has(t)) : [];
 }
 
-function keywordScores(chunks, query) {
+export function keywordScores(chunks, query) {
   const qTerms = new Set(tokenize(query));
   return chunks.map(c => {
     const hay = `${c.title} ${c.heading} ${c.text}`.toLowerCase();
@@ -32,7 +32,7 @@ function keywordScores(chunks, query) {
 }
 
 /** Reciprocal Rank Fusion. rankings: arrays of {idx, score}; higher = better. */
-function rrf(rankings, k = 60) {
+export function rrf(rankings, k = 60) {
   const fused = new Map();
   for (const ranking of rankings) {
     const sorted = [...ranking].sort((a, b) => b.score - a.score);
@@ -51,18 +51,31 @@ function rrf(rankings, k = 60) {
  * @param {string} opts.query
  * @param {number} [opts.k=6]
  * @param {boolean} [opts.semanticOnly=false]
+ * @param {boolean} [opts.offline=false] - never download the model; require a cached one
+ * @param {Function} [opts.embedFn] - embed override for tests/dependency injection;
+ *   signature (texts, kind, model, cacheDir, offline) => Promise<number[][]>
  * @returns {Promise<Array>} results with file, title, heading, cosine, score, snippet
  */
 export async function search(opts) {
-  const { indexDir, cacheDir, query, k = 6, semanticOnly = false } = opts;
+  const {
+    indexDir, cacheDir, query, k = 6, semanticOnly = false,
+    offline = false, embedFn = embed,
+  } = opts;
   const vectorsPath = path.join(indexDir, 'vectors.json');
   if (!fs.existsSync(vectorsPath)) {
     throw new Error(`No index at ${vectorsPath}. Run \`mdss index\` first.`);
   }
   const index = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
+
+  // Validate the model the index was built with. Indexes written by v0.1.x have
+  // no "model" field at all — warn instead of silently assuming a default.
+  if (!index.model && !index.modelAlias) {
+    process.stderr.write('warning: index has no "model" field (built by an old ' +
+      'version); assuming the default model. Re-run `mdss index` to refresh.\n');
+  }
   const model = resolveModel(index.modelAlias || index.model);
 
-  const [qVec] = await embed([query], 'query', model, cacheDir);
+  const [qVec] = await embedFn([query], 'query', model, cacheDir, offline);
 
   const semantic = index.chunks.map((c, idx) => ({ idx, score: cosine(qVec, c.vec) }));
   const cosByIdx = new Map(semantic.map(s => [s.idx, s.score]));

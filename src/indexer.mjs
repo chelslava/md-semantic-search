@@ -14,9 +14,33 @@ import { walkMarkdown, parseFile, embed, resolveModel } from './core.mjs';
 
 const md5 = s => crypto.createHash('md5').update(s).digest('hex');
 const sha256 = s => crypto.createHash('sha256').update(s).digest('hex');
-const loadJSON = (p, fb) => {
-  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return fb; }
+
+/**
+ * Read JSON, falling back to `fb` when the file is missing or corrupt.
+ * A corrupt-but-present file is reported through `warn` (default: silent) so a
+ * torn write or manual edit doesn't silently wipe the previous index state.
+ */
+const loadJSON = (p, fb, warn = () => {}) => {
+  try { return JSON.parse(fs.readFileSync(p, 'utf8')); }
+  catch (e) {
+    if (e.code !== 'ENOENT') {
+      warn(`warning: ${path.basename(p)} is not valid JSON (${e.message}); ` +
+           'rebuilding it from scratch.');
+    }
+    return fb;
+  }
 };
+
+/**
+ * Atomic write: dump to a temp file in the SAME directory, then rename over the
+ * target. Rename is atomic on POSIX and on NTFS, so a crash mid-write can never
+ * leave a truncated vectors.json that the next run would parse as "corrupt".
+ */
+function atomicWrite(target, data) {
+  const tmp = `${target}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, data);
+  fs.renameSync(tmp, target);
+}
 
 /** Normalize text for stable hashing across runs: CRLF -> LF, trim edges. */
 function normalize(s) {
@@ -52,10 +76,16 @@ export function chunkHash(model, modelName, chunk) {
  * @param {string} opts.cacheDir  - model cache dir
  * @param {string} opts.modelName - model alias or id
  * @param {string[]} opts.ignore  - glob patterns to skip
+ * @param {boolean} [opts.offline=false] - never download the model; require a cached one
  * @param {(s:string)=>void} [opts.log]
+ * @param {Function} [opts.embedFn] - embed override for tests/dependency injection;
+ *   signature (texts, kind, model, cacheDir, offline) => Promise<number[][]>
  */
 export async function buildIndex(opts) {
-  const { db, indexDir, cacheDir, modelName, ignore = [], log = () => {} } = opts;
+  const {
+    db, indexDir, cacheDir, modelName, ignore = [], log = () => {},
+    offline = false, embedFn = embed,
+  } = opts;
   const model = resolveModel(modelName);
   const vectorsPath = path.join(indexDir, 'vectors.json');
   const hashesPath = path.join(indexDir, '.hashes.json');
@@ -63,8 +93,8 @@ export async function buildIndex(opts) {
   fs.mkdirSync(indexDir, { recursive: true });
 
   const files = walkMarkdown(db, ignore);
-  const oldHashes = loadJSON(hashesPath, {});
-  const oldIndex = loadJSON(vectorsPath, { chunks: [], model: null });
+  const oldHashes = loadJSON(hashesPath, {}, log);
+  const oldIndex = loadJSON(vectorsPath, { chunks: [], model: null }, log);
 
   // If the model changed, all stored vectors are incompatible → full rebuild.
   const modelChanged = oldIndex.model && oldIndex.model !== model.id;
@@ -130,9 +160,9 @@ export async function buildIndex(opts) {
     const BATCH = 32;
     for (let i = 0; i < toEmbed.length; i += BATCH) {
       const slice = toEmbed.slice(i, i + BATCH);
-      const vecs = await embed(
+      const vecs = await embedFn(
         slice.map(c => `${c.title}\n${c.heading}\n${c.text}`),
-        'passage', model, cacheDir,
+        'passage', model, cacheDir, offline,
       );
       slice.forEach((c, j) => { c.vec = vecs[j]; });
       log(`  ${Math.min(i + BATCH, toEmbed.length)}/${toEmbed.length}`);
@@ -150,8 +180,8 @@ export async function buildIndex(opts) {
     chunks,
   };
 
-  fs.writeFileSync(vectorsPath, JSON.stringify(index));
-  fs.writeFileSync(hashesPath, JSON.stringify(newHashes, null, 2));
+  atomicWrite(vectorsPath, JSON.stringify(index));
+  atomicWrite(hashesPath, JSON.stringify(newHashes, null, 2));
 
   return {
     files: files.length,
