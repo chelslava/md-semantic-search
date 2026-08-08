@@ -138,7 +138,13 @@ function warnIfStale(index) {
   } catch {
     return;                                        // db gone/unreadable → stay silent
   }
-  if (newest <= builtMs) return;                   // fresh — nothing changed since build
+  // Tolerance: `built` is an ISO string truncated to milliseconds, while
+  // filesystem mtimes carry sub-millisecond precision (and some filesystems
+  // round up). A file written right after `built` was captured — e.g. the
+  // index build's own final write, or a same-second touch — must NOT look
+  // stale. Only warn when the newest change is clearly AFTER the build (a few
+  // seconds of grace), which is what a human means by "index is stale".
+  if (newest <= builtMs + 5000) return;           // fresh within the grace period
   const mins = Math.max(1, Math.round((newest - builtMs) / 60000));
   process.stderr.write(
     `warning: index is ${mins} min older than the newest change in ${index.db}; ` +
