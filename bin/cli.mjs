@@ -56,6 +56,8 @@ function parseArgs(argv) {
     else if (a === '--k') opts.k = nextInt(argv, ++i, a);
     else if (a === '--port') opts.port = nextInt(argv, ++i, a);
     else if (a === '--host') opts.host = nextValue(argv, ++i, a);
+    else if (a === '--watch-delay') opts.watchDelay = nextInt(argv, ++i, a);
+    else if (a === '--watch-interval') opts.watchInterval = nextInt(argv, ++i, a);
     else if (a === '--since') opts.since = nextValue(argv, ++i, a);
     else if (a === '--path') opts.path.push(nextValue(argv, ++i, a));
     else if (a === '--ignore') opts.ignore.push(nextValue(argv, ++i, a));
@@ -132,6 +134,9 @@ Options:
   --host <ip>         Bind address for serve (default: ${DEFAULT_HOST} — loopback
                       only; use 0.0.0.0 to expose on the LAN, env MDSS_HOST).
   --watch             serve: re-index incrementally on file changes (mtime poll).
+  --watch-interval <ms>  serve --watch: poll every N ms (default 3000).
+  --watch-delay <ms>     serve --watch: quiet-period debounce before a burst of
+                         saves triggers ONE re-index (default 1000; issue #42).
   --offline           Never download the model; require a cached one (env MDSS_OFFLINE=1).
   --version           Print the version and exit.
   -h, --help          Show this help.
@@ -535,6 +540,8 @@ async function cmdServe(opts) {
     ignore: opts.ignore,
     offline: resolveOffline(opts),
     watch: !!opts.watch,
+    watchInterval: opts.watchInterval,
+    watchDelay: opts.watchDelay,
     log,
   });
 

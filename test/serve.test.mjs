@@ -163,7 +163,7 @@ test('serve: --watch re-indexes incrementally on file change (issue #12)', async
 
     const srv = await startServe({
       db: dir, indexDir: idx, cacheDir: dir, embedFn: fakeEmbed,
-      watch: true, watchInterval: 60, // fast poll for the test
+      watch: true, watchInterval: 60, watchDelay: 150, // fast poll + short settle for the test
     });
     try {
       const before = await post(srv.url, { query: 'coffee', k: 5 });
@@ -182,6 +182,76 @@ test('serve: --watch re-indexes incrementally on file change (issue #12)', async
       assert.equal(after.data.results.length, 2, 'watcher picked up the change');
       const files = after.data.results.map(r => r.file).sort();
       assert.deepEqual(files, ['a.md', 'b.md']);
+    } finally {
+      await srv.close();
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('serve: --watch ignores a no-op touch (mtime moves, content identical) (issue #42)', async () => {
+  const dir = tempDir('servewatch-noop');
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Coffee\n\ncoffee beans roasted ground notes\n');
+    fs.writeFileSync(path.join(dir, 'b.md'), '# Hockey\n\nhockey match puck arena notes\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+
+    const srv = await createServe({
+      db: dir, indexDir: idx, cacheDir: dir, embedFn: fakeEmbed,
+      watch: true, watchInterval: 40, watchDelay: 120,
+    });
+    // server is not listened on — access state through srv.state
+    await new Promise(r => srv.server.listen(0, '127.0.0.1', r));
+    try {
+      // no-op: bump b.md's mtime a full minute into the future, same content
+      const f = path.join(dir, 'b.md');
+      const future = new Date(Date.now() + 60e3);
+      fs.utimesSync(f, future, future);
+      await new Promise(r => setTimeout(r, 120 + 40 * 10)); // settle delay + several polls
+      assert.equal(srv.state.reindexCount ?? 0, 0,
+        'no-op write must NOT trigger a re-index (md5-confirm filters it)');
+    } finally {
+      await srv.close();
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('serve: --watch coalesces a rapid save-burst into ONE re-index (issue #42)', async () => {
+  const dir = tempDir('servewatch-debounce');
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Coffee\n\ncoffee beans roasted ground notes\n');
+    fs.writeFileSync(path.join(dir, 'b.md'), '# Hockey\n\nhockey match puck arena notes\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+
+    const srv = await createServe({
+      db: dir, indexDir: idx, cacheDir: dir, embedFn: fakeEmbed,
+      watch: true, watchInterval: 40, watchDelay: 120,
+    });
+    await new Promise(r => srv.server.listen(0, '127.0.0.1', r));
+    try {
+      // burst: three quick successive edits to the SAME file (each ~45ms
+      // apart — never a full quiet poll between them)
+      for (let i = 1; i <= 3; i++) {
+        fs.appendFileSync(path.join(dir, 'b.md'), '\nburst edit ' + i + '\n');
+        await new Promise(r => setTimeout(r, 45));
+      }
+      // let the debounce flush
+      const deadline = Date.now() + 5000;
+      while ((srv.state.reindexCount ?? 0) < 1) {
+        if (Date.now() > deadline) break;
+        await new Promise(r => setTimeout(r, 50));
+      }
+      assert.equal(srv.state.reindexCount, 1,
+        'three rapid edits → exactly one re-index (debounce)');
+      // and the latest content must be in the index
+      const a = await searchIndex({ loaded: srv.state.loaded, cacheDir: dir,
+        query: 'burst edit', k: 5, embedFn: fakeEmbed });
+      assert.ok(a.some(r => r.file === 'b.md'), 'final burst content is what got indexed');
     } finally {
       await srv.close();
     }

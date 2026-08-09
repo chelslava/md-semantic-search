@@ -245,9 +245,16 @@ mdss serve --db /path/to/your/markdown [--port 8747] [--host 127.0.0.1] [--watch
 `serve` is the long-running mode for editors, scripts, or anything that asks
 many questions in a row: the index is parsed **once** and the embedding model
 stays loaded in memory, so every request skips the ~280 MB model load and the
-full `vectors.json` parse. `--watch` polls the base every **3 s** (mtime poll,
-no extra dependencies) and runs the incremental re-index automatically — new,
-changed, and removed files are picked up without restarting the daemon.
+full `vectors.json` parse. `--watch` polls the base every **3 s** (configurable
+via `--watch-interval`, no extra dependencies) and runs the incremental
+re-index automatically. Detection is **content-confirmed**, not mtime-based
+(issue #42): each candidate file's md5 is compared against the authoritative
+per-file hashes the indexer wrote to `.hashes.json`, so a no-op write (touch,
+chmod, an editor rewriting identical bytes) never triggers a re-index, and a
+real edit caught inside a coarse mtime window (FAT, older SMB) is still picked
+up. A **1 s settle debounce** (`--watch-delay`) collapses a burst of successive
+saves (editor save → linter → save) into ONE re-index instead of a back-to-back
+burst. New, changed, and removed files are all handled without restarting.
 
 ```bash
 # query it with curl…
@@ -297,7 +304,9 @@ instead of being silently swallowed.
 | `--rerank` | Re-rank the candidate pool with a cross-encoder (`Xenova/bge-reranker-base`, ~280 MB model, downloaded on first use). Slower, sharper results — see *Reranking* below. |
 | `--port <n>` | HTTP port for `serve` (default 8747, or `MDSS_PORT`). |
 | `--host <ip>` | Bind address for `serve` (default `127.0.0.1` — loopback only; use `0.0.0.0` to expose on the LAN, or `MDSS_HOST`). |
-| `--watch` | `serve`: re-index incrementally when files change (mtime poll). |
+| `--watch` | `serve`: re-index incrementally when files change. |
+| `--watch-interval <ms>` | `serve --watch`: poll every N ms (default 3000). |
+| `--watch-delay <ms>` | `serve --watch`: quiet-period debounce before a burst of saves triggers ONE re-index (default 1000; issue #42). |
 | `--offline` | Never download the model — require a cached one (or `MDSS_OFFLINE=1`). |
 | `--version` | Print the installed version. |
 
