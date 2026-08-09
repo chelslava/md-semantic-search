@@ -245,14 +245,22 @@ mdss serve --db /path/to/your/markdown [--port 8747] [--host 127.0.0.1] [--watch
 `serve` is the long-running mode for editors, scripts, or anything that asks
 many questions in a row: the index is parsed **once** and the embedding model
 stays loaded in memory, so every request skips the ~280 MB model load and the
-full `vectors.json` parse. `--watch` polls the base for file changes (mtime,
-no extra dependencies) and re-runs the incremental re-index automatically.
+full `vectors.json` parse. `--watch` polls the base every **3 s** (mtime poll,
+no extra dependencies) and runs the incremental re-index automatically — new,
+changed, and removed files are picked up without restarting the daemon.
 
 ```bash
 # query it with curl…
-curl -X POST localhost:8747/search -d '{"query":"rotate api token","k":5}'
+curl -X POST localhost:8747/search \
+  -H 'content-type: application/json' \
+  -d '{"query":"rotate api token","k":5}'
 curl localhost:8747/health          # → {ok, chunks, model, dim, built, watching}
 ```
+
+`POST /search` accepts `{"query": string, "k"?: number, "semanticOnly"?: bool,
+"rerank"?: bool}` and replies `{"results": [{file, title, heading, cosine,
+score, matches, snippet, rerankScore?}]}`. The CLI's `search --json` prints
+the same hit shape.
 
 Or from a script / editor extension:
 
@@ -278,14 +286,14 @@ instead of being silently swallowed.
 |------|---------|
 | `--db <dir>` | Folder of `.md` files (or set `MDSS_DB`). Can be anywhere on disk. |
 | `--index-dir <dir>` | Where to store the index (default: `<db>/.mdss`). |
-| `--cache-dir <dir>` | Model cache dir (default: `$XDG_CACHE_HOME/mdss` → `~/.cache/mdss`, or `%LOCALAPPDATA%\mdss` on Windows; override with `MDSS_CACHE_DIR`). |
+| `--cache-dir <dir>` | Model cache dir. Default: `$XDG_CACHE_HOME/mdss` if set, else `~/.cache/mdss` on **all** platforms (so on Windows that's `C:\Users\<you>\.cache\mdss` — *not* `%LOCALAPPDATA%`; override with `MDSS_CACHE_DIR`). |
 | `--model <name\|id>` | Embedding model (default `e5-base`). See `mdss models`. |
 | `--ignore <glob>` | Skip files/paths; repeatable. e.g. `--ignore "log.md" --ignore "**/archive/**"`. |
 | `--path <glob>` | Search only files matching glob; repeatable. e.g. `--path "docs/**"`. |
 | `--since <date>` | Search only files modified at/after date (`YYYY-MM-DD` or ISO 8601). |
 | `--k <n>` | Number of results, positive integer (default 6). |
 | `--json` | Machine-readable output: `index` → build result JSON, `stats` → index stats JSON, `search` → hit list JSON (each hit includes `matches` — the query terms found in the chunk). |
-| `--semantic` | Pure vector ranking, skip lexical fusion. |
+| `--semantic` | `search` only: pure vector ranking, skip lexical/RRF fusion (zero lexical tokenization). |
 | `--rerank` | Re-rank the candidate pool with a cross-encoder (`Xenova/bge-reranker-base`, ~280 MB model, downloaded on first use). Slower, sharper results — see *Reranking* below. |
 | `--port <n>` | HTTP port for `serve` (default 8747, or `MDSS_PORT`). |
 | `--host <ip>` | Bind address for `serve` (default `127.0.0.1` — loopback only; use `0.0.0.0` to expose on the LAN, or `MDSS_HOST`). |
