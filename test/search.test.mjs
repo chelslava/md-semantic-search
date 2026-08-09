@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { buildIndex } from '../src/indexer.mjs';
-import { search, searchIndex, loadIndex, tokenize, keywordScores, rrf } from '../src/search.mjs';
+import { search, searchIndex, loadIndex, tokenize, keywordScores, rrf, _stats } from '../src/search.mjs';
 import { decodeVec, SCHEMA_VERSION } from '../src/core.mjs';
 
 function fakeEmbed(texts) {
@@ -120,6 +120,85 @@ test('search: returns results with expected shape, hybrid and semanticOnly', asy
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ---- token-set cache (issue #18): the corpus is tokenized ONCE per loaded
+// index, never per query; --semantic performs zero lexical work. -------------
+
+test('issue #18: two queries on one loaded index tokenize the corpus once', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const loaded = loadIndex(idx);
+    const before = _stats.corpusTokenizedChars;
+    await searchIndex({ loaded, cacheDir: dir, query: 'coffee', k: 3, embedFn: fakeEmbed });
+    const afterFirst = _stats.corpusTokenizedChars;
+    const perQuery = loaded.index.chunks
+      .map(c => `${c.title} ${c.heading} ${c.text}`.length)
+      .reduce((a, b) => a + b, 0);
+    assert.equal(afterFirst - before, perQuery,
+      'first query tokenizes every chunk exactly once');
+    await searchIndex({ loaded, cacheDir: dir, query: 'hockey', k: 3, embedFn: fakeEmbed });
+    await searchIndex({ loaded, cacheDir: dir, query: 'stocks', k: 3, embedFn: fakeEmbed });
+    assert.equal(_stats.corpusTokenizedChars, afterFirst,
+      'second/third query reuse the cache — zero corpus re-tokenization');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('issue #18: --semantic performs zero lexical corpus tokenization', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const loaded = loadIndex(idx);
+    // populate the cache with a hybrid query first — cache presence must NOT
+    // change the semantic lane's behavior
+    await searchIndex({ loaded, cacheDir: dir, query: 'coffee', k: 3, embedFn: fakeEmbed });
+    const before = _stats.corpusTokenizedChars;
+    const r = await searchIndex({ loaded, cacheDir: dir, query: 'hockey',
+      k: 3, semanticOnly: true, embedFn: fakeEmbed });
+    assert.equal(_stats.corpusTokenizedChars, before,
+      'semanticOnly: no chunk is tokenized, cache not even consulted');
+    assert.ok(r.length > 0 && r[0].cosine !== undefined, 'results still ranked by cosine');
+    assert.ok(Array.isArray(r[0].matches) && r[0].matches.length >= 0, 'matches field present');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('issue #18: cache is per chunks array — a --path filter reuses token sets', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const loaded = loadIndex(idx);
+    await searchIndex({ loaded, cacheDir: dir, query: 'coffee', k: 3, embedFn: fakeEmbed });
+    const before = _stats.corpusTokenizedChars;
+    // --path makes .filter() produce a NEW chunks array per query — but the
+    // chunk OBJECTS are shared with index.chunks, and the cache is keyed per
+    // chunk object. Filtered queries must therefore be FREE on a warm index:
+    // zero tokenization for the first and the Nth filtered query.
+    await searchIndex({ loaded, cacheDir: dir, query: 'coffee', k: 3,
+      path: 'a.md', embedFn: fakeEmbed });
+    assert.equal(_stats.corpusTokenizedChars, before,
+      'first filtered query on a warm cache: zero tokenization');
+    await searchIndex({ loaded, cacheDir: dir, query: 'stocks', k: 3,
+      path: 'a.md', embedFn: fakeEmbed });
+    assert.equal(_stats.corpusTokenizedChars, before,
+      'second filtered query: still zero');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('keywordScores: same array in → same cached sets, identical scores twice', () => {
+  const chunks = [
+    { title: 'Win32 API', heading: 'Buffer', text: 'rotate the win32 buffer safely' },
+    { title: 'Backups', heading: 'Restore', text: 'restore from a nightly backup' },
+  ];
+  const s1 = keywordScores(chunks, 'win32 buffer');
+  const s2 = keywordScores(chunks, 'backup restore');
+  const s3 = keywordScores(chunks, 'win32 buffer');
+  assert.deepEqual(s1, s3, 'cached corpus → deterministic scores');
+  assert.deepEqual(s1, [2, 0]);
+  assert.deepEqual(s2, [0, 2]);
 });
 
 test('search: honors k and returns no matches gracefully', async () => {

@@ -58,20 +58,54 @@ export function tokenize(text) {
   return out;
 }
 
+// In-memory token-set cache for the lexical lane (issue #18). Tokenizing the
+// corpus is a pure function of the chunk texts — but keywordScores used to
+// re-tokenize ~1400 chars × chunk-count on EVERY query (~28M chars per query
+// at the documented 10–20k chunk scale). A token Set is computed lazily once
+// per CHUNK OBJECT and cached in a WeakMap, so sets survive across searchIndex
+// calls AND across filtered views (--path/--since produce a new chunks ARRAY
+// per query but the chunk OBJECTS are shared — caching per array would
+// re-tokenize every filtered query; per chunk object never does), and are
+// dropped with the index itself (no invalidation logic: one-shot CLI exits,
+// serve replaces the whole `loaded` on re-index). Entries are shared-but-
+// never-mutated after construction, so concurrent awaits are safe.
+const chunkTokens = new WeakMap();
+// Test observability (issue #18 acceptance criterion "tokenize ONCE"): total
+// CHUNK-text characters tokenized through the cache (query tokens excluded).
+// Exported for tests only — not part of the public API.
+export const _stats = { corpusTokenizedChars: 0 };
+
+/**
+ * Get (or lazily build) the token Set for one chunk. Cached per chunk object.
+ * @param {IndexChunk} c
+ * @returns {Set<string>}
+ */
+function tokenSet(c) {
+  let s = chunkTokens.get(c);
+  if (!s) {
+    const text = `${c.title} ${c.heading} ${c.text}`;
+    _stats.corpusTokenizedChars += text.length;
+    s = new Set(tokenize(text));
+    chunkTokens.set(c, s);
+  }
+  return s;
+}
+
 /**
  * Lexical scores by TOKEN OVERLAP (set intersection of query terms vs chunk
  * terms), not substring. "win" must NOT match "window", "token" must NOT match
  * "tokens" — only exact token overlap counts (issue #7). The haystack is
- * tokenized once per chunk with the same tokenize() as the query.
+ * tokenized once per chunk (issue #18 — cached per loaded index, not per
+ * query) with the same tokenize() as the query.
  * @returns {number[]} per-chunk count of overlapping unique terms
  */
 export function keywordScores(chunks, query) {
   const qTerms = new Set(tokenize(query));
   if (qTerms.size === 0) return chunks.map(() => 0);
-  const hayTokens = chunks.map(c => new Set(tokenize(`${c.title} ${c.heading} ${c.text}`)));
-  return chunks.map((c, i) => {
+  return chunks.map(c => {
+    const hay = tokenSet(c);
     let s = 0;
-    for (const t of qTerms) if (hayTokens[i].has(t)) s++;
+    for (const t of qTerms) if (hay.has(t)) s++;
     return s;
   });
 }
@@ -337,10 +371,12 @@ export async function searchIndex(opts) {
       .slice(0, k);
   }
 
+  // matches: reuse the SAME cached per-chunk token sets — the old code
+  // re-tokenized the top-k chunks again here (issue #18, second call site).
   const qTerms = new Set(tokenize(query));
   return ranked.map(r => {
     const c = chunks[r.idx];
-    const hay = new Set(tokenize(`${c.title} ${c.heading} ${c.text}`));
+    const hay = tokenSet(c);
     const matches = [...qTerms].filter(t => hay.has(t));
     return {
       file: c.file,
