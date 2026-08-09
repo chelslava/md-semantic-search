@@ -18,6 +18,7 @@ import { buildIndex } from '../src/indexer.mjs';
 import { search } from '../src/search.mjs';
 import { createServe, DEFAULT_PORT, DEFAULT_HOST } from '../src/serve.mjs';
 import { MODELS, DEFAULT_MODEL } from '../src/models.mjs';
+import { decodeVec, walkMarkdown, SCHEMA_VERSION } from '../src/core.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = path.resolve(HERE, '..');
@@ -110,6 +111,7 @@ const HELP = `md-semantic-search (mdss) — local, private semantic search over 
 Usage:
   mdss index  --db <dir> [options]            Build/refresh the index
   mdss stats  --db <dir> [--json]             Index stats without loading the model
+  mdss check  --db <dir> [--json]             Diagnose index/db/model cache (alias: doctor)
   mdss search --db <dir> [options] "query"    Search by meaning
   mdss serve  --db <dir> [--port <n>] [--host <ip>] [--watch]  Daemon: warm model + index
   mdss models                                  List available models
@@ -240,6 +242,223 @@ function cmdStats(opts) {
   );
 }
 
+/**
+ * Offline diagnostics for the index/db/model-cache trio (issue #43) — the
+ * `mdss check` / `mdss doctor` backend. Pure read-only: parses vectors.json +
+ * .hashes.json, validates every stored vector with decodeVec (the same
+ * validator the loader uses), walks the db for staleness, and checks the
+ * transformers.js cache layout for the index's model. NEVER loads the
+ * embedding model and NEVER touches the network.
+ * @param {{db:string, indexDir:string, cacheDir:string, requireOffline?:boolean}} paths
+ * @returns {{healthy:boolean, index:object, hashes:object, chunks:object, db:object, model:object}}
+ */
+export function checkHealth({ db, indexDir, cacheDir, requireOffline = false }) {
+  const report = {
+    healthy: true,
+    index: { exists: false, parses: false, schemaVersion: null, format: null, recognized: true, error: null },
+    hashes: { exists: false, parses: false, files: 0, error: null },
+    chunks: { total: 0, valid: 0, invalid: [] },
+    db: { exists: true, stale: false, error: null },
+    model: { id: null, cached: false, cachePath: null, error: null },
+  };
+  const vectorsPath = path.join(indexDir, 'vectors.json');
+  const hashesPath = path.join(indexDir, '.hashes.json');
+
+  // --- vectors.json: exists, parses, schema + format recognized (#39) ---
+  if (!fs.existsSync(vectorsPath)) {
+    report.index.error = `No index at ${vectorsPath}. Run \`mdss index\` first.`;
+    report.healthy = false;
+    return report; // nothing further is checkable without an index
+  }
+  report.index.exists = true;
+  let index;
+  try {
+    index = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
+    report.index.parses = true;
+  } catch (e) {
+    report.index.error = `${vectorsPath} is not valid JSON (${e.message}); run \`mdss index\` to rebuild`;
+    report.healthy = false;
+    return report;
+  }
+  const schemaVersion = index.schemaVersion ?? 0;
+  report.index.schemaVersion = schemaVersion;
+  report.index.format = index.format || 'legacy';
+  report.index.recognized = schemaVersion <= SCHEMA_VERSION;
+  if (!report.index.recognized) {
+    report.index.error =
+      `schema v${schemaVersion} is newer than this mdss supports (up to v${SCHEMA_VERSION}) — ` +
+      'upgrade md-semantic-search';
+    report.healthy = false;
+  }
+
+  // --- .hashes.json: parses; file count vs chunk count ---
+  if (fs.existsSync(hashesPath)) {
+    report.hashes.exists = true;
+    try {
+      const hashes = JSON.parse(fs.readFileSync(hashesPath, 'utf8'));
+      report.hashes.parses = true;
+      report.hashes.files = Object.keys(hashes).length;
+    } catch (e) {
+      report.hashes.error = `${hashesPath} is not valid JSON (${e.message})`;
+      report.healthy = false;
+    }
+  }
+
+  // --- every chunk's vector: length == dim, no NaN/Infinity, not truncated ---
+  // Reuses decodeVec — the exact validator the loader runs (issue #40) — so
+  // `mdss check` reports the same "corrupt vector" verdicts without loading
+  // the 280MB model.
+  const chunks = index.chunks || [];
+  const dim = index.dim ?? null;
+  report.chunks.total = chunks.length;
+  for (const c of chunks) {
+    const where = `${c.file}${c.heading ? ` › ${c.heading}` : ''}`;
+    let bad = null;
+    if (typeof c.vec === 'string') {
+      try { decodeVec(c.vec, dim ?? undefined); }
+      catch (e) { bad = e.message; }
+    } else if (Array.isArray(c.vec)) {
+      if (dim !== null && c.vec.length !== dim) bad = `vector has ${c.vec.length} dims, expected ${dim}`;
+      else if (c.vec.some(v => !Number.isFinite(v))) bad = 'non-finite value (NaN/Infinity)';
+    } else {
+      bad = 'missing vector (vec-less chunk)';
+    }
+    if (bad) {
+      report.healthy = false;
+      report.chunks.invalid.push({ where, error: bad });
+    } else {
+      report.chunks.valid++;
+    }
+  }
+
+  // --- db dir: exists; newest file mtime vs built (stale?) — same 5s grace ---
+  // as warnIfStale, so a same-second touch doesn't count as a problem.
+  if (!fs.existsSync(db) || !fs.statSync(db).isDirectory()) {
+    report.db.exists = false;
+    report.db.error = `db dir missing: ${db}`;
+    report.healthy = false;
+  } else {
+    let newest = 0;
+    try {
+      for (const f of walkMarkdown(db)) {
+        const st = fs.statSync(f);
+        if (st.mtimeMs > newest) newest = st.mtimeMs;
+      }
+    } catch { /* unreadable db → newest stays 0, staleness check is moot */ }
+    const builtMs = index.built ? Date.parse(index.built) : NaN;
+    if (Number.isFinite(builtMs) && newest > builtMs + 5000) {
+      report.db.stale = true;
+      report.healthy = false;
+    }
+  }
+
+  // --- model cache: transformers.js layout models--<org>--<name> ---
+  // Offline readiness — the model must be downloaded before search works in
+  // --offline mode. Missing cache is a warning unless the user explicitly
+  // demands offline readiness (then it's a failure, issue #43).
+  const modelId = index.model ?? null;
+  report.model.id = modelId;
+  if (modelId) {
+    const bare = modelId.split('@')[0]; // strip pinned revision (#27)
+    const [org, ...rest] = bare.split('/');
+    const cachePath = path.join(cacheDir, `models--${org}--${rest.join('--')}`);
+    report.model.cachePath = cachePath;
+    report.model.cached = fs.existsSync(cachePath);
+    if (!report.model.cached) {
+      report.model.error =
+        `model cache for ${modelId} not found at ${cachePath} — offline search will fail ` +
+        '(the first online run downloads it)';
+      if (requireOffline) report.healthy = false;
+    }
+  }
+  return report;
+}
+
+/**
+ * `mdss check` (alias: `mdss doctor`) — offline diagnostics (issue #43).
+ * Reports what is broken about the index/db/model-cache without loading the
+ * embedding model or touching the network. Exit code 0 when healthy, 1 with a
+ * summary when not; `--json` for scripting.
+ */
+function cmdCheck(opts) {
+  const db = resolveDb(opts);
+  const indexDir = resolveIndexDir(opts, db);
+  const cacheDir = resolveCache(opts);
+  const report = checkHealth({ db, indexDir, cacheDir, requireOffline: resolveOffline(opts) });
+
+  if (opts.json) {
+    process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+    process.exitCode = report.healthy ? 0 : 1;
+    return;
+  }
+
+  const ok = (s) => `  ok    ${s}\n`;
+  const warn = (s) => `  warn  ${s}\n`;
+  const fail = (s) => `  FAIL  ${s}\n`;
+  let out = `check: ${indexDir}\n`;
+
+  // If there is no index or it doesn't parse, the report contains only the
+  // index error — chunks/db/model are NOT checkable, show just that.
+  if (!report.index.exists || !report.index.parses) {
+    out += fail(report.index.error);
+    out += 'check: 1+ problem(s) found (exit 1)\n';
+    process.stdout.write(out);
+    process.exitCode = 1;
+    return;
+  }
+  out += ok(`vectors.json: parses (schema v${report.index.schemaVersion}, ` +
+    `${report.index.format})`);
+  if (!report.index.recognized) out += fail(report.index.error);
+
+  if (report.hashes.exists && report.hashes.parses) {
+    out += ok(`.hashes.json: parses (${report.hashes.files} file(s))`);
+  } else if (report.hashes.exists) {
+    out += fail(report.hashes.error);
+  } else {
+    out += warn('.hashes.json: missing (file count unknown)');
+  }
+
+  if (report.chunks.invalid.length === 0) {
+    out += ok(`chunks: ${report.chunks.valid}/${report.chunks.total} vectors valid (dim from index)`);
+  } else {
+    out += fail(`chunks: ${report.chunks.valid}/${report.chunks.total} vectors valid, ` +
+      `${report.chunks.invalid.length} invalid`);
+    for (const bad of report.chunks.invalid.slice(0, 5)) {
+      out += `       ${bad.where}: ${bad.error}\n`;
+    }
+    if (report.chunks.invalid.length > 5) {
+      out += `       …and ${report.chunks.invalid.length - 5} more\n`;
+    }
+  }
+
+  if (report.db.error) {
+    out += fail(report.db.error);
+  } else if (report.db.stale) {
+    out += fail(`db ${db}: STALE — files changed after the index was built; ` +
+      'run `mdss index` to refresh');
+  } else {
+    out += ok(`db ${db}: fresh`);
+  }
+
+  if (report.model.id) {
+    if (report.model.cached) {
+      out += ok(`model cache: ${report.model.id} present at ${report.model.cachePath}`);
+    } else if (resolveOffline(opts)) {
+      out += fail(report.model.error); // required offline → missing cache is a failure
+    } else {
+      out += warn(report.model.error);
+    }
+  } else {
+    out += warn('model: index has no model field (legacy index)');
+  }
+
+  out += report.healthy
+    ? 'check: healthy (exit 0)\n'
+    : 'check: 1+ problem(s) found (exit 1)\n';
+  process.stdout.write(out);
+  process.exitCode = report.healthy ? 0 : 1;
+}
+
 async function cmdSearch(opts) {
   const db = resolveDb(opts);
   const indexDir = resolveIndexDir(opts, db);
@@ -349,6 +568,8 @@ async function main() {
   switch (cmd) {
     case 'index': return cmdIndex(opts);
     case 'stats': return cmdStats(opts);
+    case 'check':
+    case 'doctor': return cmdCheck(opts);
     case 'search': return cmdSearch(opts);
     case 'serve': return cmdServe(opts);
     case 'models': return cmdModels();

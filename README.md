@@ -165,6 +165,37 @@ re-indexing over an index written by a **newer** mdss fails with a clear
 vectors (truncated base64, NaN/Infinity, wrong dimension) are rejected at load
 with the offending chunk named — no more silent NaN scores (issue #40).
 
+### Diagnose problems (`mdss check` / `mdss doctor`)
+
+`mdss check` (alias: `mdss doctor`) is an **offline, read-only** diagnostic for
+the index/db/model-cache trio — like `mdss stats`, it never loads the embedding
+model and never touches the network, but its job is answering *"why is search
+broken?"* rather than *"what's in the index?"*:
+
+```bash
+mdss check --db /path/to/your/markdown
+# check: /path/to/your/markdown/.mdss
+#   ok    vectors.json: parses (schema v1, binary-v1)
+#   ok    .hashes.json: parses (64 file(s))
+#   ok    chunks: 725/725 vectors valid (dim from index)
+#   ok    db /path/to/your/markdown: fresh
+#   ok    model cache: e5-base present at ~/.cache/mdss/models--...
+# check: healthy (exit 0)
+```
+
+It validates, in order: `vectors.json` exists / parses / `schemaVersion` +
+`format` recognized; `.hashes.json` parses; **every chunk's decoded vector**
+with the same validator the loader uses (dim mismatch, NaN/Infinity, truncated
+base64, vec-less legacy chunks — the first five offenders are named); db
+staleness (newest file mtime vs `built`, same 5s grace as the stale warning);
+and the transformers.js model cache layout (`models--<org>--<name>`, with the
+pinned `@revision` stripped). A missing model cache is a *warning* by default
+(the first online run downloads it) and a *failure* under `--offline`.
+
+Exit code is `0` when healthy and `1` with a problem summary otherwise;
+`--json` prints the full structured report (`healthy`, `index`, `hashes`,
+`chunks`, `db`, `model`) for scripting and CI gates.
+
 ### 2. Search
 
 ```bash

@@ -361,3 +361,192 @@ test('cli: index --json on an empty db → exit 0 with JSON build result (no mod
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- mdss check / doctor (issue #43) — offline diagnostics -----------------
+// Unit tests call checkHealth() directly (no model, no network); two CLI-level
+// tests assert exit codes and the human/JSON output contract.
+
+import { checkHealth } from '../bin/cli.mjs';
+
+/** Minimal synthetic index dir: 1 file, 1 chunk, dim=4 binary vecs. */
+function makeIndexDir(db, { schemaVersion = 1, vec = [0.1, 0.2, 0.3, 0.4], dim = 4,
+  model = 'Xenova/all-MiniLM-L6-v2', built, chunks } = {}) {
+  const indexDir = path.join(db, '.mdss');
+  fs.mkdirSync(indexDir, { recursive: true });
+  const b64 = vec ? Buffer.from(new Float32Array(vec).buffer).toString('base64') : undefined;
+  const index = {
+    schemaVersion, format: 'binary-v1', model, dim,
+    built: built || new Date().toISOString(),
+    chunks: chunks ?? [{ file: 'a.md', heading: 'A', vec: b64 }],
+  };
+  fs.writeFileSync(path.join(indexDir, 'vectors.json'), JSON.stringify(index));
+  fs.writeFileSync(path.join(indexDir, '.hashes.json'), JSON.stringify({ 'a.md': 'h' }));
+  return indexDir;
+}
+
+test('checkHealth: healthy index + db → healthy=true, all sections ok', () => {
+  const dir = tempDir('check-ok');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# A\n\ntext\n');
+    const indexDir = makeIndexDir(dir);
+    const r = checkHealth({ db: dir, indexDir, cacheDir: path.join(dir, 'cache') });
+    assert.equal(r.healthy, true);
+    assert.equal(r.index.parses, true);
+    assert.equal(r.index.recognized, true);
+    assert.equal(r.chunks.valid, 1);
+    assert.equal(r.chunks.invalid.length, 0);
+    assert.equal(r.db.stale, false);
+    assert.equal(r.model.id, 'Xenova/all-MiniLM-L6-v2');
+    assert.equal(r.model.cached, false); // cache dir is empty
+    assert.match(r.model.error, /models--Xenova--all-MiniLM-L6-v2/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('checkHealth: no index → healthy=false, actionable error', () => {
+  const dir = tempDir('check-noidx');
+  try {
+    const r = checkHealth({
+      db: dir, indexDir: path.join(dir, '.mdss'), cacheDir: path.join(dir, 'cache'),
+    });
+    assert.equal(r.healthy, false);
+    assert.equal(r.index.exists, false);
+    assert.match(r.index.error, /Run `mdss index` first/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('checkHealth: corrupt vector (dim mismatch) named, exit-worthy', () => {
+  const dir = tempDir('check-corrupt');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# A\n\ntext\n');
+    const indexDir = makeIndexDir(dir, { vec: [1, 2], dim: 4 }); // 2 dims ≠ 4
+    const r = checkHealth({ db: dir, indexDir, cacheDir: path.join(dir, 'cache') });
+    assert.equal(r.healthy, false);
+    assert.equal(r.chunks.valid, 0);
+    assert.equal(r.chunks.invalid.length, 1);
+    assert.equal(r.chunks.invalid[0].where, 'a.md › A');
+    assert.match(r.chunks.invalid[0].error, /2 dims, expected 4/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('checkHealth: vec-less legacy chunk is flagged, not skipped', () => {
+  const dir = tempDir('check-vecless');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# A\n\ntext\n');
+    const indexDir = makeIndexDir(dir, { chunks: [{ file: 'a.md', heading: 'A' }] });
+    const r = checkHealth({ db: dir, indexDir, cacheDir: path.join(dir, 'cache') });
+    assert.equal(r.healthy, false);
+    assert.match(r.chunks.invalid[0].error, /missing vector/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('checkHealth: stale db (newer mtime than built) → db.stale', () => {
+  const dir = tempDir('check-stale');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# A\n\ntext\n');
+    const indexDir = makeIndexDir(dir, { built: new Date(Date.now() - 3600e3).toISOString() });
+    const future = new Date(Date.now() + 60e3); // far beyond the 5s grace window
+    fs.utimesSync(path.join(dir, 'a.md'), future, future);
+    const r = checkHealth({ db: dir, indexDir, cacheDir: path.join(dir, 'cache') });
+    assert.equal(r.healthy, false);
+    assert.equal(r.db.stale, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('checkHealth: unknown newer schemaVersion → index.recognized=false', () => {
+  const dir = tempDir('check-schema');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# A\n\ntext\n');
+    const indexDir = makeIndexDir(dir, { schemaVersion: 99 });
+    const r = checkHealth({ db: dir, indexDir, cacheDir: path.join(dir, 'cache') });
+    assert.equal(r.healthy, false);
+    assert.equal(r.index.recognized, false);
+    assert.match(r.index.error, /v99.*newer/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('checkHealth: missing model cache fails only with requireOffline', () => {
+  const dir = tempDir('check-offline');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# A\n\ntext\n');
+    const indexDir = makeIndexDir(dir);
+    const cacheDir = path.join(dir, 'cache');
+    const soft = checkHealth({ db: dir, indexDir, cacheDir });
+    assert.equal(soft.healthy, true, 'warning by default');
+    assert.equal(soft.model.cached, false);
+    const hard = checkHealth({ db: dir, indexDir, cacheDir, requireOffline: true });
+    assert.equal(hard.healthy, false, 'failure under --offline');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('checkHealth: model cache detection follows models--<org>--<name> + @revision strip', () => {
+  const dir = tempDir('check-cache');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# A\n\ntext\n');
+    const indexDir = makeIndexDir(dir, { model: 'Xenova/all-MiniLM-L6-v2@abc123' });
+    const cacheDir = path.join(dir, 'cache');
+    fs.mkdirSync(path.join(cacheDir, 'models--Xenova--all-MiniLM-L6-v2'), { recursive: true });
+    const r = checkHealth({ db: dir, indexDir, cacheDir, requireOffline: true });
+    assert.equal(r.model.id, 'Xenova/all-MiniLM-L6-v2@abc123');
+    assert.equal(r.model.cached, true, 'revision stripped before cache lookup');
+    assert.equal(r.healthy, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('checkHealth: unparsable .hashes.json → healthy=false', () => {
+  const dir = tempDir('check-hashes');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# A\n\ntext\n');
+    const indexDir = makeIndexDir(dir);
+    fs.writeFileSync(path.join(indexDir, '.hashes.json'), '{oops');
+    const r = checkHealth({ db: dir, indexDir, cacheDir: path.join(dir, 'cache') });
+    assert.equal(r.healthy, false);
+    assert.equal(r.hashes.parses, false);
+    assert.match(r.hashes.error, /not valid JSON/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('cli: check on db without index → exit 1 with actionable message (issue #43)', () => {
+  const dir = tempDir('check-cli');
+  try {
+    const r = runCli(['check', '--db', dir]);
+    assert.equal(r.status, 1);
+    assert.match(r.stdout, /FAIL.*Run `mdss index` first/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('cli: doctor alias + --json → exit 0 with healthy report (issue #43)', () => {
+  const dir = tempDir('check-cli-json');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# A\n\ntext\n');
+    makeIndexDir(dir);
+    const r = runCli(['doctor', '--db', dir, '--json'],
+      { MDSS_CACHE_DIR: path.join(dir, 'cache') });
+    assert.equal(r.status, 0, r.stderr);
+    const j = JSON.parse(r.stdout);
+    assert.equal(j.healthy, true);
+    assert.equal(j.chunks.valid, 1);
+    assert.equal(j.model.cached, false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
