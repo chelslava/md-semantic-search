@@ -53,7 +53,8 @@ measurements that shaped its defaults.
   optional `--watch` flag that re-indexes incrementally when your notes change.
 - 🔏 **Crash-safe concurrent writes.** Every index build takes a
   `<index>/.mdss.lock` (self-healing by pid-liveness), so `mdss index` in one
-  terminal plus `mdss serve --watch` never interleave into a torn index.
+  terminal plus `mdss serve --watch` never interleave into a torn index. Long
+  builds also checkpoint embedding progress and resume after interruption.
 
 ## Requirements
 
@@ -136,6 +137,13 @@ just the new entry). The index output reports the split, e.g.:
 ```
 Indexed 64 file(s) → 725 chunks (725 reused [5 chunk-level, 720 file-level], 0 embedded), ... 0.6s
 ```
+
+During long builds, mdss atomically checkpoints progress every eight embedding
+batches (about 256 chunks) to `<index>/.checkpoint.json`. The canonical
+`vectors.json` and `.hashes.json` remain the last complete searchable generation;
+after an interruption, the next build resumes from the compatible checkpoint.
+The sidecar is removed after the completed generation is published. This is
+automatic and does not change the CLI or canonical index format.
 
 For scripts/CI, `mdss index --json` emits the build result as JSON (the exact
 `buildIndex` return value: `files`, `chunks`, `reused`, `embedded`, `dim`,

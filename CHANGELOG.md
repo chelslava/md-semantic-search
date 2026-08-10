@@ -54,6 +54,11 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
   dim) and names the offending chunk in the error. During a re-index a corrupt
   vector in the old index is dropped with a warning and re-embedded rather
   than aborting the build.
+- **Issue #38** — long index builds now atomically checkpoint embedding progress
+  every eight batches (about 256 chunks) to `.checkpoint.json`. An interrupted
+  build resumes from the compatible sidecar while `vectors.json` and
+  `.hashes.json` remain the last complete searchable generation; the sidecar is
+  removed after successful publication. No CLI or canonical format change.
 
 ### Changed
 - **Issue #35** — `buildIndex` no longer reads a changed file twice: `parseFile`
