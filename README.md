@@ -34,6 +34,9 @@ measurements that shaped its defaults.
 - 🔌 **Any folder, anywhere.** Point `--db` at any directory of `.md`/`.markdown`
   files. It does **not** have to live inside this project. Recursive by default.
 - 🌍 **Cross-lingual.** Multilingual embeddings (default `multilingual-e5-base`).
+- 🧭 **Markdown-aware context.** Each embedding includes the full active heading
+  path (`title > h1 > h2 > ...`), so a deeply nested passage remains searchable
+  by its parent topics without an LLM-generated context step.
 - 🧠 **Hybrid ranking.** Reciprocal Rank Fusion of vector similarity (meaning)
   and lexical overlap (exact names like `win32`, `TextIOWrapper`).
 - ⚡ **Two-level incremental.** Per-file md5 (unchanged files skip work) **plus**
@@ -137,6 +140,12 @@ just the new entry). The index output reports the split, e.g.:
 ```
 Indexed 64 file(s) → 725 chunks (725 reused [5 chunk-level, 720 file-level], 0 embedded), ... 0.6s
 ```
+
+Schema-v2 indexes persist each chunk's full Markdown heading path and use the
+same canonical contextual passage for embedding and `chunkHash`. Indexes from
+schema v0/v1 remain searchable, but the first `index` run after upgrading
+re-embeds them once so vectors generated without parent-heading context are not
+silently reused. Later runs retain normal file- and chunk-level reuse.
 
 During long builds, mdss atomically checkpoints progress every eight embedding
 batches (about 256 chunks) to `<index>/.checkpoint.json`. The canonical
@@ -383,13 +392,14 @@ weights (a `model_quantized.onnx` file) in the repo.
 
 1. **Walk** `--db` recursively for `.md`/`.markdown` (dotfiles & `--ignore`
    globs skipped).
-2. **Chunk** each file by Markdown headings; oversized sections split on blank
-   lines (~1400 chars/chunk).
-3. **Embed** each chunk (`passage:` prefix for E5) → store `{file, heading,
-   text, vec}` in `vectors.json`, plus per-file md5 in `.hashes.json`. Each chunk
-   also stores `chunkHash` (SHA-256 of the exact passage input + model identity),
-   so on re-index an unchanged section inside a modified file reuses its vector
-   instead of being embedded again.
+2. **Chunk** each file by Markdown headings while retaining the active heading
+   stack; oversized sections split on blank lines (~1400 body chars/chunk).
+3. **Embed** the document title, full heading path, and chunk body (`passage:`
+   prefix for E5) → store `{file, title, heading, headingPath, text, vec}` in
+   `vectors.json`, plus per-file md5 in `.hashes.json`. Each chunk also stores
+   `chunkHash` (SHA-256 of that exact contextual passage + model identity), so a
+   parent rename invalidates its subtree while unchanged sibling branches reuse
+   their vectors.
 4. **Search**: embed the query (`query:` prefix), score every chunk by cosine,
    score by lexical term-overlap, then **fuse with RRF**. Return top-k chunks.
 
