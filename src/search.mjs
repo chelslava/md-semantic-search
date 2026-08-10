@@ -128,6 +128,7 @@ export function rrf(rankings, k = 60) {
  * @property {string} file
  * @property {string} title
  * @property {string} heading
+ * @property {string[]} [headingPath] - absent only on readable schema-v0/v1 indexes
  * @property {string} text
  * @property {number[]|Float32Array} vec
  * @property {string} [chunkHash]

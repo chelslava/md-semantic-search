@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { SCHEMA_VERSION } from '../src/core.mjs';
 import {
   parseArgs, nextInt, nextValue,
   resolveDb, resolveIndexDir, resolveCache, resolveOffline,
@@ -389,7 +390,7 @@ test('cli: index --json on an empty db → exit 0 with JSON build result (no mod
 import { checkHealth } from '../bin/cli.mjs';
 
 /** Minimal synthetic index dir: 1 file, 1 chunk, dim=4 binary vecs. */
-function makeIndexDir(db, { schemaVersion = 1, vec = [0.1, 0.2, 0.3, 0.4], dim = 4,
+function makeIndexDir(db, { schemaVersion = SCHEMA_VERSION, vec = [0.1, 0.2, 0.3, 0.4], dim = 4,
   model = 'Xenova/all-MiniLM-L6-v2', built, chunks } = {}) {
   const indexDir = path.join(db, '.mdss');
   fs.mkdirSync(indexDir, { recursive: true });
@@ -397,7 +398,7 @@ function makeIndexDir(db, { schemaVersion = 1, vec = [0.1, 0.2, 0.3, 0.4], dim =
   const index = {
     schemaVersion, format: 'binary-v1', model, dim,
     built: built || new Date().toISOString(),
-    chunks: chunks ?? [{ file: 'a.md', heading: 'A', vec: b64 }],
+    chunks: chunks ?? [{ file: 'a.md', title: 'A', heading: 'A', headingPath: ['A'], text: 'text', vec: b64 }],
   };
   fs.writeFileSync(path.join(indexDir, 'vectors.json'), JSON.stringify(index));
   fs.writeFileSync(path.join(indexDir, '.hashes.json'), JSON.stringify({ 'a.md': 'h' }));

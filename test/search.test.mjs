@@ -242,6 +242,26 @@ test('search: legacy index without model fields still works (validation fallback
   }
 });
 
+test('search: schema-v1 index without headingPath remains searchable with unchanged hit shape', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const index = JSON.parse(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'));
+    index.schemaVersion = 1;
+    for (const chunk of index.chunks) delete chunk.headingPath;
+    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
+
+    const results = await search({ indexDir: idx, cacheDir: dir, query: 'coffee', k: 1, embedFn: fakeEmbed });
+
+    assert.equal(results.length, 1);
+    assert.deepEqual(Object.keys(results[0]).sort(), [
+      'cosine', 'file', 'heading', 'matches', 'score', 'snippet', 'title',
+    ]);
+    assert.equal('headingPath' in results[0], false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('search: legacy decimal vectors.json loads and ranks identically (issue #4)', async () => {
   const { dir, idx } = await makeIndex();
   try {
