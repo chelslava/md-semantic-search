@@ -255,7 +255,21 @@ function cmdStats(opts) {
  * transformers.js cache layout for the index's model. NEVER loads the
  * embedding model and NEVER touches the network.
  * @param {{db:string, indexDir:string, cacheDir:string, requireOffline?:boolean}} paths
- * @returns {{healthy:boolean, index:object, hashes:object, chunks:object, db:object, model:object}}
+ * @returns {CheckReport}
+ */
+
+/**
+ * Structured result of checkHealth. Every sub-check is a small object with an
+ * `error` (string|null) plus check-specific fields; `healthy` is the AND of
+ * all checks (a warning — e.g. missing model cache when NOT offline — does not
+ * flip it).
+ * @typedef {object} CheckReport
+ * @property {boolean} healthy
+ * @property {{exists:boolean, parses:boolean, schemaVersion:(number|null), format:(string|null), recognized:boolean, error:(string|null)}} index
+ * @property {{exists:boolean, parses:boolean, files:number, error:(string|null)}} hashes
+ * @property {{total:number, valid:number, invalid:Array<{where:string, error:string}>}} chunks
+ * @property {{exists:boolean, stale:boolean, error:(string|null)}} db
+ * @property {{id:(string|null), cached:boolean, cachePath:(string|null), error:(string|null)}} model
  */
 export function checkHealth({ db, indexDir, cacheDir, requireOffline = false }) {
   const report = {
