@@ -7,6 +7,11 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Issue #44** — a scheduled/manual nightly CI smoke suite now downloads and
+  exercises the real Transformers.js models end to end: e5-small index/search/
+  serve with binary-vector integrity checks, real BGE reranking, and a bounded
+  uncached `--offline` CLI failure. The fast push/PR `npm test` suite remains
+  network-free through an explicit nightly-only opt-in guard.
 - **Issue #17 (partial; upstream blocked)** — CI now reports production
   dependency advisories through a non-blocking `npm audit --omit=dev` job, and
   `SECURITY.md` documents reachability, mitigations, and the Node 18 constraint.
