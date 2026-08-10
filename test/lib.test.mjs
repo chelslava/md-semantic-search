@@ -12,7 +12,7 @@ import path from 'node:path';
 import {
   buildIndex, search, loadIndex, searchIndex,
   resolveModel, MODELS, DEFAULT_MODEL,
-  tokenize, encodeVec, decodeVec, cosine,
+  tokenize, encodeVec, decodeVec, cosine, chunkHash,
 } from 'md-semantic-search';
 
 function fakeEmbed(texts) {
@@ -35,6 +35,24 @@ test('exports map: package root exposes the library API (issue #14)', () => {
   // missing (issue #29).
   assert.ok(MODELS['e5-base'], 'MODELS registry exposed');
   assert.equal(DEFAULT_MODEL, 'e5-base');
+});
+
+test('chunkHash: package facade preserves the legacy chunk input shape', () => {
+  const model = resolveModel('e5-base');
+  const legacyChunk = { title: 'Document', heading: 'Leaf', text: 'body' };
+
+  const first = chunkHash(model, legacyChunk);
+  const second = chunkHash(model, legacyChunk);
+  const explicit = chunkHash(model, { ...legacyChunk, headingPath: ['Leaf'] });
+  const blankHeading = { title: 'Document', heading: '  ', text: 'body' };
+
+  assert.equal(first, second, 'legacy input hashes deterministically');
+  assert.equal(first, explicit, 'legacy heading derives the equivalent one-segment path');
+  assert.equal(
+    chunkHash(model, blankHeading),
+    chunkHash(model, { ...blankHeading, headingPath: [] }),
+    'blank legacy heading derives an empty path',
+  );
 });
 
 test('library: end-to-end index → search via the public API (issues #14+#2)', async () => {
