@@ -1,0 +1,35 @@
+name: nightly-real-model
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-transformers-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MDSS_NIGHTLY_CACHE_DIR: ${{ runner.temp }}/mdss-nightly-cache
+      MDSS_RUN_NIGHTLY_REAL_MODEL: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Restore Transformers.js model cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/mdss-nightly-cache
+          key: mdss-real-model-${{ runner.os }}-node20-${{ hashFiles('package-lock.json', 'src/models.mjs', 'src/rerank.mjs', 'test/nightly-real-model.mjs') }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run real Transformers.js smoke suite
+        run: node --test test/nightly-real-model.mjs
