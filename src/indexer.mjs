@@ -18,6 +18,7 @@ import { walkMarkdown, parseFile, embed, resolveModel, decodeVec, encodeVec, SCH
  * @property {string} file
  * @property {string} title
  * @property {string} heading
+ * @property {string[]} headingPath
  * @property {string} text
  * @property {number[]|Float32Array} [vec]
  * @property {string} [chunkHash]
@@ -54,10 +55,16 @@ function isStringRecord(value) {
 
 /** @param {unknown} value */
 function isCheckpointChunk(value) {
-  if (!isStringRecord(value)) return false;
-  return ['file', 'title', 'heading', 'text', 'chunkHash'].every(field => field in value) &&
-    (value.vec === undefined || (value.vec.length > 0 &&
-      /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value.vec)));
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const chunk = /** @type {Record<string,unknown>} */ (value);
+  if (!['file', 'title', 'heading', 'text', 'chunkHash']
+    .every(field => typeof chunk[field] === 'string')) return false;
+  if (!Array.isArray(chunk.headingPath) ||
+      !chunk.headingPath.every(segment => typeof segment === 'string' && segment.trim().length > 0)) return false;
+  const leaf = chunk.headingPath.at(-1) ?? '';
+  if (leaf !== chunk.heading) return false;
+  return chunk.vec === undefined || (typeof chunk.vec === 'string' && chunk.vec.length > 0 &&
+    /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(chunk.vec));
 }
 
 /**
@@ -98,8 +105,21 @@ function normalize(s) {
 }
 
 /**
+ * Serialize the one canonical full-context passage used for embedding and
+ * chunk identity. The title-derived H1 is omitted from the path only when it
+ * duplicates the normalized title.
+ * @param {{title:string, heading:string, headingPath?:string[], text:string}} chunk
+ */
+export function canonicalPassage(chunk) {
+  const title = normalize(chunk.title);
+  const headingPath = (chunk.headingPath ?? (normalize(chunk.heading) ? [chunk.heading] : [])).map(normalize);
+  const serializedPath = (headingPath[0] === title ? headingPath.slice(1) : headingPath).join(' > ');
+  return [title, serializedPath, normalize(chunk.text)].join('\n');
+}
+
+/**
  * Stable per-chunk hash: SHA-256 over the exact passage input that is passed
- * to embed() (`title\nheading\ntext`) plus the model identity and its passage
+ * to embed() plus the model identity and its passage
  * prefix. Because the model participates in the key, switching models
  * invalidates every chunk (full rebuild) - by design. CRLF/whitespace-only
  * edits of a section do NOT change its hash, so its vector is reused.
@@ -114,16 +134,15 @@ function normalize(s) {
  * Adding `revision` to the key (0.5.0) changes stored hash values vs ≤0.4.x →
  * a one-time re-index of changed sections on upgrade.
  * @param {{id:string, revision?:string, passagePrefix?:string}} model - resolved model descriptor
- * @param {{title:string, heading:string, text:string}} chunk
+ * @param {{title:string, heading:string, headingPath?:string[], text:string}} chunk
  */
 export function chunkHash(model, chunk) {
   const input = [
+    'heading-path-v1',
     model.id,
     model.revision || 'main',
     model.passagePrefix || '',
-    normalize(chunk.title),
-    normalize(chunk.heading),
-    normalize(chunk.text),
+    canonicalPassage(chunk),
   ].join('\u0000');
   return sha256(input);
 }
@@ -223,8 +242,8 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
 
   // Older schemas are migrated via the table (v0 → v1 is a no-op: the legacy
   // shapes are normalized by the heuristics right below).
-  const oldSchema = oldIndex.schemaVersion ?? 0;
-  for (let v = oldSchema + 1; v <= SCHEMA_VERSION; v++) {
+  const sourceSchema = oldIndex.schemaVersion ?? 0;
+  for (let v = sourceSchema + 1; v <= SCHEMA_VERSION; v++) {
     const step = SCHEMA_MIGRATIONS[v];
     if (step) step(oldIndex);
   }
@@ -251,14 +270,15 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
   // If the model (id OR pinned revision) changed, all stored vectors are
   // incompatible → full rebuild (issue #27: a @revision bump must invalidate).
   const modelChanged = oldIndex.model && oldIndex.model !== modelIdentity;
+  const contextVectorsReusable = sourceSchema >= 2 && !modelChanged;
 
   const oldByFile = new Map();
   // chunk-level cache: hash of the passage input -> stored vector. Built from
   // the OLD index so changed files can reuse vectors of unchanged sections.
-  // Old chunks (from a pre-chunkHash index) get their hash computed the same
-  // way, so reuse works even on the first run after an upgrade.
+  // Missing hashes are recomputed only for schema-v2 chunks. Earlier schemas
+  // predate contextual passages and must never seed either reuse path.
   const vecByChunkHash = new Map();
-  if (!modelChanged) {
+  if (contextVectorsReusable) {
     for (const c of oldIndex.chunks) {
       if (!oldByFile.has(c.file)) oldByFile.set(c.file, []);
       oldByFile.get(c.file).push(c);
@@ -300,7 +320,7 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
       const h = md5(raw);
       newHashes[rel] = h;
 
-      if (!modelChanged && oldHashes[rel] === h && oldByFile.has(rel)) {
+      if (contextVectorsReusable && oldHashes[rel] === h && oldByFile.has(rel)) {
         const old = oldByFile.get(rel);
         // Backfill chunkHash for chunks that predate the chunk-level cache, so
         // the persisted index is self-contained and no recompute is needed later.
@@ -360,7 +380,7 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
     for (let i = 0; i < toEmbed.length; i += BATCH) {
       const slice = toEmbed.slice(i, i + BATCH);
       const vecs = await embedFn(
-        slice.map(c => `${c.title}\n${c.heading}\n${c.text}`),
+        slice.map(canonicalPassage),
         'passage', model, cacheDir, offline,
       );
       slice.forEach((c, j) => { c.vec = vecs[j]; });

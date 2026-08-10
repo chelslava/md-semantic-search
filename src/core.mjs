@@ -249,8 +249,19 @@ export function isBinaryIndex(index) {
  *     loader's format heuristics (decimal vs binary-v1 vecs, missing model
  *     field, missing chunkHash, vec-less chunks) already handle all v0 shapes.
  *   v1: first explicit version; written by all builds since 0.6.0.
+ *   v2: chunks persist leaf-inclusive headingPath for contextual embeddings.
  */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
+
+/**
+ * Mark a legacy index as schema v2 without inventing heading paths it never
+ * stored. Legacy readers remain usable; the indexer performs the honest
+ * contextual rebuild before it persists schema-v2 chunks.
+ * @param {{schemaVersion?:number}} index
+ */
+export function migrateToSchemaV2(index) {
+  index.schemaVersion = 2;
+}
 
 /**
  * Migration table: `SCHEMA_MIGRATIONS[n]` upgrades an index at schema n-1 → n.
@@ -264,6 +275,7 @@ export const SCHEMA_MIGRATIONS = {
   // format heuristics, not by a data rewrite. This entry exists so the table
   // is explicit: every future format change adds a real step here + a test.
   1: () => {},
+  2: migrateToSchemaV2,
 };
 
 /** Recursively collect .md/.markdown files under dir, honoring ignore globs. */
@@ -323,21 +335,32 @@ const DEFAULT_MAX_CHUNK = 1400; // chars; ~350-450 tokens, fits e5/bge context
 
 /**
  * Chunk markdown by headings; oversized sections split further on blank lines.
- * @returns {{heading:string, text:string}[]}
+ * @returns {{heading:string, headingPath:string[], text:string}[]}
  */
 export function chunkMarkdown(body, maxChunk = DEFAULT_MAX_CHUNK) {
   const lines = body.split('\n');
   const sections = [];
-  let curHeading = '';
+  /** @type {{level:number, heading:string}[]} */
+  const headingStack = [];
   let buf = [];
   const flush = () => {
     const text = buf.join('\n').trim();
-    if (text) sections.push({ heading: curHeading, text });
+    if (text) {
+      const headingPath = headingStack.map(entry => entry.heading);
+      sections.push({ heading: headingPath.at(-1) ?? '', headingPath, text });
+    }
     buf = [];
   };
   for (const line of lines) {
     const h = line.match(/^(#{1,6})\s+(.+)$/);
-    if (h) { flush(); curHeading = h[2].trim(); }
+    if (h) {
+      flush();
+      const level = h[1].length;
+      while (headingStack.length > 0 && headingStack[headingStack.length - 1].level >= level) {
+        headingStack.pop();
+      }
+      headingStack.push({ level, heading: h[2].trim() });
+    }
     else buf.push(line);
   }
   flush();
@@ -347,7 +370,9 @@ export function chunkMarkdown(body, maxChunk = DEFAULT_MAX_CHUNK) {
     if (sec.text.length <= maxChunk) { chunks.push(sec); continue; }
     const paras = sec.text.split(/\n\s*\n/);
     let acc = '';
-    const emit = () => { if (acc.trim()) chunks.push({ heading: sec.heading, text: acc.trim() }); };
+    const emit = () => {
+      if (acc.trim()) chunks.push({ ...sec, headingPath: [...sec.headingPath], text: acc.trim() });
+    };
     for (const p of paras) {
       if (p.length > maxChunk) {
         // A single unbroken paragraph exceeds the cap (tables, logs, code):
@@ -355,7 +380,7 @@ export function chunkMarkdown(body, maxChunk = DEFAULT_MAX_CHUNK) {
         // so every emitted chunk is within maxChunk (issue #24).
         emit();
         for (const piece of hardWrap(p, maxChunk)) {
-          chunks.push({ heading: sec.heading, text: piece });
+          chunks.push({ ...sec, headingPath: [...sec.headingPath], text: piece });
         }
         acc = '';
         continue;
@@ -400,7 +425,7 @@ function hardWrap(text, maxChunk) {
  * @param {string} [raw] - already-read file content. When given, the file is
  *   NOT read from disk again (issue #35: buildIndex already read it for the
  *   md5 fast-path check, so a changed file was being read twice).
- * @returns {{file:string, title:string, heading:string, text:string}[]}
+ * @returns {{file:string, title:string, heading:string, headingPath:string[], text:string}[]}
  */
 export function parseFile(absPath, dbDir, maxChunk, raw) {
   const content = raw ?? fs.readFileSync(absPath, 'utf8');
@@ -411,6 +436,7 @@ export function parseFile(absPath, dbDir, maxChunk, raw) {
     file: rel,
     title,
     heading: c.heading,
+    headingPath: c.headingPath,
     text: c.text,
   }));
 }

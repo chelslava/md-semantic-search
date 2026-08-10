@@ -59,6 +59,42 @@ test('chunkMarkdown: splits by headings with section headings attached', () => {
   assert.equal(chunks[2].text, 'bbb'.repeat(10));
 });
 
+test('chunkMarkdown: tracks nested, sibling, shallower, and skipped heading paths', () => {
+  const body = [
+    '# Root',
+    '## Parent',
+    '### Child',
+    'child body has enough content to survive filtering',
+    '### Sibling',
+    'sibling body has enough content to survive filtering',
+    '## Other',
+    'other body has enough content to survive filtering',
+    '#### Skipped',
+    'skipped body has enough content to survive filtering',
+  ].join('\n\n');
+
+  const chunks = chunkMarkdown(body);
+
+  assert.deepEqual(chunks.map(({ heading, headingPath }) => ({ heading, headingPath })), [
+    { heading: 'Child', headingPath: ['Root', 'Parent', 'Child'] },
+    { heading: 'Sibling', headingPath: ['Root', 'Parent', 'Sibling'] },
+    { heading: 'Other', headingPath: ['Root', 'Other'] },
+    { heading: 'Skipped', headingPath: ['Root', 'Other', 'Skipped'] },
+  ]);
+});
+
+test('chunkMarkdown: heading without body contextualizes descendant chunks', () => {
+  const chunks = chunkMarkdown([
+    '# Root',
+    '## Empty parent',
+    '### Leaf',
+    'leaf body has enough content to survive filtering',
+  ].join('\n\n'));
+
+  assert.equal(chunks.length, 1);
+  assert.deepEqual(chunks[0].headingPath, ['Root', 'Empty parent', 'Leaf']);
+});
+
 test('chunkMarkdown: oversized section splits on blank lines', () => {
   const para = 'x'.repeat(500);
   const body = `# Big\n\n${para}\n\n${para}\n\n${para}`;
@@ -66,6 +102,8 @@ test('chunkMarkdown: oversized section splits on blank lines', () => {
   assert.equal(chunks.length, 2, '3×500 chars should split into 2 chunks');
   assert.ok(chunks.every(c => c.text.length <= 1400), 'each chunk within max');
   assert.ok(chunks.every(c => c.heading === 'Big'), 'heading preserved after split');
+  assert.ok(chunks.every(c => JSON.stringify(c.headingPath) === JSON.stringify(['Big'])),
+    'heading path snapshot preserved after split');
 });
 
 test('chunkMarkdown: drops chunks with <24 non-whitespace chars', () => {
@@ -225,11 +263,13 @@ test('decodeVec: dim mismatch is rejected when a dim is given (issue #40)', () =
   assert.equal(decodeVec(b64).length, 3);
 });
 
-test('SCHEMA_VERSION/SCHEMA_MIGRATIONS: v1 is current and has a migration step (issue #39)', () => {
-  assert.equal(SCHEMA_VERSION, 1);
+test('SCHEMA_VERSION/SCHEMA_MIGRATIONS: v2 is current with explicit sequential migrations', () => {
+  assert.equal(SCHEMA_VERSION, 2);
   assert.equal(typeof SCHEMA_MIGRATIONS[1], 'function', 'v0→v1 migration step exists');
+  assert.equal(typeof SCHEMA_MIGRATIONS[2], 'function', 'v1→v2 migration step exists');
   // the step runs without throwing on a legacy-shape index
   SCHEMA_MIGRATIONS[1]({ format: undefined, chunks: [{ vec: [1, 2, 3] }] });
+  SCHEMA_MIGRATIONS[2]({ format: 'binary-v1', chunks: [] });
 });
 
 test('encodeVec: binary is ~4x smaller than decimal JSON (issue #4)', () => {
@@ -281,6 +321,7 @@ test('parseFile: title from frontmatter, rel path, sections', () => {
     assert.equal(parsed[0].file, 'docs/guide.md');
     assert.equal(parsed[0].title, 'Setup Guide');
     assert.equal(parsed[0].heading, 'Step 1');
+    assert.deepEqual(parsed[0].headingPath, ['Step 1']);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -8,7 +8,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { cosine, decodeVec, embed, resolveModel } from '../src/core.mjs';
-import { buildIndex } from '../src/indexer.mjs';
+import { buildIndex, canonicalPassage } from '../src/indexer.mjs';
 import { getReranker, rerankScores } from '../src/rerank.mjs';
 import { search } from '../src/search.mjs';
 import { createServe } from '../src/serve.mjs';
@@ -74,9 +74,7 @@ test('nightly: real transformers index, search, serve, rerank, and offline failu
     assert.notEqual(storedChunkIndex, -1);
     const storedChunk = storedIndex.chunks[storedChunkIndex];
     assert.ok(storedChunk);
-    const exactPassages = storedIndex.chunks.map(
-      (chunk) => `${chunk.title}\n${chunk.heading}\n${chunk.text}`,
-    );
+    const exactPassages = storedIndex.chunks.map(canonicalPassage);
     const freshVectors = await embed(
       exactPassages, 'passage', resolveModel(MODEL_NAME), cacheDir,
     );
