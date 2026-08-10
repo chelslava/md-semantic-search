@@ -48,3 +48,22 @@ jobs:
 
       - name: Type-check source modules (tsc --noEmit)
         run: npm run lint
+
+  audit:
+    # The current Transformers.js tree has upstream advisories with no
+    # compatible fix. Report them on every run without masking test/lint status.
+    # Remove continue-on-error once the production tree is clean (issue #17).
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Report production dependency vulnerabilities
+        run: npm audit --omit=dev --audit-level=high
