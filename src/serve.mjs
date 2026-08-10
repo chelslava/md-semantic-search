@@ -92,10 +92,23 @@ export async function createServe(opts) {
   const reload = async () => {
     if (!db) return;
     log('Change detected — re-indexing…');
-    await buildIndex({ db, indexDir, cacheDir, modelName, ignore, offline, log, embedFn });
+    // buildIndex acquires the index lock itself (issue #37). When a manual
+    // `mdss index` (or another mdss process) holds it, we get a "locked by PID…"
+    // error — that's NOT a failure: we just yield this cycle and let the next
+    // watch poll pick the change up once the other writer is done.
+    try {
+      await buildIndex({ db, indexDir, cacheDir, modelName, ignore, offline, log, embedFn });
+    } catch (e) {
+      if (/(being written by pid|being written|lock)/i.test(String(e?.message || ''))) {
+        log(`re-index deferred: ${e.message}`);
+        return false;                       // politely yield — next poll retries
+      }
+      throw e;                              // real error → caller's .catch logs it
+    }
     state.loaded = loadIndex(indexDir);
     state.reindexCount = (state.reindexCount ?? 0) + 1;
     log(`Re-indexed; ${state.loaded.index.chunks.length} chunks in memory.`);
+    return true;
   };
 
   // --- watch scanning (issue #42) ---
@@ -194,13 +207,12 @@ export async function createServe(opts) {
   const watchLoop = async () => {
     // The baseline is what the INDEX contains, not what the last poll saw.
     let indexedHashes = readIndexedHashes();
-    // Pre-seed the md5 cache from the indexed baseline so steady-state polls
-    // hash nothing: a file whose mtime is unchanged since the index was built
-    // is by definition still at its indexed content (buildIndex read exactly
-    // that). Only used as a memo; any mtime move re-hashes for real.
-    for (const [f, { m, rel }] of scanTree()) {
-      if (rel in indexedHashes) md5Cache.set(f, { mtime: m, md5: indexedHashes[rel] });
-    }
+    // NOTE: NO cache pre-seeding. The md5 cache is a memo of «content at this
+    // (path, mtime)», and seeding it from the INDEXED hashes would stamp a file
+    // we never read with the indexed value under a CURRENT mtime — the same
+    // false-clean that masks a deferred edit (the source of the watch-loop bug
+    // this fixed, issue #37). Unseeded first polls hash everything ONCE, then
+    // steady-state polls hit the cache on unchanged (path, mtime).
 
     let lastFingerprint = treeContentFingerprint(scanTree()); // content baseline
     let lastChangeAt = 0;   // timestamp of the most recent content movement
@@ -225,12 +237,30 @@ export async function createServe(opts) {
         // the index → the burst settled on real new content. Re-index ONCE.
         pending = false;
         await reload().catch(e => log(`re-index failed: ${e.message}`));
+        // Whether or not the build ran (it may have been DEFERRED on another
+        // writer's lock, issue #37): re-read the baseline. When deferred the
+        // baseline is unchanged, so the tree STILL differs from it — and the
+        // no-motion re-check below re-opens the window next poll.
         indexedHashes = readIndexedHashes();
+        // Re-seed ONLY files we have never hashed — never overwrite a fresh
+        // hash under an unchanged mtime with the STALE indexed value (it would
+        // mask the deferred edit, and the very defer we just made needs that
+        // fresh hash to survive into the next poll).
         for (const [f, { m, rel }] of scanTree()) {
-          if (rel in indexedHashes) md5Cache.set(f, { mtime: m, md5: indexedHashes[rel] });
+          if (!md5Cache.has(f) && rel in indexedHashes) {
+            md5Cache.set(f, { mtime: m, md5: indexedHashes[rel] });
+          }
         }
         lastFingerprint = treeContentFingerprint(scanTree());
-      } else if (pending && changed.length === 0) {
+      } else if (!pending && changed.length > 0 && fingerprint === lastFingerprint) {
+        // No motion this poll, yet the tree still differs from the index —
+        // the fingerprint/advanced-lock cycle closed (release after a defer,
+        // issue #37) or a coarse-mtime edit landed without moving the hash
+        // baseline. Open the quiet window so the deferred edit lands.
+        pending = true;
+        lastChangeAt = Date.now();
+        log(`watch: tree differs from index (no motion) — settling then re-index…`);
+      } else if (pending && changed.length === 0 && Date.now() - lastChangeAt < watchDelay) {
         // Fingerprint stable AND content already equals the index — happens when
         // a no-op write raced us into pending. Nothing to do; drop the pend.
         pending = false;

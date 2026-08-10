@@ -156,13 +156,25 @@ async function cmdIndex(opts) {
   const indexDir = resolveIndexDir(opts, db);
   const cacheDir = resolveCache(opts);
   const t0 = Date.now();
-  const r = await buildIndex({
-    db, indexDir, cacheDir,
-    modelName: opts.model || DEFAULT_MODEL,
-    ignore: opts.ignore,
-    offline: resolveOffline(opts),
-    log: s => process.stderr.write(s + '\n'),
-  });
+  let r;
+  try {
+    r = await buildIndex({
+      db, indexDir, cacheDir,
+      modelName: opts.model || DEFAULT_MODEL,
+      ignore: opts.ignore,
+      offline: resolveOffline(opts),
+      log: s => process.stderr.write(s + '\n'),
+    });
+  } catch (e) {
+    // A held index lock (issue #37) is an EXPECTED operational state (a second
+    // terminal also indexing, or a `serve --watch` daemon mid-cycle) — surface
+    // it as a clean one-line error + hint, not a stack of "locked by pid".
+    if (/(being written by pid|index is being written)/i.test(String(e?.message || ''))) {
+      die(`${e.message}\nAnother mdss process is writing to this index. ` +
+        'Retry once it finishes, or remove a stale .mdss.lock if the holder crashed.');
+    }
+    throw e;
+  }
   // Machine-readable build result for scripts/CI (issue #21): the exact
   // buildIndex return value — lets automation assert "0 embedded" (fully
   // incremental) or "N skipped" without parsing prose.

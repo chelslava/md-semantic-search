@@ -10,6 +10,125 @@ import { resolveModel } from './models.mjs';
 
 const _extractors = new Map();
 
+// --- index write lock (issue #37) -------------------------------------------
+// vectors.json and .hashes.json are written by two separate atomic renames
+// (buildIndex's atomicWrite); between them a second `mdss index`/`serve
+// --watch` run can interleave and leave the pair from DIFFERENT runs — a torn
+// logical state. A lockfile in the index dir serializes writers: the holder
+// takes it before any read-compute-write and releases it in a finally. There
+// is intentionally no flock/LOCK_EX — advisory cooperation is enough (all
+// writers are ours), and O_EXCL file creation is the portable atomic primitive.
+
+/** Name of the lock file inside the index dir. */
+export const LOCK_FILENAME = '.mdss.lock';
+
+/** Locks older than this are presumed abandoned and reclaimed (ms). */
+const LOCK_STALE_MS = 10 * 60 * 1000;
+
+/**
+ * True when `pid` refers to a live process we can signal. `process.kill(pid, 0)`
+ * performs no signal — it just probes; it throws ESRCH when the pid is gone,
+ * EPERM when it exists but is owned by another user (counted as alive here —
+ * we must NOT steal a live owner's lock).
+ */
+export function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (e) { return e.code === 'EPERM'; }
+}
+
+/** Parse + validate a .mdss.lock body; returns null when unreadable/garbage. */
+function readLock(lockPath) {
+  let raw;
+  try { raw = fs.readFileSync(lockPath, 'utf8'); }
+  catch { return null; }
+  try {
+    const j = JSON.parse(raw);
+    if (!Number.isInteger(j.pid) || typeof j.since !== 'string') return null;
+    return j;
+  } catch { return null; }
+}
+
+/**
+ * Try to take the index lock; never throws for a held lock.
+ * @param {string} indexDir
+ * @returns {{ acquired: true, lockPath: string } | { acquired: false, reason: string, pid: (number|null), heldSince: (string|null) }}
+ *   `acquired:false` carries enough context for an actionable error/log line.
+ */
+export function acquireIndexLock(indexDir) {
+  const lockPath = path.join(indexDir, LOCK_FILENAME);
+  const payload = JSON.stringify({ pid: process.pid, since: new Date().toISOString() }) + '\n';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let fd;
+    try {
+      fd = fs.openSync(lockPath, 'wx');            // O_EXCL — atomic create-or-fail
+      fs.writeFileSync(fd, payload);
+      return { acquired: true, lockPath };
+    } catch (e) {
+      if (e.code !== 'EEXIST') {
+        throw new Error(`cannot create index lock ${lockPath}: ${e.message}`);
+      }
+      // Lock exists — decide whether its holder is still alive / fresh.
+      let stat = null;
+      try { stat = fs.statSync(lockPath); } catch { /* raced — holder released between our open and stat */ }
+      const info = readLock(lockPath);
+      const pid = info?.pid ?? null;
+      const heldSince = info?.since ?? null;
+      // Garbage body → treat as abandoned (a crashed pre-lock-format writer).
+      const garbage = info === null;
+      const dead = pid !== null && !pidAlive(pid);
+      const staleMs = stat ? (Date.now() - stat.mtimeMs) : 0;
+      if ((garbage || dead || staleMs > LOCK_STALE_MS) && stat) {
+        // Reclaim: unlink then loop to retry acquisition. The unlink is safe
+        // because the holder is provably dead/stale — a live owner never gets
+        // its lock stolen.
+        try { fs.unlinkSync(lockPath); } catch { /* raced reclaim — someone else got it */ }
+        continue;                                     // retry O_EXCL create
+      }
+      return {
+        acquired: false,
+        reason: garbage
+          ? 'lock file is unreadable/abandoned'
+          : dead
+          ? `lock held by dead pid ${pid} (since ${heldSince})`
+          : `index is being written by pid ${pid ?? '?'} (since ${heldSince ?? 'unknown'})`,
+        pid, heldSince,
+      };
+    } finally {
+      if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* already closed */ } }
+    }
+  }
+  return { acquired: false, reason: 'lock reclaimed by another process during retry', pid: null, heldSince: null };
+}
+
+/** Release the index lock held by THIS process; safe to call twice. */
+export function releaseIndexLock(indexDir) {
+  try { fs.unlinkSync(path.join(indexDir, LOCK_FILENAME)); }
+  catch { /* already released / never held */ }
+}
+
+/**
+ * Run `fn` under the index write lock, releasing it in a finally (crash-safe:
+ * the pid-liveness/staleness checks above reclaim a lock abandoned by a killed
+ * holder, so a hard exit cannot wedge the index forever).
+ * @template T
+ * @param {string} indexDir
+ * @param {() => Promise<T>} fn
+ * @returns {Promise<T>}
+ * @throws when the lock is already held (see the error message for pid/since).
+ */
+export async function withIndexLock(indexDir, fn) {
+  // The lock file lives IN the index dir, so the dir must exist before the
+  // O_EXCL create — and callers (serve) legitimately call a build on a fresh
+  // dir. Create it here, idempotently, BEFORE acquiring so the lock guards the
+  // whole build including the very first write.
+  fs.mkdirSync(indexDir, { recursive: true });
+  const r = acquireIndexLock(indexDir);
+  if (!r.acquired) throw new Error(/** @type {{reason:string}} */(r).reason);
+  try { return await fn(); }
+  finally { releaseIndexLock(indexDir); }
+}
+
 /**
  * @typedef {Object} ModelDescriptor
  * @property {string} id - HF repo id (e.g. "Xenova/multilingual-e5-base")

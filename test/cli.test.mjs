@@ -344,6 +344,26 @@ test('cli: stats with corrupt vectors.json → exit 1, clear JSON error', () => 
   }
 });
 
+test('cli: index under a held index lock → exit 1 with a clear "locked by pid" hint (issue #37)', () => {
+  const dir = tempDir('idxlock');
+  const idxDir = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# X\n\ntext\n');
+    // Simulate a concurrent writer: a live THIS-process lock in the index dir.
+    // The CLI runs in a subprocess (different pid), so our lock reads "held by
+    // pid <this test's pid>" there — exactly the concurrent-mdss scenario.
+    fs.mkdirSync(idxDir, { recursive: true });
+    fs.writeFileSync(path.join(idxDir, '.mdss.lock'),
+      JSON.stringify({ pid: process.pid, since: new Date().toISOString() }) + '\n');
+    const r = runCli(['index', '--db', dir]);
+    assert.equal(r.status, 1, 'a held lock is an error, not a silent wait');
+    assert.match(r.stderr, /being written by pid \d+/, 'names the holder');
+    assert.match(r.stderr, /Another mdss process is writing/, 'actionable hint');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ---- mdss index --json (issue #21) — build result as JSON for scripts ----
 
 test('cli: index --json on an empty db → exit 0 with JSON build result (no model load)', () => {

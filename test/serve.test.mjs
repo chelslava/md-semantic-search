@@ -8,6 +8,7 @@ import { buildIndex } from '../src/indexer.mjs';
 import { createServe, DEFAULT_HOST, MAX_BODY_BYTES } from '../src/serve.mjs';
 import { searchIndex } from '../src/search.mjs';
 import { loadIndex } from '../src/search.mjs';
+import { acquireIndexLock, releaseIndexLock } from '../src/core.mjs';
 
 function fakeEmbed(texts) {
   return texts.map((t) => {
@@ -252,6 +253,66 @@ test('serve: --watch coalesces a rapid save-burst into ONE re-index (issue #42)'
       const a = await searchIndex({ loaded: srv.state.loaded, cacheDir: dir,
         query: 'burst edit', k: 5, embedFn: fakeEmbed });
       assert.ok(a.some(r => r.file === 'b.md'), 'final burst content is what got indexed');
+    } finally {
+      await srv.close();
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('serve: --watch defers re-indexing while another process holds the index lock (issue #37)', async () => {
+  const dir = tempDir('servewatch-lock');
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Tea\n\ngreen tea leaves steeped hot water\n');
+    // Build the initial index OUTSIDE the test's lock so it exists before serve starts.
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+
+    const logs = [];
+    const srv = await createServe({
+      db: dir, indexDir: idx, cacheDir: dir, embedFn: fakeEmbed,
+      watch: true, watchInterval: 40, watchDelay: 120,
+      log: (m) => logs.push(String(m)),
+    });
+    await new Promise(r => srv.server.listen(0, '127.0.0.1', r));
+    try {
+      // Capture the ORIGINAL embedded text of a.md — the deferral must keep the
+      // SERVER index pinned to exactly this (a re-index would fold the appended
+      // oolong line into the same single chunk's text).
+      const origText = srv.state.loaded.index.chunks
+        .filter(c => c.file === 'a.md').map(c => c.text).join('\n---\n');
+      assert.ok(!/oolong/i.test(origText), 'fixture: original index predates the edit');
+
+      // Another process is mid-index: take the lock and hold it.
+      const held = acquireIndexLock(idx);
+      assert.equal(held.acquired, true, 'fixture: we hold the lock as the foreign writer');
+
+      // Edit the file — the watcher WILL want to re-index, but the held lock
+      // must DEFER it (no corruption, polite yield).
+      fs.appendFileSync(path.join(dir, 'a.md'), '\nmore words about oolong tea\n');
+      await new Promise(r => setTimeout(r, 120 + 40 * 8)); // settle window + several polls
+      assert.equal(srv.state.reindexCount ?? 0, 0,
+        're-index is deferred while the foreign lock is held');
+      assert.ok(logs.some(l => /deferred|being written/i.test(l)),
+        'the deferral is logged, not silent');
+      const mid = srv.state.loaded.index.chunks
+        .filter(c => c.file === 'a.md').map(c => c.text).join('\n---\n');
+      assert.equal(mid, origText,
+        'while locked, the LIVE index is still the pre-edit one (no torn swap)');
+
+      // Release — the next quiet window retried and the edit lands.
+      releaseIndexLock(idx);
+      const deadline = Date.now() + 5000;
+      while ((srv.state.reindexCount ?? 0) < 1) {
+        if (Date.now() > deadline) break;
+        await new Promise(r => setTimeout(r, 60));
+      }
+      assert.equal(srv.state.reindexCount, 1,
+        'once the lock frees, the deferred re-index runs');
+      const after = srv.state.loaded.index.chunks
+        .filter(c => c.file === 'a.md').map(c => c.text).join('\n---\n');
+      assert.match(after, /oolong/, 'post-release index contains the edit');
     } finally {
       await srv.close();
     }

@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { walkMarkdown, parseFile, embed, resolveModel, decodeVec, encodeVec, SCHEMA_VERSION, SCHEMA_MIGRATIONS } from './core.mjs';
+import { walkMarkdown, parseFile, embed, resolveModel, decodeVec, encodeVec, SCHEMA_VERSION, SCHEMA_MIGRATIONS, withIndexLock } from './core.mjs';
 
 /**
  * @typedef {Object} IndexChunk
@@ -105,12 +105,39 @@ export function chunkHash(model, chunk) {
  * @param {(s:string)=>void} [opts.log]
  * @param {Function} [opts.embedFn] - embed override for tests/dependency injection;
  *   signature (texts, kind, model, cacheDir, offline) => Promise<number[][]>
+ * @param {boolean} [opts._lockHeld=false] - TESTING ONLY: caller already holds the
+ *   index lock (we are the inner build). Skips re-acquisition — real callers must
+ *   NOT set this (the lock IS the guard against concurrent writers, issue #37).
  */
 export async function buildIndex(opts) {
   const {
     db, indexDir, cacheDir, modelName, ignore = [], log = () => {},
-    offline = false, embedFn = embed,
+    offline = false, embedFn = embed, _lockHeld = false,
   } = opts;
+  // Every write to vectors.json + .hashes.json runs under the index lock
+  // (issue #37): the two atomic renames are individually atomic, but TWO
+  // concurrent builds interleave and can leave the pair from different runs
+  // (a torn logical state). The lock serializes writers; a second process gets
+  // a clear "locked by PID …" error instead of corrupting the index.
+  if (_lockHeld) return _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn });
+  return withIndexLock(indexDir, () =>
+    _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn }));
+}
+
+/**
+ * The actual build; always runs under the index lock (see buildIndex).
+ * Split out so the lock wrapper stays a one-liner.
+ * @param {object} o
+ * @param {string} o.db
+ * @param {string} o.indexDir
+ * @param {string} o.cacheDir
+ * @param {string} o.modelName
+ * @param {string[]} [o.ignore]
+ * @param {(s:string)=>void} [o.log]
+ * @param {boolean} [o.offline]
+ * @param {Function} [o.embedFn]
+ */
+async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = [], log = () => {}, offline = false, embedFn = embed }) {
   const model = resolveModel(modelName);
   // Model identity INCLUDES the pinned revision (issue #27): the README's
   // "pinned ids invalidate the index too (the revision is part of the model

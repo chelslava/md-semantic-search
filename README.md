@@ -51,6 +51,9 @@ measurements that shaped its defaults.
 - 🖥️ **Daemon mode.** `mdss serve` keeps the parsed index AND the embedding
   model warm in memory across queries (no ~280 MB reload per search), with an
   optional `--watch` flag that re-indexes incrementally when your notes change.
+- 🔏 **Crash-safe concurrent writes.** Every index build takes a
+  `<index>/.mdss.lock` (self-healing by pid-liveness), so `mdss index` in one
+  terminal plus `mdss serve --watch` never interleave into a torn index.
 
 ## Requirements
 
@@ -164,6 +167,16 @@ re-indexing over an index written by a **newer** mdss fails with a clear
 "upgrade md-semantic-search" error instead of silently misparsing, and corrupt
 vectors (truncated base64, NaN/Infinity, wrong dimension) are rejected at load
 with the offending chunk named — no more silent NaN scores (issue #40).
+
+Index writes are **serialized across processes** with a lockfile
+(`<index>/.mdss.lock`, issue #37): `mdss serve --watch` re-indexes on a timer
+while a manual `mdss index` (or a second terminal) may run — without a lock two
+builds interleave and can leave `vectors.json`/`.hashes.json` from different
+runs. `buildIndex` acquires the lock for the whole build and releases it in a
+`finally`; a second process gets a clear `index is being written by pid NNN`
+error, and `serve --watch` politely defers its cycle until the other writer
+finishes. A crashed writer can't wedge the index — the lock self-heals by
+pid-liveness + staleness (a dead-pid or abandoned lock is reclaimed).
 
 ### Diagnose problems (`mdss check` / `mdss doctor`)
 
