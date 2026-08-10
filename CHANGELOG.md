@@ -7,6 +7,11 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Issue #17 (partial; upstream blocked)** — CI now reports production
+  dependency advisories through a non-blocking `npm audit --omit=dev` job, and
+  `SECURITY.md` documents reachability, mitigations, and the Node 18 constraint.
+  The issue remains open until the upstream Transformers.js dependency tree has
+  no high-severity findings.
 - **Issue #8** — CLI argument validation: `--k` must be a positive integer,
   missing option values are reported (`error: missing value for <flag>`),
   unknown flags fail fast instead of being silently ignored, and `--version`
