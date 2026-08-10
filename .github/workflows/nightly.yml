@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      MDSS_NIGHTLY_CACHE_DIR: ${{ runner.temp }}/mdss-nightly-cache
+      MDSS_NIGHTLY_CACHE_DIR: ${{ github.workspace }}/.cache/mdss-nightly
       MDSS_RUN_NIGHTLY_REAL_MODEL: '1'
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +25,7 @@ jobs:
       - name: Restore Transformers.js model cache
         uses: actions/cache@v4
         with:
-          path: ${{ runner.temp }}/mdss-nightly-cache
+          path: ${{ github.workspace }}/.cache/mdss-nightly
           key: mdss-real-model-${{ runner.os }}-node20-${{ hashFiles('package-lock.json', 'src/models.mjs', 'src/rerank.mjs', 'test/nightly-real-model.mjs') }}
 
       - name: Install dependencies
