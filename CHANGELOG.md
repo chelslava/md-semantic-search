@@ -7,6 +7,12 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Issue #48** — schema-v2 chunks now retain the full Markdown heading path.
+  Embedding and `chunkHash` share one canonical title/path/body passage, so
+  nested content is searchable by parent topics and a parent rename re-embeds
+  only its subtree. Schema-v0/v1 indexes remain searchable and perform one
+  mandatory contextual rebuild on the next `index` run; public search/CLI hit
+  shapes are unchanged.
 - **Issue #44** — a scheduled/manual nightly CI smoke suite now downloads and
   exercises the real Transformers.js models end to end: e5-small index/search/
   serve with binary-vector integrity checks, real BGE reranking, and a bounded
