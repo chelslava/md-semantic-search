@@ -41,6 +41,10 @@ function readIndex(indexDir) {
 
 const sec = (name, body) => `## ${name}\n\n${body}`;
 const big = (n) => 'w'.repeat(n);
+const sections = (count, prefix = 'Entry') => Array.from(
+  { length: count },
+  (_, i) => sec(`${prefix} ${i + 1}`, `${prefix.toLowerCase()}-${i + 1} ${big(40)}`),
+).join('\n');
 
 test('chunkHash: stable for identical input; differs on content/model changes', () => {
   const model = resolveModel('e5-base');
@@ -375,6 +379,309 @@ test('buildIndex: atomic write leaves no temp files behind', async () => {
     assert.deepEqual(leftovers, [], 'no .tmp files survive an index run');
     assert.ok(fs.existsSync(path.join(idx, 'vectors.json')));
     assert.ok(fs.existsSync(path.join(idx, '.hashes.json')));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildIndex: interrupted fresh build resumes from the periodic checkpoint (issue #38)', async () => {
+  const dir = tempDir('checkpoint-fresh');
+  const idx = path.join(dir, '.mdss');
+  const checkpointPath = path.join(idx, '.checkpoint.json');
+  try {
+    // Given: nine full embedding batches and an embedder that fails on batch 9.
+    writeCorpus(dir, { 'many.md': `# Many\n\n${sections(9 * 32)}` });
+    let calls = 0;
+    const failOnNinthBatch = (texts, kind, model, cacheDir) => {
+      calls++;
+      if (calls === 9) throw new Error('simulated interruption');
+      return fakeEmbed(texts, kind, model, cacheDir);
+    };
+
+    // When: the fresh build is interrupted after eight completed batches.
+    await assert.rejects(
+      buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: failOnNinthBatch }),
+      /simulated interruption/,
+    );
+
+    // Then: only the sidecar contains progress; no searchable generation was published.
+    const checkpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
+    assert.equal(checkpoint.complete, false);
+    assert.equal(checkpoint.schemaVersion, 1);
+    assert.equal(checkpoint.format, 'binary-v1');
+    assert.equal(checkpoint.model, 'Xenova/multilingual-e5-base@main');
+    assert.equal(checkpoint.modelAlias, 'e5-base');
+    assert.equal(checkpoint.dim, 8);
+    assert.equal(checkpoint.db, dir);
+    assert.equal(typeof checkpoint.built, 'string');
+    assert.equal(checkpoint.chunkCount, 9 * 32);
+    assert.deepEqual(Object.keys(checkpoint.hashes), ['many.md']);
+    assert.equal(checkpoint.chunks.length, 9 * 32);
+    assert.equal(checkpoint.chunks.filter((chunk) => typeof chunk.vec === 'string').length, 8 * 32);
+    assert.equal(checkpoint.chunks.filter((chunk) => chunk.vec === undefined).length, 32);
+    assert.ok(checkpoint.chunks.slice(0, 8 * 32).every((chunk) => typeof chunk.vec === 'string'));
+    assert.ok(checkpoint.chunks.slice(8 * 32).every((chunk) => chunk.vec === undefined));
+    assert.equal(fs.existsSync(path.join(idx, 'vectors.json')), false);
+    assert.equal(fs.existsSync(path.join(idx, '.hashes.json')), false);
+    assert.deepEqual(fs.readdirSync(idx).filter((file) => file.includes('.tmp')), []);
+
+    let resumedTexts = 0;
+    const countResumed = (texts, kind, model, cacheDir) => {
+      resumedTexts += texts.length;
+      return fakeEmbed(texts, kind, model, cacheDir);
+    };
+
+    // When: a second build resumes with the same corpus and model.
+    const resumed = await buildIndex({
+      db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: countResumed,
+    });
+
+    // Then: only unfinished chunks are embedded and the checkpoint is removed.
+    assert.equal(resumedTexts, 32);
+    assert.equal(resumed.embedded, 32);
+    assert.ok(readIndex(idx).chunks.every((chunk) => typeof chunk.vec === 'string'));
+    assert.equal(fs.existsSync(checkpointPath), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildIndex: failed refresh preserves canonical generation and resumes its checkpoint (issue #38)', async () => {
+  const dir = tempDir('checkpoint-refresh');
+  const idx = path.join(dir, '.mdss');
+  const checkpointPath = path.join(idx, '.checkpoint.json');
+  try {
+    // Given: a complete searchable generation, then 288 new chunks to refresh.
+    writeCorpus(dir, { 'doc.md': `# Stable\n\n${sec('Original', 'stable needle ' + big(40))}` });
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const canonicalVectors = fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8');
+    const canonicalHashes = fs.readFileSync(path.join(idx, '.hashes.json'), 'utf8');
+    writeCorpus(dir, {
+      'doc.md': `# Stable\n\n${sec('Original', 'stable needle ' + big(40))}\n${sections(9 * 32, 'New')}`,
+    });
+    let calls = 0;
+    const failOnNinthBatch = (texts, kind, model, cacheDir) => {
+      calls++;
+      if (calls === 9) throw new Error('simulated refresh interruption');
+      return fakeEmbed(texts, kind, model, cacheDir);
+    };
+
+    // When: refresh fails after its first checkpoint has been persisted.
+    await assert.rejects(
+      buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: failOnNinthBatch }),
+      /simulated refresh interruption/,
+    );
+
+    // Then: canonical files are byte-for-byte unchanged and remain searchable.
+    assert.equal(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'), canonicalVectors);
+    assert.equal(fs.readFileSync(path.join(idx, '.hashes.json'), 'utf8'), canonicalHashes);
+    const hits = await searchIndex({
+      loaded: loadIndex(idx), cacheDir: dir, query: 'stable needle', k: 1, embedFn: fakeEmbed,
+    });
+    assert.equal(hits[0].heading, 'Original');
+    const checkpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
+    assert.equal(checkpoint.complete, false);
+    assert.equal(checkpoint.chunks.length, 1 + 9 * 32);
+    assert.equal(checkpoint.chunks.filter((chunk) => typeof chunk.vec === 'string').length, 1 + 8 * 32);
+    assert.ok(checkpoint.chunks.slice(0, 1 + 8 * 32).every((chunk) => typeof chunk.vec === 'string'));
+    assert.ok(checkpoint.chunks.slice(1 + 8 * 32).every((chunk) => chunk.vec === undefined));
+
+    let resumedTexts = 0;
+    const countResumed = (texts, kind, model, cacheDir) => {
+      resumedTexts += texts.length;
+      return fakeEmbed(texts, kind, model, cacheDir);
+    };
+
+    // When: refresh retries from the compatible checkpoint.
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: countResumed });
+
+    // Then: only the final batch is embedded and the complete generation replaces canonical files.
+    assert.equal(resumedTexts, 32);
+    assert.equal(readIndex(idx).chunks.length, 1 + 9 * 32);
+    assert.ok(readIndex(idx).chunks.every((chunk) => typeof chunk.vec === 'string'));
+    assert.equal(fs.existsSync(checkpointPath), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildIndex: checkpoint resume reparses corpus changes and reuses only finished chunk hashes (issue #38)', async () => {
+  const dir = tempDir('checkpoint-reparse');
+  const idx = path.join(dir, '.mdss');
+  const checkpointPath = path.join(idx, '.checkpoint.json');
+  try {
+    // Given: a partial checkpoint with 256 finished and 32 unfinished chunks.
+    writeCorpus(dir, { 'many.md': `# Many\n\n${sections(9 * 32)}` });
+    let batch = 0;
+    const interruptNinthBatch = (texts, kind, model, cacheDir) => {
+      batch++;
+      if (batch === 9) throw new Error('simulated interruption before corpus edit');
+      return fakeEmbed(texts, kind, model, cacheDir);
+    };
+    await assert.rejects(
+      buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: interruptNinthBatch }),
+      /simulated interruption before corpus edit/,
+    );
+    assert.ok(fs.existsSync(checkpointPath));
+    writeCorpus(dir, {
+      'many.md': [
+        '# Many',
+        sec('Entry 1', `entry-1 ${big(40)}`),
+        sec('Entry 2', `entry-2 changed ${big(40)}`),
+        sec('Entry 257', `entry-257 ${big(40)}`),
+        sec('Added', `brand-new ${big(40)}`),
+      ].join('\n\n'),
+    });
+    const embeddedTexts = [];
+    const captureEmbeds = (texts, kind, model, cacheDir) => {
+      embeddedTexts.push(...texts);
+      return fakeEmbed(texts, kind, model, cacheDir);
+    };
+
+    // When: the build resumes after the corpus md5 has changed.
+    const resumed = await buildIndex({
+      db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: captureEmbeds,
+    });
+
+    // Then: current content is reparsed, one finished hash is reused, and all other current chunks embed.
+    assert.equal(resumed.chunks, 4);
+    assert.equal(resumed.reusedChunks, 1);
+    assert.equal(resumed.embedded, 3);
+    assert.deepEqual(embeddedTexts.map((text) => text.split('\n')[1]), ['Entry 2', 'Entry 257', 'Added']);
+    const current = readIndex(idx);
+    assert.deepEqual(current.chunks.map((chunk) => chunk.heading), ['Entry 1', 'Entry 2', 'Entry 257', 'Added']);
+    assert.ok(current.chunks[1].text.includes('changed'));
+    assert.ok(current.chunks.every((chunk) => typeof chunk.vec === 'string'));
+    assert.equal(fs.existsSync(checkpointPath), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildIndex: complete checkpoint repairs a torn canonical pair without embedding (issue #38)', async () => {
+  const dir = tempDir('checkpoint-complete');
+  const idx = path.join(dir, '.mdss');
+  const newerIdx = path.join(dir, '.newer-mdss');
+  const checkpointPath = path.join(idx, '.checkpoint.json');
+  try {
+    // Given: old canonical vectors, newer canonical hashes, and a self-contained newer complete checkpoint.
+    writeCorpus(dir, { 'doc.md': `# Doc\n\n${sec('Old', `old generation ${big(40)}`)}` });
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const oldVectors = fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8');
+    writeCorpus(dir, {
+      'doc.md': `# Doc\n\n${sec('Current A', `current alpha ${big(40)}`)}\n${sec('Current B', `current beta ${big(40)}`)}`,
+    });
+    await buildIndex({ db: dir, indexDir: newerIdx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const newerIndex = readIndex(newerIdx);
+    const newerHashes = JSON.parse(fs.readFileSync(path.join(newerIdx, '.hashes.json'), 'utf8'));
+    fs.writeFileSync(path.join(idx, 'vectors.json'), oldVectors);
+    fs.writeFileSync(path.join(idx, '.hashes.json'), JSON.stringify(newerHashes, null, 2));
+    fs.writeFileSync(checkpointPath, JSON.stringify({ ...newerIndex, complete: true, hashes: newerHashes }));
+    let embedCalls = 0;
+    const rejectUnnecessaryEmbed = (texts, kind, model, cacheDir) => {
+      embedCalls++;
+      return fakeEmbed(texts, kind, model, cacheDir);
+    };
+
+    // When: the next build sees the compatible complete checkpoint and torn canonical pair.
+    const recovered = await buildIndex({
+      db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: rejectUnnecessaryEmbed,
+    });
+
+    // Then: the checkpoint republishes a matched full generation without unnecessary embedding.
+    assert.equal(embedCalls, 0);
+    assert.equal(recovered.embedded, 0);
+    assert.equal(recovered.reused, newerIndex.chunks.length);
+    const canonical = readIndex(idx);
+    const canonicalHashes = JSON.parse(fs.readFileSync(path.join(idx, '.hashes.json'), 'utf8'));
+    assert.deepEqual(canonical.chunks, newerIndex.chunks);
+    assert.deepEqual(canonicalHashes, newerHashes);
+    assert.ok(canonical.chunks.every((chunk) => typeof chunk.vec === 'string'));
+    assert.equal(fs.existsSync(checkpointPath), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildIndex: future canonical schema rejects rebuild despite a compatible checkpoint (issues #38, #39)', async () => {
+  const dir = tempDir('checkpoint-future-schema');
+  const idx = path.join(dir, '.mdss');
+  const checkpointPath = path.join(idx, '.checkpoint.json');
+  try {
+    // Given: a current compatible checkpoint beside canonical bytes from a future schema.
+    writeCorpus(dir, { 'doc.md': `# Doc\n\n${sec('Current', `current generation ${big(40)}`)}` });
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const current = readIndex(idx);
+    const hashes = JSON.parse(fs.readFileSync(path.join(idx, '.hashes.json'), 'utf8'));
+    fs.writeFileSync(checkpointPath, JSON.stringify({ ...current, complete: true, hashes }));
+    const futureBytes = JSON.stringify({ ...current, schemaVersion: current.schemaVersion + 1 });
+    fs.writeFileSync(path.join(idx, 'vectors.json'), futureBytes);
+
+    // When: rebuild is attempted with a sidecar that the current binary understands.
+    await assert.rejects(
+      buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed }),
+      /uses schema v\d+.*upgrade md-semantic-search before re-indexing/,
+    );
+
+    // Then: the future canonical generation is authoritative and remains untouched.
+    assert.equal(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'), futureBytes);
+    assert.equal(fs.existsSync(checkpointPath), true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildIndex: malformed or incompatible checkpoints fall back to canonical without embedding (issue #38)', async () => {
+  const dir = tempDir('checkpoint-invalid');
+  const idx = path.join(dir, '.mdss');
+  const checkpointPath = path.join(idx, '.checkpoint.json');
+  try {
+    // Given: a valid canonical index and sidecars that are malformed or target another build identity.
+    writeCorpus(dir, { 'doc.md': `# Doc\n\n${sec('Canonical', `canonical generation ${big(40)}`)}` });
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const canonical = readIndex(idx);
+    const hashes = JSON.parse(fs.readFileSync(path.join(idx, '.hashes.json'), 'utf8'));
+    const vectorlessChunks = canonical.chunks.map(({ file, title, heading, text, chunkHash }) => ({
+      file, title, heading, text, chunkHash,
+    }));
+    const sidecars = [
+      {
+        name: 'null chunk',
+        value: { ...canonical, complete: false, hashes, chunkCount: 1, chunks: [null] },
+      },
+      {
+        name: 'non-string hash value',
+        value: { ...canonical, complete: false, hashes: { 'doc.md': 42 }, chunks: vectorlessChunks },
+      },
+      {
+        name: 'wrong db',
+        value: { ...canonical, complete: true, hashes, db: `${dir}-other` },
+      },
+      {
+        name: 'wrong model',
+        value: { ...canonical, complete: true, hashes, model: 'Xenova/multilingual-e5-small@main' },
+      },
+    ];
+
+    for (const sidecar of sidecars) {
+      fs.writeFileSync(checkpointPath, JSON.stringify(sidecar.value));
+      let embedCalls = 0;
+      const countEmbeds = (texts, kind, model, cacheDir) => {
+        embedCalls++;
+        return fakeEmbed(texts, kind, model, cacheDir);
+      };
+
+      // When: each invalid sidecar is presented to an otherwise no-op build.
+      await assert.doesNotReject(
+        buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: countEmbeds }),
+        sidecar.name,
+      );
+
+      // Then: canonical reuse wins, with no model work, and successful publication cleans the sidecar.
+      assert.equal(embedCalls, 0, sidecar.name);
+      assert.deepEqual(readIndex(idx).chunks.map((chunk) => chunk.heading), ['Canonical'], sidecar.name);
+      assert.equal(fs.existsSync(checkpointPath), false, sidecar.name);
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

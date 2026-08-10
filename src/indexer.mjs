@@ -23,8 +23,42 @@ import { walkMarkdown, parseFile, embed, resolveModel, decodeVec, encodeVec, SCH
  * @property {string} [chunkHash]
  */
 
+/**
+ * @typedef {Object} PersistedIndex
+ * @property {number} [schemaVersion]
+ * @property {string} [format]
+ * @property {string|null} [model]
+ * @property {string} [modelAlias]
+ * @property {number} [dim]
+ * @property {string} [db]
+ * @property {string} [built]
+ * @property {boolean} [complete]
+ * @property {number} [chunkCount]
+ * @property {Record<string,string>} [hashes]
+ * @property {IndexChunk[]} chunks
+ */
+
 const md5 = s => crypto.createHash('md5').update(s).digest('hex');
 const sha256 = s => crypto.createHash('sha256').update(s).digest('hex');
+const BATCH = 32;
+const CHECKPOINT_BATCHES = 8;
+const INDEX_FORMAT = 'binary-v1';
+
+/** @param {unknown} value @returns {value is Record<string,string>} */
+function isStringRecord(value) {
+  return value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.values(value).every(entry => typeof entry === 'string');
+}
+
+/** @param {unknown} value */
+function isCheckpointChunk(value) {
+  if (!isStringRecord(value)) return false;
+  return ['file', 'title', 'heading', 'text', 'chunkHash'].every(field => field in value) &&
+    (value.vec === undefined || (value.vec.length > 0 &&
+      /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value.vec)));
+}
 
 /**
  * Read JSON, falling back to `fb` when the file is missing or corrupt.
@@ -148,25 +182,48 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
   const modelIdentity = `${model.id}@${model.revision || 'main'}`;
   const vectorsPath = path.join(indexDir, 'vectors.json');
   const hashesPath = path.join(indexDir, '.hashes.json');
+  const checkpointPath = path.join(indexDir, '.checkpoint.json');
 
   fs.mkdirSync(indexDir, { recursive: true });
 
   const files = walkMarkdown(db, ignore);
-  const oldHashes = loadJSON(hashesPath, {}, log);
-  /** @type {{schemaVersion?:number, format?:string, model?:string|null, chunks:IndexChunk[]}} */
-  const oldIndex = loadJSON(vectorsPath, { chunks: [], model: null }, log);
+  /** @type {Record<string,string>} */
+  const canonicalHashes = loadJSON(hashesPath, {}, log);
+  /** @type {PersistedIndex} */
+  const canonicalIndex = loadJSON(vectorsPath, { chunks: [], model: null }, log);
 
-  // Schema gate (issue #39): refuse to REBUILD over an index written by a
-  // NEWER mdss — we might not understand its format and would destroy data.
-  // Older schemas are migrated via the table (v0 → v1 is a no-op: the legacy
-  // shapes are normalized by the heuristics right below).
-  const oldSchema = oldIndex.schemaVersion ?? 0;
-  if (oldSchema > SCHEMA_VERSION) {
+  // The canonical generation is authoritative even when a recoverable sidecar
+  // exists. Never let a current checkpoint mask a future canonical schema.
+  const canonicalSchema = canonicalIndex.schemaVersion ?? 0;
+  if (canonicalSchema > SCHEMA_VERSION) {
     throw new Error(
-      `${vectorsPath} uses schema v${oldSchema}, but this mdss writes ` +
+      `${vectorsPath} uses schema v${canonicalSchema}, but this mdss writes ` +
       `v${SCHEMA_VERSION} (index built by a newer version) — upgrade ` +
       `md-semantic-search before re-indexing.`);
   }
+
+  /** @type {PersistedIndex|null} */
+  const checkpoint = loadJSON(checkpointPath, null, log);
+  const checkpointCompatible = checkpoint !== null &&
+    checkpoint.schemaVersion === SCHEMA_VERSION &&
+    checkpoint.format === INDEX_FORMAT &&
+    checkpoint.model === modelIdentity &&
+    checkpoint.db === db &&
+    typeof checkpoint.modelAlias === 'string' &&
+    typeof checkpoint.dim === 'number' &&
+    typeof checkpoint.built === 'string' &&
+    typeof checkpoint.complete === 'boolean' &&
+    Number.isInteger(checkpoint.chunkCount) &&
+    Array.isArray(checkpoint.chunks) &&
+    checkpoint.chunkCount === checkpoint.chunks.length &&
+    checkpoint.chunks.every(isCheckpointChunk) &&
+    isStringRecord(checkpoint.hashes);
+  const oldHashes = checkpointCompatible ? checkpoint.hashes : canonicalHashes;
+  const oldIndex = checkpointCompatible ? checkpoint : canonicalIndex;
+
+  // Older schemas are migrated via the table (v0 → v1 is a no-op: the legacy
+  // shapes are normalized by the heuristics right below).
+  const oldSchema = oldIndex.schemaVersion ?? 0;
   for (let v = oldSchema + 1; v <= SCHEMA_VERSION; v++) {
     const step = SCHEMA_MIGRATIONS[v];
     if (step) step(oldIndex);
@@ -214,6 +271,25 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
   const chunks = [];
   const toEmbed = [];
   let reused = 0, reusedChunks = 0, changedFiles = 0, skipped = 0;
+
+  /**
+   * Serialize all current chunks for crash recovery. Unfinished chunks omit
+   * `vec`; the existing vec-less reuse path requeues them on the next run.
+   * @param {boolean} complete
+   */
+  const checkpointSnapshot = (complete) => ({
+    schemaVersion: SCHEMA_VERSION,
+    format: INDEX_FORMAT,
+    model: modelIdentity,
+    modelAlias: modelName || 'e5-base',
+    dim: chunks.find(c => c.vec)?.vec?.length ?? model.dim ?? 0,
+    db,
+    built: new Date().toISOString(),
+    complete,
+    chunkCount: chunks.length,
+    hashes: newHashes,
+    chunks: chunks.map(c => ({ ...c, vec: c.vec ? encodeVec(c.vec) : undefined })),
+  });
 
   for (const abs of files) {
     const rel = path.relative(db, abs).split(path.sep).join('/');
@@ -280,7 +356,7 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
   if (toEmbed.length > 0) {
     log(`Embedding ${toEmbed.length} chunks from ${changedFiles} changed file(s) ` +
         `with ${model.id}...`);
-    const BATCH = 32;
+    let completedBatches = 0;
     for (let i = 0; i < toEmbed.length; i += BATCH) {
       const slice = toEmbed.slice(i, i + BATCH);
       const vecs = await embedFn(
@@ -288,14 +364,21 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
         'passage', model, cacheDir, offline,
       );
       slice.forEach((c, j) => { c.vec = vecs[j]; });
+      completedBatches++;
+      if (completedBatches % CHECKPOINT_BATCHES === 0) {
+        atomicWrite(checkpointPath, JSON.stringify(checkpointSnapshot(false)));
+      }
       log(`  ${Math.min(i + BATCH, toEmbed.length)}/${toEmbed.length}`);
     }
   }
 
+  if (chunks.some(c => !c.vec)) {
+    throw new Error('Embedding finished without a vector for every chunk.');
+  }
   const dim = chunks[0]?.vec?.length ?? model.dim ?? 0;
   const index = {
     schemaVersion: SCHEMA_VERSION, // format gate (issue #39) — bump + add a migration step on change
-    format: 'binary-v1',           // vec stored as base64 Float32Array (issue #4)
+    format: INDEX_FORMAT,          // vec stored as base64 Float32Array (issue #4)
     model: modelIdentity,          // id@revision — revision is part of the key (#27)
     modelAlias: modelName || 'e5-base',
     dim,
@@ -307,8 +390,10 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
     chunks: chunks.map(c => ({ ...c, vec: c.vec ? encodeVec(c.vec) : undefined })),
   };
 
+  atomicWrite(checkpointPath, JSON.stringify({ ...index, complete: true, hashes: newHashes }));
   atomicWrite(vectorsPath, JSON.stringify(index));
   atomicWrite(hashesPath, JSON.stringify(newHashes, null, 2));
+  fs.unlinkSync(checkpointPath);
 
   return {
     files: files.length,
