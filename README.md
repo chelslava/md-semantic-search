@@ -146,11 +146,14 @@ Indexed 64 file(s) → 725 chunks (725 reused [5 chunk-level, 720 file-level], 0
 Schema-v3 indexes persist each chunk's full Markdown heading path plus a compact
 BM25 inverted index inside `vectors.json`. Search tokenizes only the query;
 unchanged files and a model-independent hash of the exact lexical document
-(`title + leaf heading + text`) reuse lexical analysis independently of vector
-reuse. Parent heading-path and model-only changes therefore do not rebuild
-unchanged lexical records. Schema-v0/v1/v2 remain searchable through the legacy
-exact-token overlap lane. A v2 rebuild reuses its contextual vectors while
-adding BM25; v0/v1 still re-embed once because they lack contextual passages.
+(`title + ancestor headings + leaf heading + text`) reuse lexical analysis
+independently of vector reuse. Parent heading changes reanalyze only the affected
+lexical subtree, while model-only changes reuse unchanged lexical records.
+New indexes write `bm25-v2`; existing `bm25-v1` indexes remain searchable and
+upgrade on the next index build. Schema-v0/v1/v2 remain searchable through the
+legacy exact-token overlap lane. A v2 rebuild reuses its contextual vectors
+while adding BM25; v0/v1 still re-embed once because they lack contextual
+passages.
 
 During long builds, mdss atomically checkpoints progress every eight embedding
 batches (about 256 chunks) to `<index>/.checkpoint.json`. The canonical
@@ -174,7 +177,7 @@ after a re-index or for staleness detection in scripts:
 mdss stats --db /path/to/your/markdown
 # Index at /path/to/your/markdown/.mdss
 #   format: binary-v1 · model: e5-base (dim 768)
-#   schema: v3 · lexical: bm25-v1
+#   schema: v3 · lexical: bm25-v2
 #   chunks: 725 · files: 64
 #   size: 42.1 KiB (vectors.json)
 #   built: 2026-08-08T09:42:58.331Z (2m 12s ago)

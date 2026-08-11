@@ -7,6 +7,12 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Issue #49** — schema-v3 BM25 lexical documents now include the full active
+  Markdown heading path, so exact parent-section terms can promote the correct
+  nested chunk even when body terms are shared. New builds write `bm25-v2`;
+  existing `bm25-v1` indexes remain searchable and perform one lexical-only
+  upgrade on the next build while reusing vectors. RRF now gives tied scores
+  equal rank contributions instead of letting source order cancel a lexical win.
 - **Issue #47** — schema-v3 embeds a pure-JavaScript BM25 inverted index in
   `vectors.json`. Current indexes score and produce matches from postings while
   tokenizing only the query; schema-v0/v1/v2 retain the legacy token-overlap

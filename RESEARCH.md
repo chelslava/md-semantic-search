@@ -117,7 +117,15 @@ BM25 over persisted postings — and fuse them with RRF
 (`score = Σ 1/(k + rank)`, `k=60`). Schema-v0/v1/v2 compatibility retains the
 original exact token-overlap ranking used for the measurements below. RRF
 needs no score normalization or weight tuning, which is what makes it robust
-across very different score scales.
+across very different score scales. Equal scores share one rank contribution;
+otherwise arbitrary corpus order can cancel a real win from the other lane.
+
+Schema-v3 `bm25-v2` documents prepend the active Markdown heading context to
+the chunk body, without repeating a title-derived first heading or the leaf
+heading. This mirrors the context already used by embeddings: an exact parent
+topic can distinguish two nested chunks whose bodies share the same terms.
+Existing `bm25-v1` indexes remain searchable and rebuild only their lexical
+records on the next indexing run; stored vectors are reused.
 
 ### Stop-words protect the lexical lane
 Cross-lingual queries share function words ("при", "the", "для") with
