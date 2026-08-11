@@ -7,14 +7,15 @@ import { buildIndex } from '../src/indexer.mjs';
 import { search, searchIndex, loadIndex, tokenize, keywordScores, rrf, _stats } from '../src/search.mjs';
 import { decodeVec, SCHEMA_VERSION } from '../src/core.mjs';
 
-function fakeEmbed(texts) {
+function fakeEmbed(texts, kind, model) {
   return texts.map((t) => {
-    const v = new Array(8).fill(0);
+    const dim = model?.dim > 0 ? model.dim : 8;
+    const v = new Array(dim).fill(0);
     const words = t.toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
     for (const w of words) {
       let h = 7;
       for (let i = 0; i < w.length; i++) h = (h * 31 + w.charCodeAt(i)) >>> 0;
-      v[h % 8] += 1;
+      v[h % dim] += 1;
     }
     const norm = Math.hypot(...v) || 1;
     return v.map((x) => x / norm);
@@ -30,6 +31,24 @@ async function makeIndex() {
   fs.writeFileSync(path.join(dir, 'c.md'), '# Finance\n\n## Stocks\n\nfinance guide stocks bonds market index\n');
   await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
   return { dir, idx };
+}
+
+function poisonLoadedState(loaded) {
+  const chunk = loaded.index.chunks[0];
+  const sparseVector = new Array(chunk.vec.length);
+  sparseVector[0] = 1;
+  chunk.file = 'mutated.md';
+  chunk.title = 'Mutated title';
+  chunk.heading = 'Mutated heading';
+  chunk.text = 'mutated text must never reach results';
+  chunk.vec = sparseVector;
+  loaded.index.db = path.join(loaded.index.db, 'missing');
+  loaded.index.dim = 1;
+  loaded.index.schemaVersion = 2;
+  loaded.index.lexical.documentLengths[0] = 0;
+  delete loaded.index.lexical.postings.coffee;
+  loaded.model.id = 'Xenova/mutated-model';
+  loaded.model.dim = 1;
 }
 
 test('tokenize: lowercase, min length 2, unicode, strips function words', () => {
@@ -128,6 +147,11 @@ test('search: returns results with expected shape, hybrid and semanticOnly', asy
 test('issue #18: two queries on one loaded index tokenize the corpus once', async () => {
   const { dir, idx } = await makeIndex();
   try {
+    const vectorsPath = path.join(idx, 'vectors.json');
+    const legacy = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
+    legacy.schemaVersion = 2;
+    delete legacy.lexical;
+    fs.writeFileSync(vectorsPath, JSON.stringify(legacy));
     const loaded = loadIndex(idx);
     const before = _stats.corpusTokenizedChars;
     await searchIndex({ loaded, cacheDir: dir, query: 'coffee', k: 3, embedFn: fakeEmbed });
@@ -231,6 +255,8 @@ test('search: legacy index without model fields still works (validation fallback
   try {
     // simulate a v0.1.x index: no model / modelAlias fields at all
     const index = JSON.parse(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'));
+    index.schemaVersion = 2;
+    delete index.lexical;
     delete index.model;
     delete index.modelAlias;
     fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
@@ -269,6 +295,8 @@ test('search: legacy decimal vectors.json loads and ranks identically (issue #4)
 
     // convert the binary index to the legacy ≤0.3.x shape: decimal arrays, no format field
     const index = JSON.parse(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'));
+    index.schemaVersion = 2;
+    delete index.lexical;
     delete index.format;
     for (const c of index.chunks) c.vec = [...decodeVec(c.vec)];
     fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
@@ -294,6 +322,7 @@ test('loadIndex/searchIndex: parse once, reuse across queries (issues #14+#2)', 
   const { dir, idx } = await makeIndex();
   try {
     const loaded = loadIndex(idx);
+    assert.deepEqual(Object.keys(loaded).sort(), ['index', 'model']);
     assert.ok(loaded.index.chunks.length >= 3, 'index parsed once');
     assert.equal(loaded.model.id, 'Xenova/multilingual-e5-base', 'model resolved from index');
 
@@ -305,6 +334,430 @@ test('loadIndex/searchIndex: parse once, reuse across queries (issues #14+#2)', 
     // results identical to the one-shot path (same parse, same ranking)
     const oneShot = await search({ indexDir: idx, cacheDir: dir, query: 'coffee', k: 3, embedFn: fakeEmbed });
     assert.deepEqual(q1.map(r => r.file), oneShot.map(r => r.file), 'loadIndex path == one-shot path');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('loadIndex: v0/v1/v2 retain the explicit legacy overlap lexical state', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const current = JSON.parse(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'));
+    for (const schemaVersion of [0, 1, 2]) {
+      const legacy = structuredClone(current);
+      if (schemaVersion === 0) delete legacy.schemaVersion;
+      else legacy.schemaVersion = schemaVersion;
+      delete legacy.lexical;
+      fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(legacy));
+      const loaded = loadIndex(idx);
+      assert.deepEqual(Object.keys(loaded).sort(), ['index', 'model']);
+      assert.equal(loaded.index.schemaVersion, schemaVersion === 0 ? undefined : schemaVersion,
+        'loading does not relabel legacy state as schema v3');
+      const transferred = structuredClone(loaded);
+      const before = _stats.corpusTokenizedChars;
+      const results = await searchIndex({ loaded: transferred, cacheDir: dir,
+        query: 'coffee', k: 1, embedFn: fakeEmbed });
+      assert.equal(results[0].file, 'a.md');
+      assert.ok(_stats.corpusTokenizedChars > before,
+        `transferred schema v${schemaVersion} uses overlap token sets without WeakMap state`);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('loadIndex: genuine v3 missing or corrupt lexical data fails with rebuild hint', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const vectorsPath = path.join(idx, 'vectors.json');
+    const current = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
+    const invalid = [
+      { name: 'missing', lexical: undefined },
+      { name: 'wrong format', lexical: { ...current.lexical, format: 'unknown' } },
+      { name: 'wrong length', lexical: { ...current.lexical, documentLengths: [] } },
+    ];
+    for (const fixture of invalid) {
+      const value = structuredClone(current);
+      if (fixture.lexical === undefined) delete value.lexical;
+      else value.lexical = fixture.lexical;
+      fs.writeFileSync(vectorsPath, JSON.stringify(value));
+      assert.throws(() => loadIndex(idx), /schema v3 lexical index.*mdss index.*rebuild/i, fixture.name);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('loadIndex: malformed roots, chunks, and schemaVersion fail before migration', async () => {
+  const { dir, idx } = await makeIndex();
+  const vectorsPath = path.join(idx, 'vectors.json');
+  try {
+    const current = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
+    for (const root of [null, [], 'index']) {
+      fs.writeFileSync(vectorsPath, JSON.stringify(root));
+      assert.throws(() => loadIndex(idx), /root must be an object.*mdss index/i);
+    }
+    fs.writeFileSync(vectorsPath, JSON.stringify({ ...current, chunks: null }));
+    assert.throws(() => loadIndex(idx), /chunks must be an array.*mdss index/i);
+    fs.writeFileSync(vectorsPath, JSON.stringify({ schemaVersion: SCHEMA_VERSION + 1, chunks: null }));
+    assert.throws(() => loadIndex(idx), /uses schema v4.*upgrade md-semantic-search/i,
+      'future schema authority is checked before malformed chunks');
+    for (const schemaVersion of ['3', 3.5, -1, Number.MAX_SAFE_INTEGER + 1]) {
+      fs.writeFileSync(vectorsPath, JSON.stringify({ ...current, schemaVersion }));
+      assert.throws(() => loadIndex(idx), /schemaVersion must be a non-negative safe integer.*mdss index/i);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('loadIndex: schema-v3 envelope and chunks fail closed with actionable errors', async () => {
+  const { dir, idx } = await makeIndex();
+  const vectorsPath = path.join(idx, 'vectors.json');
+  try {
+    const current = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
+    const first = current.chunks[0];
+    const cases = [
+      ['null chunk', { ...current, chunks: [null], chunkCount: 1 }, /chunk 0 must be an object/i],
+      ['unknown format', { ...current, format: 'binary-v9' }, /schema v3 format must be binary-v1/i],
+      ['missing chunk count', { ...current, chunkCount: undefined }, /chunkCount must equal chunks\.length/i],
+      ['fractional chunk count', { ...current, chunkCount: 1.5 }, /chunkCount must equal chunks\.length/i],
+      ['unsafe chunk count', { ...current, chunkCount: Number.MAX_SAFE_INTEGER + 1 }, /chunkCount must equal chunks\.length/i],
+      ['chunk count', { ...current, chunkCount: current.chunks.length + 1 }, /chunkCount must equal chunks\.length/i],
+      ['missing model', { ...current, model: undefined }, /schema v3 model must be a nonempty string/i],
+      ['empty model', { ...current, model: '   ' }, /schema v3 model must be a nonempty string/i],
+      ['missing metadata', { ...current, chunks: [{ ...first, chunkHash: undefined }, ...current.chunks.slice(1)] }, /chunk 0 chunkHash must be a string/i],
+      ['bad heading path', { ...current, chunks: [{ ...first, headingPath: ['Coffee Guide', ''] }, ...current.chunks.slice(1)] }, /chunk 0 headingPath/i],
+      ['wrong leaf', { ...current, chunks: [{ ...first, headingPath: ['Coffee Guide', 'Other'] }, ...current.chunks.slice(1)] }, /chunk 0 headingPath leaf must equal heading/i],
+      ['empty base64', { ...current, chunks: [{ ...first, vec: '' }, ...current.chunks.slice(1)] }, /chunk 0.*base64 vector.*empty/i],
+      ['invalid base64', { ...current, chunks: [{ ...first, vec: '!!!!' }, ...current.chunks.slice(1)] }, /chunk 0.*base64 vector.*canonical/i],
+      ['decimal current vector', { ...current, chunks: [{ ...first, vec: [1, 0] }, ...current.chunks.slice(1)] }, /chunk 0 vec must be canonical base64/i],
+    ];
+    for (const [name, value, expected] of cases) {
+      fs.writeFileSync(vectorsPath, JSON.stringify(value));
+      assert.throws(() => loadIndex(idx), expected, name);
+    }
+
+    const custom = structuredClone(current);
+    custom.model = 'Xenova/reviewer-custom-model@main';
+    delete custom.modelAlias;
+    delete custom.dim;
+    fs.writeFileSync(vectorsPath, JSON.stringify(custom));
+    assert.throws(() => loadIndex(idx), /nonempty schema v3 custom index requires explicit dim/i);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('searchIndex: rejects sparse stored and query vectors', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const loaded = loadIndex(idx);
+    const sparseChunk = new Array(768);
+    sparseChunk[0] = 1;
+    const chunkIndex = structuredClone(loaded.index);
+    chunkIndex.chunks[0].vec = sparseChunk;
+    await assert.rejects(
+      searchIndex({ loaded: { index: chunkIndex, model: loaded.model }, cacheDir: dir,
+        query: 'coffee', k: 1, embedFn: fakeEmbed }),
+      /missing vector component.*mdss index/i,
+    );
+
+    const sparseQuery = new Array(768);
+    sparseQuery[0] = 1;
+    await assert.rejects(
+      searchIndex({ loaded, cacheDir: dir, query: 'coffee', k: 1,
+        embedFn: () => [sparseQuery] }),
+      /missing vector component.*mdss index/i,
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('searchIndex: validates a transferred index once and only validates each new query vector', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const persisted = loadIndex(idx);
+    let headingPathReads = 0;
+    const index = structuredClone(persisted.index);
+    index.chunks = index.chunks.map(chunk => new Proxy(chunk, {
+      get(target, property, receiver) {
+        if (property === 'headingPath') headingPathReads++;
+        return Reflect.get(target, property, receiver);
+      },
+    }));
+    const transferred = { index, model: persisted.model };
+
+    await searchIndex({ loaded: transferred, cacheDir: dir, query: 'coffee', k: 1, embedFn: fakeEmbed });
+    const afterFirst = headingPathReads;
+    assert.ok(afterFirst > 0, 'first query validates the transferred index');
+    await searchIndex({ loaded: transferred, cacheDir: dir, query: 'hockey', k: 1, embedFn: fakeEmbed });
+
+    assert.equal(headingPathReads, afterFirst, 'second query reuses cached runtime validation');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('searchIndex: mutations after load cannot change the owned runtime snapshot', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const loaded = loadIndex(idx);
+    poisonLoadedState(loaded);
+
+    const results = await searchIndex({ loaded, cacheDir: dir, query: 'coffee', k: 1,
+      since: new Date(0), embedFn: fakeEmbed });
+
+    assert.equal(results[0].file, 'a.md');
+    assert.equal(results[0].title, 'Coffee Guide');
+    assert.ok(Number.isFinite(results[0].cosine));
+    assert.ok(Number.isFinite(results[0].score));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('searchIndex: mutations after the first query cannot change later searches', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const loaded = loadIndex(idx);
+    const first = await searchIndex({ loaded, cacheDir: dir, query: 'coffee', k: 1,
+      since: new Date(0), embedFn: fakeEmbed });
+    poisonLoadedState(loaded);
+
+    const second = await searchIndex({ loaded, cacheDir: dir, query: 'coffee', k: 1,
+      since: new Date(0), embedFn: fakeEmbed });
+
+    assert.deepEqual(second, first);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('searchIndex: mutations during embed await cannot affect the in-flight or later search', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const loaded = loadIndex(idx);
+    const queryVector = fakeEmbed(['coffee'], 'query', loaded.model)[0];
+    let signalStarted;
+    let releaseEmbed;
+    const started = new Promise(resolve => { signalStarted = resolve; });
+    const embedFn = () => {
+      signalStarted();
+      return new Promise(resolve => { releaseEmbed = resolve; });
+    };
+    const pending = searchIndex({ loaded, cacheDir: dir, query: 'coffee', k: 1,
+      since: new Date(0), embedFn });
+    await started;
+    poisonLoadedState(loaded);
+    releaseEmbed([queryVector]);
+
+    const inFlight = await pending;
+    const later = await searchIndex({ loaded, cacheDir: dir, query: 'coffee', k: 1,
+      since: new Date(0), embedFn: () => [queryVector] });
+
+    assert.equal(inFlight[0].file, 'a.md');
+    assert.deepEqual(later, inFlight);
+    assert.ok(Number.isFinite(inFlight[0].cosine));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('searchIndex: direct invalid objects reject before their first runtime snapshot', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const loaded = loadIndex(idx);
+    const invalidVector = structuredClone(loaded.index);
+    invalidVector.chunks[0].vec[0] = NaN;
+    await assert.rejects(
+      searchIndex({ loaded: { index: invalidVector, model: structuredClone(loaded.model) },
+        cacheDir: dir, query: 'coffee', k: 1, embedFn: fakeEmbed }),
+      /non-finite vector value.*mdss index/i,
+    );
+
+    const invalidPath = structuredClone(loaded.index);
+    const sparsePath = new Array(2);
+    sparsePath[1] = invalidPath.chunks[0].heading;
+    invalidPath.chunks[0].headingPath = sparsePath;
+    await assert.rejects(
+      searchIndex({ loaded: { index: invalidPath, model: structuredClone(loaded.model) },
+        cacheDir: dir, query: 'coffee', k: 1, embedFn: fakeEmbed }),
+      /headingPath must contain nonempty strings.*mdss index/i,
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('searchIndex: direct loaded model substitution cannot override canonical index metadata', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const persisted = loadIndex(idx);
+    const directIndex = structuredClone(persisted.index);
+    const substitutedModel = {
+      ...persisted.model,
+      id: 'Xenova/substituted-same-dimension-model',
+      passagePrefix: 'substituted: ',
+      queryPrefix: 'substituted: ',
+    };
+    let receivedModel;
+    const embedFn = (texts, kind, model) => {
+      receivedModel = model;
+      return fakeEmbed(texts, kind, model);
+    };
+
+    await searchIndex({ loaded: { index: directIndex, model: substitutedModel },
+      cacheDir: dir, query: 'coffee', k: 1, embedFn });
+
+    assert.equal(receivedModel.id, 'Xenova/multilingual-e5-base');
+    assert.equal(receivedModel.revision, 'main');
+    assert.equal(receivedModel.queryPrefix, 'query: ');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('loadIndex: raw registry model ids enforce known dimensions', async () => {
+  const { dir, idx } = await makeIndex();
+  const vectorsPath = path.join(idx, 'vectors.json');
+  try {
+    const current = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
+    delete current.modelAlias;
+    current.model = 'Xenova/multilingual-e5-base@review47';
+    current.dim = 7;
+    fs.writeFileSync(vectorsPath, JSON.stringify(current));
+    assert.throws(() => loadIndex(idx), /index\.dim 7 does not match known model dimension 768/i);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('searchIndex: direct schema-v3 missing lexical data never downgrades to overlap', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const loaded = loadIndex(idx);
+    const directIndex = structuredClone(loaded.index);
+    delete directIndex.lexical;
+    await assert.rejects(
+      searchIndex({ loaded: { index: directIndex, model: loaded.model }, cacheDir: dir,
+        query: 'coffee', k: 1, embedFn: fakeEmbed }),
+      /schema v3 lexical index.*mdss index.*rebuild/i,
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('searchIndex: query vector dimension must match the trusted index dimension', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const loaded = loadIndex(idx);
+    await assert.rejects(
+      searchIndex({ loaded, cacheDir: dir, query: 'coffee', k: 1,
+        embedFn: () => [[1, 0, 0]] }),
+      /query vector has 3 dims, expected 768.*mdss index/i,
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('loadIndex: index.dim is positive, safe, and consistent with a known model', async () => {
+  const { dir, idx } = await makeIndex();
+  const vectorsPath = path.join(idx, 'vectors.json');
+  try {
+    const current = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
+    for (const dim of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      fs.writeFileSync(vectorsPath, JSON.stringify({ ...current, dim }));
+      assert.throws(() => loadIndex(idx), /index\.dim must be a positive safe integer.*mdss index/i);
+    }
+    fs.writeFileSync(vectorsPath, JSON.stringify({ ...current, dim: 7 }));
+    assert.throws(() => loadIndex(idx), /index\.dim 7 does not match known model dimension 768.*mdss index/i);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('loadIndex: decimal vectors reject non-finite and non-number entries', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const index = JSON.parse(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'));
+    index.schemaVersion = 2;
+    delete index.lexical;
+    delete index.format;
+    index.model = 'Xenova/test-model@main';
+    delete index.modelAlias;
+    index.chunks = index.chunks.map((chunk) => ({
+      ...chunk, vec: new Array(768).fill(0).map((value, position) => position === 1 ? null : value),
+    }));
+    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
+    assert.throws(() => loadIndex(idx), /non-finite vector value.*mdss index/i);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('search: schema-v3 BM25 does not rank rare ZXQ-47 below legacy overlap', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-rare-zxq-'));
+  const idx = path.join(dir, '.mdss');
+  const neutralEmbed = (texts) => texts.map(() => [1, 0]);
+  try {
+    fs.writeFileSync(path.join(dir, 'common.md'), '# Common\n\n## Guide\n\ncommon guide words repeated common guide words here\n');
+    fs.writeFileSync(path.join(dir, 'rare.md'), '# Incident\n\n## ZXQ-47\n\nZXQ-47 identifies the exact rare incident recovery procedure\n');
+    fs.writeFileSync(path.join(dir, 'other.md'), '# Other\n\n## Notes\n\nunrelated neutral content for deterministic ranking\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir,
+      modelName: 'Xenova/reviewer-custom-model', embedFn: neutralEmbed });
+    const persisted = loadIndex(idx);
+    const v3 = await searchIndex({ loaded: persisted, cacheDir: dir,
+      query: 'ZXQ-47', k: 3, embedFn: neutralEmbed });
+    const legacyIndex = structuredClone(persisted.index);
+    legacyIndex.schemaVersion = 2;
+    delete legacyIndex.lexical;
+    const legacy = await searchIndex({ loaded: { index: legacyIndex, model: persisted.model },
+      cacheDir: dir, query: 'ZXQ-47', k: 3, embedFn: neutralEmbed });
+    const v3Rank = v3.findIndex((hit) => hit.file === 'rare.md');
+    const legacyRank = legacy.findIndex((hit) => hit.file === 'rare.md');
+    assert.equal(v3[0].cosine, legacy[0].cosine, 'semantic scores are neutral');
+    assert.ok(v3Rank >= 0 && legacyRank >= 0);
+    assert.ok(v3Rank <= legacyRank, `v3 rank ${v3Rank} must not be worse than legacy ${legacyRank}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('search: v3 filtering keeps canonical doc IDs for BM25, cosine, matches, and lookup', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const loaded = loadIndex(idx);
+    const results = await searchIndex({
+      loaded, cacheDir: dir, query: 'stocks coffee', k: 3, path: ['a.md', 'c.md'], embedFn: fakeEmbed,
+    });
+    const coffee = results.find((result) => result.file === 'a.md');
+    const stocks = results.find((result) => result.file === 'c.md');
+    assert.deepEqual(coffee.matches, ['coffee']);
+    assert.deepEqual(stocks.matches, ['stocks']);
+    assert.ok(results.every((result) => result.file !== 'b.md'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('search: genuine v3 hybrid, semantic, filtered, and matches paths tokenize no corpus text', async () => {
+  const { dir, idx } = await makeIndex();
+  try {
+    const loaded = loadIndex(idx);
+    const before = _stats.corpusTokenizedChars;
+    await searchIndex({ loaded, cacheDir: dir, query: 'coffee', k: 3, embedFn: fakeEmbed });
+    await searchIndex({ loaded, cacheDir: dir, query: 'coffee coffee', k: 3, embedFn: fakeEmbed });
+    const semantic = await searchIndex({
+      loaded, cacheDir: dir, query: 'hockey coffee hockey', k: 3, semanticOnly: true, embedFn: fakeEmbed,
+    });
+    await searchIndex({ loaded, cacheDir: dir, query: 'stocks', k: 3, path: 'c.md', embedFn: fakeEmbed });
+    assert.equal(_stats.corpusTokenizedChars, before);
+    const hockey = semantic.find((result) => result.file === 'b.md');
+    assert.deepEqual(hockey.matches, ['hockey'], 'v3 semantic-only matches use postings and query order');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -426,7 +879,7 @@ test('loadIndex: wrong-dim vector is caught with the chunk identity (issue #40)'
 
     assert.throws(
       () => loadIndex(idx),
-      /chunk a\.md.*corrupt vector: 3 dims, expected 8.*mdss index/,
+      /chunk a\.md.*corrupt vector: 3 dims, expected 768.*mdss index/,
       'error names the file/chunk and the rebuild hint',
     );
     // and search() surfaces the same error instead of returning NaN scores
@@ -446,6 +899,8 @@ test('loadIndex: decimal-array chunk with wrong dim is caught too (issue #40)', 
     // honest legacy shape: no format field, ALL vecs as decimal arrays — then
     // corrupt one chunk with a wrong-length decimal array
     const index = JSON.parse(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'));
+    index.schemaVersion = 2;
+    delete index.lexical;
     delete index.format; // make it look like a legacy ≤0.3.x index
     for (const c of index.chunks) c.vec = [...decodeVec(c.vec)];
     index.chunks.find(c => c.file === 'b.md').vec = [1, 2, 3];
@@ -453,7 +908,7 @@ test('loadIndex: decimal-array chunk with wrong dim is caught too (issue #40)', 
 
     assert.throws(
       () => loadIndex(idx),
-      /chunk b\.md.*vector has 3 dims, expected 8.*mdss index/,
+      /chunk b\.md.*vector has 3 dims, expected 768.*mdss index/,
       'decimal-array dim mismatch rejected',
     );
   } finally {
@@ -519,9 +974,9 @@ test('buildIndex: corrupt vector in the old index is dropped and re-embedded (is
   try {
     // corrupt ONE chunk's base64 with a non-finite value (NaN float32)
     const nanB64 = (() => {
-      const b = Buffer.alloc(4);
-      b.writeFloatLE(NaN, 0);
-      return b.toString('base64');
+      const values = new Float32Array(768);
+      values[0] = NaN;
+      return Buffer.from(values.buffer).toString('base64');
     })();
     const index = JSON.parse(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'));
     index.chunks.find(c => c.file === 'a.md').vec = nanB64;
@@ -544,7 +999,7 @@ test('buildIndex: corrupt vector in the old index is dropped and re-embedded (is
       'corrupt chunk reported');
     const written = JSON.parse(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'));
     const fixed = written.chunks.find(c => c.file === 'a.md');
-    assert.equal(decodeVec(fixed.vec).length, 8, 'chunk re-embedded with a full 8-dim vector');
+    assert.equal(decodeVec(fixed.vec).length, 768, 'chunk re-embedded with the model dimension');
     // the re-indexed index loads and searches cleanly
     const loaded = loadIndex(idx);
     assert.equal(loaded.index.chunks.length, written.chunks.length);

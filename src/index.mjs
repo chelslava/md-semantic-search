@@ -4,7 +4,7 @@
  *
  * Import from a consumer project:
  *
- *   import { buildIndex, search, loadIndex, resolveModel, MODELS } from 'md-semantic-search';
+ *   import { buildIndex, search, loadIndex, searchIndex, resolveModel, MODELS } from 'md-semantic-search';
  *
  * One-shot usage (parses the index on every call):
  *
@@ -13,9 +13,9 @@
  *
  * Repeated queries in one process (parse + model cached, issue #2):
  *
- *   const idx = loadIndex('./.mdss');            // parses vectors.json once
- *   const hitsA = await idx.search('failover runbook');
- *   const hitsB = await idx.search('db backup');  // reuses chunks + extractor
+ *   const loaded = loadIndex('./.mdss');
+ *   const hitsA = await searchIndex({ loaded, cacheDir: '~/.cache/mdss', query: 'failover runbook' });
+ *   const hitsB = await searchIndex({ loaded, cacheDir: '~/.cache/mdss', query: 'db backup' });
  *
  * All functions are model- and path-agnostic: they take explicit paths, so the
  * same API works on any folder of markdown anywhere on disk.

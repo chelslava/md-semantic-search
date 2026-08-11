@@ -1,62 +1,16 @@
 // @ts-check
 /**
- * Hybrid semantic + lexical search over a prebuilt index.
- * Ranking = Reciprocal Rank Fusion of cosine similarity (meaning) and
- * term-overlap (exact names). The model is read from the index, so callers
- * never have to repeat --model at search time.
+ * Hybrid semantic + lexical search over a prebuilt index. Schema-v3 uses
+ * persisted BM25 postings; schema-v0/v1/v2 retain exact token overlap.
+ * Both lexical lanes fuse with cosine ranking through Reciprocal Rank Fusion.
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { embed, cosine, resolveModel, decodeVec, isBinaryIndex, globToRegExp, walkMarkdown, SCHEMA_VERSION, SCHEMA_MIGRATIONS } from './core.mjs';
+import { embed, cosine, decodeVec, globToRegExp, walkMarkdown } from './core.mjs';
+import { validateIndexEnvelope, validateNumericVector } from './index-format.mjs';
 import { rerankScores } from './rerank.mjs';
-
-// Common ru/en function words — they match everywhere and pollute lexical scores.
-// NOTE: content words (e.g. "код"/"кода" = "code") are deliberately NOT here —
-// for an engineering wiki they carry real signal (issue #7).
-//
-// Issue #22: the old 3-char minimum ({3,}) silently dropped short identifiers
-// (C#, C++, go, io, V8, d3, jq, ES7) from the lexical lane. Decision (recorded
-// per #22 acceptance criteria): FLAT {2,} FLOOR + expanded STOP, not the
-// identifier-only heuristic — the heuristic would still drop go/io/jq which are
-// plain 2-letter words but real search terms. 2-letter noise is instead filtered
-// by adding the common 2-letter EN/RU function words below. Single letters stay
-// dropped (R/C are a deliberate miss — too noisy to keep).
-const STOP = new Set([
-  'the', 'and', 'for', 'are', 'was', 'has', 'with', 'this', 'that', 'from',
-  'not', 'but', 'you', 'your', 'can', 'all', 'any', 'its',
-  'все', 'как', 'что', 'это', 'при', 'для', 'или', 'был', 'без', 'над',
-  'под', 'так', 'его', 'нет', 'есть',
-  // 2-letter EN function words (issue #22 — reachable with the {2,} floor).
-  'of', 'to', 'in', 'on', 'it', 'is', 'at', 'by', 'be', 'we', 'us', 'he',
-  'as', 'or', 'an', 'do', 'so', 'no', 'if', 'up', 'my', 'me', 'am',
-  // 2-letter RU function words (issue #22).
-  'по', 'от', 'из', 'на', 'за', 'во', 'со', 'не', 'ни', 'же', 'ли', 'бы',
-  'уж', 'мы', 'вы', 'он', 'то', 'но', 'до', 'ко',
-]);
-
-/**
- * Tokenize for the LEXICAL lane (keywordScores/matches). The semantic lane
- * embeds full text, so these heuristics do not affect embeddings.
- *
- * Issue #22: tokens must START with a letter/digit, but may then contain
- * # + - INSIDE so identifier-like terms survive: "C#" → "c#", "C++" → "c++",
- * "win32-api" → "win32-api". Starting with a letter/digit means markdown noise
- * ("## heading", "---" rules, "+++") never becomes a token.
- * A trailing "." is a splitter (not in the class), so "end." → "end" and
- * "node.js" → "node" + "js" (both useful, and "e.g." → nothing).
- * Floor is 2 chars ({2,} via the {1,} class + length filter below); 1-char
- * tokens are pure noise and dropped. STOP filtering happens after.
- */
-export function tokenize(text) {
-  const m = text.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}#+-]*/gu);
-  if (!m) return [];
-  const out = [];
-  for (const t of m) {
-    if (t.length === 1) continue;
-    if (!STOP.has(t)) out.push(t);
-  }
-  return out;
-}
+import { bm25Scores, matchingTerms, tokenize } from './lexical.mjs';
+export { tokenize } from './lexical.mjs';
 
 // In-memory token-set cache for the lexical lane (issue #18). Tokenizing the
 // corpus is a pure function of the chunk texts — but keywordScores used to
@@ -92,7 +46,8 @@ function tokenSet(c) {
 }
 
 /**
- * Lexical scores by TOKEN OVERLAP (set intersection of query terms vs chunk
+ * Legacy compatibility helper for schema-v0/v1/v2 and public API consumers.
+ * Scores by TOKEN OVERLAP (set intersection of query terms vs chunk
  * terms), not substring. "win" must NOT match "window", "token" must NOT match
  * "tokens" — only exact token overlap counts (issue #7). The haystack is
  * tokenized once per chunk (issue #18 — cached per loaded index, not per
@@ -137,22 +92,91 @@ export function rrf(rankings, k = 60) {
 /**
  * @typedef {Object} IndexFile
  * @property {string} [format]
+ * @property {number} [schemaVersion]
  * @property {string} [model]
  * @property {string} [modelAlias]
  * @property {number} [dim]
  * @property {string} [built]
  * @property {number} [chunkCount]
  * @property {string} [db] - markdown base the index was built from (issue #13 --since)
+ * @property {import('./lexical.mjs').LexicalIndex} [lexical]
  * @property {IndexChunk[]} chunks
  */
 
+/** @typedef {{kind:'persisted-bm25', lexical:import('./lexical.mjs').LexicalIndex}|{kind:'legacy-overlap'}} LexicalState */
+/** @typedef {{file:string, title:string, heading:string, text:string, vec:Float32Array}} RuntimeChunk */
+/** @typedef {{schema:number, db:(string|undefined), chunks:RuntimeChunk[], lexicalState:LexicalState,
+ *   expectedDim:(number|undefined), model:import('./core.mjs').ModelDescriptor}} RuntimeIndexState */
+
+const runtimeIndexStates = new WeakMap();
+
 /**
- * Parse + decode an index file once. Returns the raw index plus the resolved
- * model, so a library consumer can hold BOTH in memory across searches and
- * skip re-parsing vectors.json on every query (issue #2 / #14).
- * @param {string} indexDir
- * @returns {{index: IndexFile, model: import('./core.mjs').ModelDescriptor}}
+ * Copy exactly the state consumed by search. The public index remains mutable
+ * for compatibility, but no search reads it after this snapshot is created.
+ * @param {IndexFile} index
+ * @param {{schema:number, dim:(number|undefined), model:import('./core.mjs').ModelDescriptor}} validation
+ * @returns {RuntimeIndexState}
  */
+function snapshotRuntimeIndex(index, validation) {
+  const chunks = index.chunks.map(chunk => ({
+    file: chunk.file,
+    title: chunk.title,
+    heading: chunk.heading,
+    text: chunk.text,
+    vec: Float32Array.from(chunk.vec),
+  }));
+  let lexicalState = /** @type {LexicalState} */ ({ kind: 'legacy-overlap' });
+  if (validation.schema >= 3) {
+    /** @type {Record<string, Array<[number, number]>>} */
+    const postings = Object.create(null);
+    for (const [term, posting] of Object.entries(index.lexical.postings)) {
+      postings[term] = posting.map(([docId, frequency]) => [docId, frequency]);
+    }
+    lexicalState = {
+      kind: 'persisted-bm25',
+      lexical: {
+        format: 'bm25-v1',
+        documentLengths: [...index.lexical.documentLengths],
+        postings,
+      },
+    };
+  }
+  return {
+    schema: validation.schema,
+    db: index.db,
+    chunks,
+    lexicalState,
+    expectedDim: validation.dim,
+    model: { ...validation.model },
+  };
+}
+
+/** @param {IndexFile} index @returns {RuntimeIndexState} */
+function validateRuntimeIndex(index) {
+  const cached = runtimeIndexStates.get(index);
+  if (cached) return cached;
+  const validated = validateIndexEnvelope(index, 'index', { encoding: 'loaded' });
+  let expectedDim = validated.dim;
+  if (validated.schema < 3) {
+    for (let position = 0; position < index.chunks.length; position++) {
+      const chunk = index.chunks[position];
+      if (chunk === null || typeof chunk !== 'object' || Array.isArray(chunk)) {
+        throw new Error(`chunk ${position} must be an object — run \`mdss index\` to rebuild`);
+      }
+      const where = chunk.file + (chunk.heading ? ` › ${chunk.heading}` : '');
+      const length = validateNumericVector(chunk.vec, expectedDim, `chunk ${where}`);
+      expectedDim ??= length;
+    }
+  }
+  const state = snapshotRuntimeIndex(index, {
+    schema: validated.schema,
+    dim: expectedDim,
+    model: validated.model,
+  });
+  runtimeIndexStates.set(index, state);
+  return state;
+}
+
 /**
  * Warn (once, non-fatal) when the loaded index is older than the newest
  * change under the markdown base it was built from (issue #20). The index
@@ -198,30 +222,19 @@ export function loadIndex(indexDir) {
   if (!fs.existsSync(vectorsPath)) {
     throw new Error(`No index at ${vectorsPath}. Run \`mdss index\` first.`);
   }
-  let index;
+  let parsed;
   try {
-    index = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
+    parsed = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
   } catch (e) {
     // Corrupt index file — name the file and the fix, no raw stack trace
     // (issue #20).
     throw new Error(
       `${vectorsPath} is not valid JSON (${e.message}); run \`mdss index\` to rebuild.`);
   }
-
-  // Schema gate (issue #39): an index written by a NEWER mdss must not be
-  // misparsed by an older binary — clear upgrade error instead of silent
-  // garbage. Older schemas are migrated step-by-step (v0 legacy shapes are
-  // already handled by the format heuristics below).
-  const schema = index.schemaVersion ?? 0;
-  if (schema > SCHEMA_VERSION) {
-    throw new Error(
-      `${vectorsPath} uses schema v${schema}, but this mdss supports up to ` +
-      `v${SCHEMA_VERSION} (built by a newer version) — upgrade md-semantic-search.`);
-  }
-  for (let v = schema + 1; v <= SCHEMA_VERSION; v++) {
-    const step = SCHEMA_MIGRATIONS[v];
-    if (step) step(index);
-  }
+  const validated = validateIndexEnvelope(parsed, vectorsPath, { encoding: 'stored' });
+  const index = /** @type {IndexFile} */ (validated.index);
+  const { schema, model, dim: validatedDim } = validated;
+  let expectedDim = validatedDim;
 
   // Validate the model the index was built with. Indexes written by v0.1.x have
   // no "model" field at all — warn instead of silently assuming a default.
@@ -230,39 +243,40 @@ export function loadIndex(indexDir) {
       'version); assuming the default model. Re-run `mdss index` to refresh.\n');
   }
 
-  const model = resolveModel(index.modelAlias || index.model);
-  // Expected vector length for the dim check (issue #40): the stored index.dim
-  // wins; legacy indexes without dim fall back to the resolved model's dim.
-  const expectedDim = index.dim ?? (model.dim > 0 ? model.dim : undefined);
-
   // v0.4.0+ stores vectors as base64 Float32Array (issue #4); legacy ≤0.3.x
   // indexes hold decimal arrays. Decode the binary format once up front so the
   // cosine sweep below always sees plain numbers. Dim validation runs for BOTH
   // shapes (issue #40): a wrong-length vector — from a truncated base64, a
   // mixed-model index, or a partial write — used to silently produce NaN
   // scores; now it fails loudly at load with the chunk's identity.
-  for (const c of index.chunks) {
+  for (let position = 0; position < index.chunks.length; position++) {
+    const c = index.chunks[position];
+    if (c === null || typeof c !== 'object' || Array.isArray(c)) {
+      throw new Error(`chunk ${position} must be an object — run \`mdss index\` to rebuild`);
+    }
     if (typeof c.vec === 'string') {
-      if (!isBinaryIndex(index)) {
+      if (index.format !== 'binary-v1') {
         throw new Error(`chunk ${c.file}: unexpected base64 vector in a legacy ` +
           `decimal index — run \`mdss index\` to rebuild`);
       }
       try {
         // decodeVec throws on corrupt base64 (truncated, non-finite, wrong dim)
         c.vec = decodeVec(c.vec, expectedDim);
+        expectedDim ??= c.vec.length;
       } catch (e) {
         const where = c.file + (c.heading ? ` › ${c.heading}` : '');
         throw new Error(`chunk ${where}: ${e.message}`);
       }
-    } else if (expectedDim !== undefined && Array.isArray(c.vec) &&
-               c.vec.length !== expectedDim) {
+    } else {
       const where = c.file + (c.heading ? ` › ${c.heading}` : '');
-      throw new Error(`chunk ${where}: vector has ${c.vec.length} dims, ` +
-        `expected ${expectedDim} — run \`mdss index\` to rebuild`);
+      const length = validateNumericVector(c.vec, expectedDim, `chunk ${where}`);
+      expectedDim ??= length;
     }
   }
 
   warnIfStale(index);
+
+  runtimeIndexStates.set(index, snapshotRuntimeIndex(index, { schema, dim: expectedDim, model }));
 
   return { index, model };
 }
@@ -306,7 +320,9 @@ export async function searchIndex(opts) {
   // (issue #23).
   const embedFn = opts.embedFn ?? embed;
   const rerankFn = opts.rerankFn ?? rerankScores;
-  const { index, model } = loaded;
+  const { index } = loaded;
+  const runtime = validateRuntimeIndex(index);
+  const { chunks, db, lexicalState, expectedDim } = runtime;
 
   // Candidate filtering happens BEFORE embedding/ranking (issue #13): --path
   // globs and --since (file mtime) shrink the sweep for large corpora.
@@ -318,20 +334,20 @@ export async function searchIndex(opts) {
     sinceMs = since instanceof Date ? since.getTime() : Date.parse(String(since));
     if (Number.isNaN(sinceMs)) throw new Error(`Invalid --since date: "${since}" (use YYYY-MM-DD or ISO 8601)`);
   }
-  let chunks = index.chunks;
+  let candidates = chunks.map((chunk, idx) => ({ chunk, idx }));
   if (pathRes.length > 0 || sinceMs !== undefined) {
-    if (sinceMs !== undefined && !index.db) {
+    if (sinceMs !== undefined && !db) {
       throw new Error('--since requires an index that knows its --db (index.db missing). Re-run `mdss index`.');
     }
     const mtimeCache = new Map();
-    chunks = index.chunks.filter(c => {
-      if (pathRes.length > 0 && !pathRes.some(re => re.test(c.file))) return false;
+    candidates = candidates.filter(({ chunk }) => {
+      if (pathRes.length > 0 && !pathRes.some(re => re.test(chunk.file))) return false;
       if (sinceMs !== undefined) {
-        let m = mtimeCache.get(c.file);
+        let m = mtimeCache.get(chunk.file);
         if (m === undefined) {
-          try { m = fs.statSync(path.join(index.db, c.file)).mtimeMs; }
+          try { m = fs.statSync(path.join(db, chunk.file)).mtimeMs; }
           catch { m = -Infinity; } // file vanished → chunk no longer eligible
-          mtimeCache.set(c.file, m);
+          mtimeCache.set(chunk.file, m);
         }
         if (m < sinceMs) return false;
       }
@@ -339,9 +355,18 @@ export async function searchIndex(opts) {
     });
   }
 
-  const [qVec] = await embedFn([query], 'query', model, cacheDir, offline);
+  const [qVec] = await embedFn([query], 'query', runtime.model, cacheDir, offline);
+  if ((Array.isArray(qVec) || qVec instanceof Float32Array) &&
+      expectedDim !== undefined && qVec.length !== expectedDim) {
+    throw new Error(`query vector has ${qVec.length} dims, expected ${expectedDim} — ` +
+      'run `mdss index` to rebuild');
+  }
+  validateNumericVector(qVec, undefined, 'query vector');
+  const queryTerms = [...new Set(tokenize(query))];
 
-  const semantic = chunks.map((c, idx) => ({ idx, score: cosine(qVec, c.vec) }));
+  const semantic = candidates.map(({ chunk, idx }) => {
+    return { idx, score: cosine(qVec, chunk.vec) };
+  });
   const cosByIdx = new Map(semantic.map(s => [s.idx, s.score]));
 
   // Candidate pool: without rerank we rank exactly k; with rerank we pull a
@@ -353,7 +378,12 @@ export async function searchIndex(opts) {
     ranked = [...semantic].sort((a, b) => b.score - a.score).slice(0, pool)
       .map(s => ({ idx: s.idx, fscore: s.score, cos: s.score }));
   } else {
-    const kw = keywordScores(chunks, query).map((score, idx) => ({ idx, score }));
+    const kw = lexicalState.kind === 'persisted-bm25'
+      ? [...bm25Scores(lexicalState.lexical, queryTerms,
+        new Set(candidates.map(candidate => candidate.idx))).entries()]
+        .map(([idx, score]) => ({ idx, score }))
+      : keywordScores(candidates.map(candidate => candidate.chunk), query)
+        .map((score, position) => ({ idx: candidates[position].idx, score }));
     const fused = rrf([semantic, kw]);
     ranked = [...fused.entries()]
       .map(([idx, fscore]) => ({ idx, fscore, cos: cosByIdx.get(idx) }))
@@ -372,13 +402,12 @@ export async function searchIndex(opts) {
       .slice(0, k);
   }
 
-  // matches: reuse the SAME cached per-chunk token sets — the old code
-  // re-tokenized the top-k chunks again here (issue #18, second call site).
-  const qTerms = new Set(tokenize(query));
+  // V3 matches come from postings; legacy indexes reuse cached token sets.
   return ranked.map(r => {
     const c = chunks[r.idx];
-    const hay = tokenSet(c);
-    const matches = [...qTerms].filter(t => hay.has(t));
+    const matches = lexicalState.kind === 'persisted-bm25'
+      ? matchingTerms(lexicalState.lexical, queryTerms, r.idx)
+      : queryTerms.filter(term => tokenSet(c).has(term));
     return {
       file: c.file,
       title: c.title,
