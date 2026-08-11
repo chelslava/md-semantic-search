@@ -213,7 +213,19 @@ export function encodeVec(vec) {
  * @returns {Float32Array}
  */
 export function decodeVec(s, dim) {
+  if (s.length === 0) {
+    throw new Error('corrupt base64 vector: empty value — run `mdss index` to rebuild');
+  }
+  if (s.length % 4 !== 0 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(s)) {
+    throw new Error('corrupt base64 vector: encoding is not canonical — ' +
+      'run `mdss index` to rebuild');
+  }
   const buf = Buffer.from(s, 'base64');
+  if (buf.toString('base64') !== s) {
+    throw new Error('corrupt base64 vector: encoding is not canonical — ' +
+      'run `mdss index` to rebuild');
+  }
   if (buf.byteLength % 4 !== 0) {
     throw new Error(
       `corrupt base64 vector: ${buf.byteLength} bytes is not a multiple of 4 ` +
@@ -242,6 +254,36 @@ export function isBinaryIndex(index) {
   return index.format === 'binary-v1';
 }
 
+/** @param {unknown} value @returns {number} */
+export function parseSchemaVersion(value) {
+  if (value === undefined) return 0;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error('schemaVersion must be a non-negative safe integer — ' +
+      'run `mdss index` to rebuild');
+  }
+  return value;
+}
+
+/**
+ * @param {unknown} stored
+ * @param {number} known
+ * @returns {number|undefined}
+ */
+export function resolveIndexDimension(stored, known) {
+  if (stored !== undefined) {
+    if (typeof stored !== 'number' || !Number.isSafeInteger(stored) || stored <= 0) {
+      throw new Error('index.dim must be a positive safe integer — ' +
+        'run `mdss index` to rebuild');
+    }
+    if (known > 0 && stored !== known) {
+      throw new Error(`index.dim ${stored} does not match known model dimension ${known} — ` +
+        'run `mdss index` to rebuild');
+    }
+    return stored;
+  }
+  return known > 0 ? known : undefined;
+}
+
 /**
  * Index schema version (issue #39). Bump on every breaking change to
  * vectors.json and add a migration step to SCHEMA_MIGRATIONS.
@@ -250,8 +292,9 @@ export function isBinaryIndex(index) {
  *     field, missing chunkHash, vec-less chunks) already handle all v0 shapes.
  *   v1: first explicit version; written by all builds since 0.6.0.
  *   v2: chunks persist leaf-inclusive headingPath for contextual embeddings.
+ *   v3: vectors.json requires an embedded BM25 lexical index.
  */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /**
  * Mark a legacy index as schema v2 without inventing heading paths it never
@@ -262,6 +305,9 @@ export const SCHEMA_VERSION = 2;
 export function migrateToSchemaV2(index) {
   index.schemaVersion = 2;
 }
+
+/** Schema-v3 is a format declaration; only a rebuild may write it. */
+export function migrateToSchemaV3() {}
 
 /**
  * Migration table: `SCHEMA_MIGRATIONS[n]` upgrades an index at schema n-1 → n.
@@ -276,6 +322,7 @@ export const SCHEMA_MIGRATIONS = {
   // is explicit: every future format change adds a real step here + a test.
   1: () => {},
   2: migrateToSchemaV2,
+  3: migrateToSchemaV3,
 };
 
 /** Recursively collect .md/.markdown files under dir, honoring ignore globs. */
@@ -432,13 +479,16 @@ export function parseFile(absPath, dbDir, maxChunk, raw) {
   const { frontmatter, body } = splitFrontmatter(content);
   const rel = path.relative(dbDir, absPath).split(path.sep).join('/');
   const title = extractTitle(frontmatter, body, rel);
-  return chunkMarkdown(body, maxChunk).map(c => ({
-    file: rel,
-    title,
-    heading: c.heading,
-    headingPath: c.headingPath,
-    text: c.text,
-  }));
+  return chunkMarkdown(body, maxChunk).map(c => {
+    const heading = c.heading || title;
+    return {
+      file: rel,
+      title,
+      heading,
+      headingPath: c.headingPath.length > 0 ? c.headingPath : [heading],
+      text: c.text,
+    };
+  });
 }
 
 export { resolveModel };

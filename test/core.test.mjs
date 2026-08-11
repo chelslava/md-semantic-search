@@ -169,6 +169,16 @@ test('resolveModel: aliases resolve; raw ids pin revisions via id@revision', () 
 
   const bge = resolveModel('Xenova/bge-m3@deadbeef');
   assert.equal(bge.queryPrefix, '', 'bge ids get no prefixes');
+
+  const rawKnown = resolveModel('Xenova/multilingual-e5-base');
+  assert.equal(rawKnown.dim, 768, 'canonical registry id retains known dimension');
+  assert.equal(rawKnown.queryPrefix, 'query: ');
+  const pinnedKnown = resolveModel('Xenova/multilingual-e5-base@review47');
+  assert.equal(pinnedKnown.dim, 768, 'pinned canonical registry id retains known dimension');
+  assert.equal(pinnedKnown.revision, 'review47');
+
+  const custom = resolveModel('Xenova/reviewer-custom-model');
+  assert.equal(custom.dim, 0, 'unknown raw ids remain custom with an unknown dimension');
 });
 
 test('walkMarkdown: recursive md/markdown collection, sorted, dotfiles skipped', () => {
@@ -239,9 +249,16 @@ test('decodeVec: truncated base64 throws instead of decoding garbage (issue #40)
   const truncated = b64.slice(0, -3);
   assert.throws(
     () => decodeVec(truncated),
-    /corrupt base64 vector: .* not a multiple of 4.*mdss index/,
+    /corrupt base64 vector: (?:encoding is not canonical|.*not a multiple of 4).*mdss index/,
     'truncated base64 rejected with the rebuild hint',
   );
+});
+
+test('decodeVec: rejects empty, invalid, and non-canonical base64 storage', () => {
+  assert.throws(() => decodeVec(''), /corrupt base64 vector.*empty.*mdss index/i);
+  assert.throws(() => decodeVec('!!!!'), /corrupt base64 vector.*canonical.*mdss index/i);
+  const canonical = encodeVec([1]);
+  assert.throws(() => decodeVec(canonical.replace(/=+$/, '')), /corrupt base64 vector.*canonical.*mdss index/i);
 });
 
 test('decodeVec: non-finite values (NaN/Infinity) are rejected (issue #40)', () => {
@@ -263,13 +280,17 @@ test('decodeVec: dim mismatch is rejected when a dim is given (issue #40)', () =
   assert.equal(decodeVec(b64).length, 3);
 });
 
-test('SCHEMA_VERSION/SCHEMA_MIGRATIONS: v2 is current with explicit sequential migrations', () => {
-  assert.equal(SCHEMA_VERSION, 2);
+test('SCHEMA_VERSION/SCHEMA_MIGRATIONS: v3 declaration never upgrades legacy data without a rebuild', () => {
+  assert.equal(SCHEMA_VERSION, 3);
   assert.equal(typeof SCHEMA_MIGRATIONS[1], 'function', 'v0→v1 migration step exists');
   assert.equal(typeof SCHEMA_MIGRATIONS[2], 'function', 'v1→v2 migration step exists');
-  // the step runs without throwing on a legacy-shape index
+  assert.equal(typeof SCHEMA_MIGRATIONS[3], 'function', 'v2→v3 migration step exists');
   SCHEMA_MIGRATIONS[1]({ format: undefined, chunks: [{ vec: [1, 2, 3] }] });
   SCHEMA_MIGRATIONS[2]({ format: 'binary-v1', chunks: [] });
+  const v2 = { schemaVersion: 2, format: 'binary-v1', chunks: [] };
+  SCHEMA_MIGRATIONS[3](v2);
+  assert.equal(v2.schemaVersion, 2);
+  assert.equal('lexical' in v2, false);
 });
 
 test('encodeVec: binary is ~4x smaller than decimal JSON (issue #4)', () => {
@@ -348,6 +369,19 @@ test('parseFile: accepts pre-read content, skips the second disk read (issue #35
     fs.writeFileSync(f, raw);
     assert.deepEqual(parseFile(f, dir), parseFile(f, dir, undefined, raw),
       'raw-supplied and disk-read parsing are byte-for-byte equivalent');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('parseFile: headingless content uses the document title as a valid leaf path', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-headingless-'));
+  const file = path.join(dir, 'note.md');
+  try {
+    const chunks = parseFile(file, dir, undefined,
+      '---\ntitle: Headingless\n---\n\nbody content long enough to become a searchable chunk');
+    assert.equal(chunks[0].heading, 'Headingless');
+    assert.deepEqual(chunks[0].headingPath, ['Headingless']);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

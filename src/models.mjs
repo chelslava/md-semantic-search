@@ -48,8 +48,6 @@ export const DEFAULT_MODEL = 'e5-base';
 export function resolveModel(name) {
   if (!name) return MODELS[DEFAULT_MODEL];
   if (MODELS[name]) return MODELS[name];
-  // Allow passing a raw HF/Xenova id; assume E5-style prefixes unless it's bge.
-  const isBge = /bge/i.test(name);
   let id = name;
   let revision = 'main';
   const at = name.indexOf('@');
@@ -57,6 +55,10 @@ export function resolveModel(name) {
     id = name.slice(0, at);
     revision = name.slice(at + 1) || 'main';
   }
+  const registered = Object.values(MODELS).find(model => model.id === id);
+  if (registered) return { ...registered, revision };
+  // Allow passing a raw HF/Xenova id; assume E5-style prefixes unless it's bge.
+  const isBge = /bge/i.test(id);
   return {
     id,
     revision,
