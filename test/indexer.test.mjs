@@ -44,6 +44,9 @@ function readIndex(indexDir) {
 
 const sec = (name, body) => `## ${name}\n\n${body}`;
 const big = (n) => 'w'.repeat(n);
+const QWEN_ID = 'onnx-community/Qwen3-Embedding-0.6B-ONNX';
+const QWEN_REVISION = 'c25a394dd583836952667c12f008335071b3f43d';
+const QWEN_MODEL = `${QWEN_ID}@${QWEN_REVISION}`;
 const sections = (count, prefix = 'Entry') => Array.from(
   { length: count },
   (_, i) => sec(`${prefix} ${i + 1}`, `${prefix.toLowerCase()}-${i + 1} ${big(40)}`),
@@ -56,6 +59,11 @@ test('chunkHash: stable for identical input; differs on content/model changes', 
   const a = chunkHash(model, chunk);
   const b = chunkHash(model, { ...chunk });
   assert.equal(a, b, 'identical input → identical hash');
+  const preAdapterMeanHash = '5fbbe72d6a9df12fb55b51811981281f5e936bf8c9b9e230da7718903d965f9a';
+  assert.equal(a, preAdapterMeanHash,
+    'omitted/default mean pooling preserves the pre-adapter hash bytes');
+  assert.equal(chunkHash({ ...model, pooling: 'mean' }, chunk), preAdapterMeanHash,
+    'explicit mean pooling preserves the pre-adapter hash bytes');
   const expected = crypto.createHash('sha256').update([
     'heading-path-v1', model.id, 'main', model.passagePrefix, 'T\nH\nbody text here',
   ].join('\u0000')).digest('hex');
@@ -253,6 +261,7 @@ test('buildIndex: schema-v2 rebuild reuses vectors and writes an honest v3 lexic
     await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
     const v2 = readIndex(idx);
     v2.schemaVersion = 2;
+    delete v2.adapterFingerprint;
     delete v2.lexical;
     fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(v2));
     const before = _lexicalStats.documentsAnalyzed;
@@ -268,6 +277,56 @@ test('buildIndex: schema-v2 rebuild reuses vectors and writes an honest v3 lexic
     const current = readIndex(idx);
     assert.equal(current.schemaVersion, 3);
     assert.equal(validateLexicalIndex(current.lexical, current.chunks.length), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildIndex: missing adapter fingerprint keeps legacy E5 vectors reusable', async () => {
+  const dir = tempDir('legacy-e5-adapter');
+  const idx = path.join(dir, '.mdss');
+  try {
+    writeCorpus(dir, { 'doc.md': `# Doc\n\n${sec('One', big(40))}` });
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const legacy = readIndex(idx);
+    delete legacy.adapterFingerprint;
+    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(legacy));
+
+    const rebuilt = await buildIndex({
+      db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base',
+      embedFn: () => { throw new Error('legacy E5 vectors must be reused'); },
+    });
+
+    assert.equal(rebuilt.embedded, 0);
+    assert.equal(rebuilt.reused, rebuilt.chunks);
+    assert.match(readIndex(idx).adapterFingerprint, /^adapter-v1:[a-f0-9]{64}$/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildIndex: missing adapter fingerprint rejects legacy generic Qwen vectors but reuses lexical records', async () => {
+  const dir = tempDir('legacy-qwen-adapter');
+  const idx = path.join(dir, '.mdss');
+  try {
+    writeCorpus(dir, {
+      'doc.md': `# Doc\n\n${sec('One', big(40))}\n${sec('Two', big(40))}`,
+    });
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: QWEN_MODEL, embedFn: fakeEmbed });
+    const legacy = readIndex(idx);
+    delete legacy.adapterFingerprint;
+    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(legacy));
+    const before = _lexicalStats.documentsAnalyzed;
+
+    const rebuilt = await buildIndex({
+      db: dir, indexDir: idx, cacheDir: dir, modelName: QWEN_MODEL, embedFn: fakeEmbed,
+    });
+
+    assert.equal(rebuilt.reused, 0, 'legacy generic Qwen vectors are incompatible with the registered adapter');
+    assert.equal(rebuilt.embedded, rebuilt.chunks, 'every Qwen vector is regenerated');
+    assert.equal(_lexicalStats.documentsAnalyzed, before,
+      'model-independent lexical records are reused without reanalysis');
+    assert.match(readIndex(idx).adapterFingerprint, /^adapter-v1:[a-f0-9]{64}$/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -510,6 +569,30 @@ test('buildIndex: known dimensions are enforced while custom model dimensions ar
     });
     assert.equal(custom.dim, 3);
     assert.equal(loadIndex(customIdx).index.dim, 3);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildIndex: registered Qwen rejects wrong dimensions before canonical publication', async () => {
+  const dir = tempDir('qwen-dimension');
+  const idx = path.join(dir, '.mdss');
+  try {
+    // Given: a Markdown corpus configured for the registered 1024d Qwen profile.
+    writeCorpus(dir, { 'a.md': `# A\n\n${sec('One', big(40))}` });
+
+    // When: the embedding adapter returns a vector with the wrong dimension.
+    await assert.rejects(
+      buildIndex({
+        db: dir, indexDir: idx, cacheDir: dir, modelName: QWEN_MODEL,
+        embedFn: (texts) => texts.map(() => [1, 0, 0]),
+      }),
+      /invalid vectors \(expected 1024 dims\).*mdss index/i,
+    );
+
+    // Then: neither canonical index artifact is published.
+    assert.equal(fs.existsSync(path.join(idx, 'vectors.json')), false);
+    assert.equal(fs.existsSync(path.join(idx, '.hashes.json')), false);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -843,6 +926,7 @@ test('buildIndex: interrupted fresh build resumes from the periodic checkpoint (
     assert.equal(checkpoint.format, 'binary-v1');
     assert.equal(checkpoint.model, 'Xenova/multilingual-e5-base@main');
     assert.equal(checkpoint.modelAlias, 'e5-base');
+    assert.match(checkpoint.adapterFingerprint, /^adapter-v1:[a-f0-9]{64}$/);
     assert.equal(checkpoint.dim, 768);
     assert.equal(checkpoint.db, dir);
     assert.equal(typeof checkpoint.built, 'string');
@@ -874,6 +958,45 @@ test('buildIndex: interrupted fresh build resumes from the periodic checkpoint (
     assert.equal(resumed.embedded, 32);
     assert.ok(readIndex(idx).chunks.every((chunk) => typeof chunk.vec === 'string'));
     assert.equal(fs.existsSync(checkpointPath), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildIndex: missing or incompatible Qwen adapter fingerprint prevents checkpoint resume', async () => {
+  const dir = tempDir('checkpoint-qwen-adapter');
+  try {
+    for (const [name, fingerprint] of [
+      ['missing', undefined],
+      ['incompatible', 'adapter-v1:incompatible'],
+    ]) {
+      const caseDir = path.join(dir, name);
+      const idx = path.join(caseDir, '.mdss');
+      writeCorpus(caseDir, { 'doc.md': `# Doc\n\n${sec('One', big(40))}` });
+      await buildIndex({ db: caseDir, indexDir: idx, cacheDir: dir, modelName: QWEN_MODEL, embedFn: fakeEmbed });
+      const checkpoint = readIndex(idx);
+      const hashes = JSON.parse(fs.readFileSync(path.join(idx, '.hashes.json'), 'utf8'));
+      if (fingerprint === undefined) delete checkpoint.adapterFingerprint;
+      else checkpoint.adapterFingerprint = fingerprint;
+      fs.writeFileSync(path.join(idx, '.checkpoint.json'), JSON.stringify({
+        ...checkpoint, complete: true, hashes,
+      }));
+      fs.rmSync(path.join(idx, 'vectors.json'));
+      fs.rmSync(path.join(idx, '.hashes.json'));
+      let embeddedTexts = 0;
+
+      const rebuilt = await buildIndex({
+        db: caseDir, indexDir: idx, cacheDir: dir, modelName: QWEN_MODEL,
+        embedFn: (texts, kind, model, cacheDir) => {
+          embeddedTexts += texts.length;
+          return fakeEmbed(texts, kind, model, cacheDir);
+        },
+      });
+
+      assert.equal(embeddedTexts, rebuilt.chunks, name);
+      assert.equal(rebuilt.embedded, rebuilt.chunks, name);
+      assert.equal(rebuilt.reused, 0, name);
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

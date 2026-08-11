@@ -414,16 +414,15 @@ export function checkHealth({ db, indexDir, cacheDir, requireOffline = false }) 
     }
   }
 
-  // --- model cache: transformers.js layout models--<org>--<name> ---
+  // --- model cache: transformers.js FileCache keys under cacheDir ---
   // Offline readiness — the model must be downloaded before search works in
   // --offline mode. Missing cache is a warning unless the user explicitly
   // demands offline readiness (then it's a failure, issue #43).
   const modelId = index.model ?? null;
   report.model.id = modelId;
   if (modelId) {
-    const bare = modelId.split('@')[0]; // strip pinned revision (#27)
-    const [org, ...rest] = bare.split('/');
-    const cachePath = path.join(cacheDir, `models--${org}--${rest.join('--')}`);
+    const model = resolveModel(modelId);
+    const cachePath = path.join(cacheDir, model.id, ...(model.revision === 'main' ? [] : [model.revision]));
     report.model.cachePath = cachePath;
     report.model.cached = fs.existsSync(cachePath);
     if (!report.model.cached) {
@@ -585,7 +584,7 @@ function cmdModels() {
     const star = alias === DEFAULT_MODEL ? ' (default)' : '';
     process.stdout.write(`  ${alias}${star}\n    ${m.id} · dim ${m.dim}\n    ${m.note}\n\n`);
   }
-  process.stdout.write('You can also pass any raw Xenova/* model id to --model.\n');
+  process.stdout.write('You can also pass any compatible Hugging Face model id to --model.\n');
 }
 
 async function cmdServe(opts) {

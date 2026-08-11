@@ -136,8 +136,36 @@ export async function withIndexLock(indexDir, fn) {
  * @property {number} [dim] - embedding dimension (0 for custom ids)
  * @property {string} [queryPrefix] - E5-style "query: " prefix ('' for bge)
  * @property {string} [passagePrefix] - E5-style "passage: " prefix ('' for bge)
+ * @property {'mean'|'last_token'} [pooling] - token pooling strategy (default "mean")
  * @property {string} [note] - human-readable description
  */
+
+/**
+ * Select the Transformers.js pipeline source for a model load.
+ * @param {ModelDescriptor} model
+ * @param {string} cacheDir
+ * @param {boolean} offline
+ * @returns {string}
+ */
+export function getPipelineModelSource(model, cacheDir, offline) {
+  const revision = model.revision || 'main';
+  return offline && revision !== 'main'
+    ? path.join(cacheDir, model.id, revision)
+    : model.id;
+}
+
+/**
+ * Build the in-process extractor identity from the canonical model and source.
+ * @param {ModelDescriptor} model
+ * @param {string} cacheDir
+ * @param {boolean} offline
+ * @returns {string}
+ */
+export function getExtractorCacheKey(model, cacheDir, offline) {
+  const revision = model.revision || 'main';
+  const source = getPipelineModelSource(model, cacheDir, offline);
+  return `${model.id}@${revision}|${offline ? 'off' : 'on'}|${source}`;
+}
 
 /**
  * Lazily load (and cache) a feature-extraction pipeline for a model.
@@ -146,7 +174,9 @@ export async function withIndexLock(indexDir, fn) {
  * @param {boolean} [offline=false] - never touch the network; require a cached model
  */
 export async function getExtractor(model, cacheDir, offline = false) {
-  const key = `${model.id}@${model.revision || 'main'}|${offline ? 'off' : 'on'}`;
+  const revision = model.revision || 'main';
+  const source = getPipelineModelSource(model, cacheDir, offline);
+  const key = getExtractorCacheKey(model, cacheDir, offline);
   if (_extractors.has(key)) return _extractors.get(key);
   const { pipeline, env } = await import('@huggingface/transformers');
   if (cacheDir) env.cacheDir = cacheDir;
@@ -154,12 +184,28 @@ export async function getExtractor(model, cacheDir, offline = false) {
   // Prefer the quantized (q8) weights when the model repo ships them — this is
   // what Xenova/* repos do (e5-base: ~280MB vs ~1.1GB fp32). Without this the
   // v4 default dtype (fp32 on Node) would download the 4x larger weights.
-  const ext = await pipeline('feature-extraction', model.id, {
-    revision: model.revision || 'main',
+  const ext = await pipeline('feature-extraction', source, {
+    revision,
     dtype: 'q8',
   });
   _extractors.set(key, ext);
   return ext;
+}
+
+/**
+ * Prepare model-specific feature-extraction inputs and invocation options.
+ * @param {ModelDescriptor} model - descriptor from resolveModel()
+ * @param {string[]} texts
+ * @param {'query'|'passage'} kind
+ * @returns {{input:string[], options:{pooling:'mean'|'last_token', normalize:true}}}
+ */
+export function prepareEmbeddingRequest(model, texts, kind) {
+  const prefix = kind === 'query' ? model.queryPrefix : model.passagePrefix;
+  const input = prefix ? texts.map(text => prefix + text) : texts;
+  return {
+    input,
+    options: { pooling: model.pooling ?? 'mean', normalize: true },
+  };
 }
 
 /**
@@ -173,9 +219,8 @@ export async function getExtractor(model, cacheDir, offline = false) {
  */
 export async function embed(texts, kind, model, cacheDir, offline = false) {
   const ext = await getExtractor(model, cacheDir, offline);
-  const prefix = kind === 'query' ? model.queryPrefix : model.passagePrefix;
-  const input = prefix ? texts.map(t => prefix + t) : texts;
-  const out = await ext(input, { pooling: 'mean', normalize: true });
+  const { input, options } = prepareEmbeddingRequest(model, texts, kind);
+  const out = await ext(input, options);
   return out.tolist();
 }
 

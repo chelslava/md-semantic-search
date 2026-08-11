@@ -176,6 +176,22 @@ test('cli: models lists the registry and exits 0', () => {
   assert.ok(r.stdout.includes('bge-m3'), 'bge-m3 listed');
 });
 
+test('cli: models lists the Qwen3 profile and retains e5-base as default', () => {
+  // Given
+  const expectedAlias = 'qwen3-embedding-0.6b';
+  const expectedId = 'onnx-community/Qwen3-Embedding-0.6B-ONNX';
+
+  // When
+  const r = runCli(['models']);
+
+  // Then
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /e5-base \(default\)/);
+  assert.ok(r.stdout.includes(expectedAlias), 'Qwen3 alias listed');
+  assert.ok(r.stdout.includes(expectedId), 'Qwen3 repository id listed');
+  assert.match(r.stdout, /qwen3-embedding-0\.6b[^]*?dim 1024/);
+});
+
 test('cli: unknown command → exit 1 with clear error', () => {
   const r = runCli(['frobnicate']);
   assert.equal(r.status, 1);
@@ -429,7 +445,7 @@ test('checkHealth: healthy index + db → healthy=true, all sections ok', () => 
     assert.equal(r.db.stale, false);
     assert.equal(r.model.id, 'Xenova/all-MiniLM-L6-v2');
     assert.equal(r.model.cached, false); // cache dir is empty
-    assert.match(r.model.error, /models--Xenova--all-MiniLM-L6-v2/);
+    assert.match(r.model.error, /cache.*Xenova[\\/]all-MiniLM-L6-v2/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -605,16 +621,39 @@ test('checkHealth: missing model cache fails only with requireOffline', () => {
   }
 });
 
-test('checkHealth: model cache detection follows models--<org>--<name> + @revision strip', () => {
-  const dir = tempDir('check-cache');
+test('checkHealth: main model cache follows Transformers.js FileCache layout', () => {
+  const dir = tempDir('check-cache-main');
   try {
     fs.writeFileSync(path.join(dir, 'a.md'), '# A\n\ntext\n');
-    const indexDir = makeIndexDir(dir, { model: 'Xenova/all-MiniLM-L6-v2@abc123' });
+    const indexDir = makeIndexDir(dir, { model: 'Xenova/all-MiniLM-L6-v2' });
     const cacheDir = path.join(dir, 'cache');
-    fs.mkdirSync(path.join(cacheDir, 'models--Xenova--all-MiniLM-L6-v2'), { recursive: true });
+    const modelPath = path.join(cacheDir, 'Xenova', 'all-MiniLM-L6-v2');
+    fs.mkdirSync(modelPath, { recursive: true });
+    fs.writeFileSync(path.join(modelPath, 'config.json'), '{}');
     const r = checkHealth({ db: dir, indexDir, cacheDir, requireOffline: true });
-    assert.equal(r.model.id, 'Xenova/all-MiniLM-L6-v2@abc123');
-    assert.equal(r.model.cached, true, 'revision stripped before cache lookup');
+    assert.equal(r.model.id, 'Xenova/all-MiniLM-L6-v2');
+    assert.equal(r.model.cachePath, modelPath);
+    assert.equal(r.model.cached, true);
+    assert.equal(r.healthy, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('checkHealth: pinned model cache follows revision subdirectory', () => {
+  const dir = tempDir('check-cache-pinned');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# A\n\ntext\n');
+    const revision = 'abc123';
+    const indexDir = makeIndexDir(dir, { model: `Xenova/all-MiniLM-L6-v2@${revision}` });
+    const cacheDir = path.join(dir, 'cache');
+    const modelPath = path.join(cacheDir, 'Xenova', 'all-MiniLM-L6-v2', revision);
+    fs.mkdirSync(modelPath, { recursive: true });
+    fs.writeFileSync(path.join(modelPath, 'config.json'), '{}');
+    const r = checkHealth({ db: dir, indexDir, cacheDir, requireOffline: true });
+    assert.equal(r.model.id, `Xenova/all-MiniLM-L6-v2@${revision}`);
+    assert.equal(r.model.cachePath, modelPath);
+    assert.equal(r.model.cached, true);
     assert.equal(r.healthy, true);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

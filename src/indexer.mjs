@@ -14,6 +14,7 @@ import crypto from 'node:crypto';
 import { walkMarkdown, parseFile, embed, resolveModel, decodeVec, encodeVec, SCHEMA_VERSION, SCHEMA_MIGRATIONS, withIndexLock, parseSchemaVersion, resolveIndexDimension } from './core.mjs';
 import { validateIndexEnvelope, validateNumericVector } from './index-format.mjs';
 import { analyzeLexicalDocument, buildLexicalIndex, lexicalIdentity, reverseLexicalIndex, validateLexicalIndex } from './lexical.mjs';
+import { embeddingAdapterFingerprint, legacyEmbeddingAdapterFingerprint } from './models.mjs';
 
 /**
  * @typedef {Object} IndexChunk
@@ -32,6 +33,7 @@ import { analyzeLexicalDocument, buildLexicalIndex, lexicalIdentity, reverseLexi
  * @property {string} [format]
  * @property {string|null} [model]
  * @property {string} [modelAlias]
+ * @property {string} [adapterFingerprint]
  * @property {number} [dim]
  * @property {string} [db]
  * @property {string} [built]
@@ -122,12 +124,13 @@ export function canonicalPassage(chunk) {
  * semantics, so hashing is identical for alias and raw-id spellings (issue #6).
  * Adding `revision` to the key (0.5.0) changes stored hash values vs ≤0.4.x →
  * a one-time re-index of changed sections on upgrade.
- * @param {{id:string, revision?:string, passagePrefix?:string}} model - resolved model descriptor
+ * @param {{id:string, revision?:string, passagePrefix?:string, pooling?:'mean'|'last_token'}} model - resolved model descriptor
  * @param {{title:string, heading:string, headingPath?:string[], text:string}} chunk
  */
 export function chunkHash(model, chunk) {
+  const pooling = model.pooling ?? 'mean';
   const input = [
-    'heading-path-v1',
+    pooling === 'mean' ? 'heading-path-v1' : `heading-path-v1:${pooling}`,
     model.id,
     model.revision || 'main',
     model.passagePrefix || '',
@@ -188,6 +191,11 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
   // upgrade path: pre-0.5 indexes stored `model` WITHOUT `@main`, so they get
   // one full rebuild on upgrade (same migration the 0.4.0 chunkHash change did).
   const modelIdentity = `${model.id}@${model.revision || 'main'}`;
+  const adapterFingerprint = embeddingAdapterFingerprint(model);
+  const legacyAdapterFingerprint = legacyEmbeddingAdapterFingerprint(model);
+  /** @param {PersistedIndex} index */
+  const adapterCompatible = (index) => index.adapterFingerprint === adapterFingerprint ||
+    (index.adapterFingerprint === undefined && adapterFingerprint === legacyAdapterFingerprint);
   const vectorsPath = path.join(indexDir, 'vectors.json');
   const hashesPath = path.join(indexDir, '.hashes.json');
   const checkpointPath = path.join(indexDir, '.checkpoint.json');
@@ -246,6 +254,7 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
     checkpoint.schemaVersion === SCHEMA_VERSION &&
     checkpoint.format === INDEX_FORMAT &&
     checkpoint.model === modelIdentity &&
+    adapterCompatible(checkpoint) &&
     checkpoint.db === db &&
     typeof checkpoint.modelAlias === 'string' &&
     typeof checkpoint.built === 'string' &&
@@ -306,7 +315,7 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
   // If the model (id OR pinned revision) changed, all stored vectors are
   // incompatible → full rebuild (issue #27: a @revision bump must invalidate).
   const modelChanged = oldIndex.model && oldIndex.model !== modelIdentity;
-  const contextVectorsReusable = sourceSchema >= 2 && !modelChanged;
+  const contextVectorsReusable = sourceSchema >= 2 && !modelChanged && adapterCompatible(oldIndex);
   let buildDim = model.dim > 0 ? model.dim :
     (contextVectorsReusable && oldDimensionValid ? oldExpectedDim : undefined);
   /** @param {unknown} vector */
@@ -375,6 +384,7 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
     format: INDEX_FORMAT,
     model: modelIdentity,
     modelAlias: modelName || 'e5-base',
+    adapterFingerprint,
     ...(buildDim === undefined ? {} : { dim: buildDim }),
     db,
     built: new Date().toISOString(),
@@ -497,6 +507,7 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
     format: INDEX_FORMAT,          // vec stored as base64 Float32Array (issue #4)
     model: modelIdentity,          // id@revision — revision is part of the key (#27)
     modelAlias: modelName || 'e5-base',
+    adapterFingerprint,
     ...(dim === undefined ? {} : { dim }),
     db,
     built: new Date().toISOString(),
