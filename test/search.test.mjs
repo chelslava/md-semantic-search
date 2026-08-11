@@ -112,6 +112,13 @@ test('rrf: fuses rankings by position with k=60, skips non-positive scores', () 
   assert.equal(fused.size, 3);
 });
 
+test('rrf: equal scores receive equal rank contributions', () => {
+  const fused = rrf([[{ idx: 5, score: 1 }, { idx: 6, score: 1 }]]);
+
+  assert.equal(fused.get(5), 1 / 61);
+  assert.equal(fused.get(6), 1 / 61);
+});
+
 test('search: returns results with expected shape, hybrid and semanticOnly', async () => {
   const { dir, idx } = await makeIndex();
   try {
@@ -722,6 +729,30 @@ test('search: schema-v3 BM25 does not rank rare ZXQ-47 below legacy overlap', as
     assert.equal(v3[0].cosine, legacy[0].cosine, 'semantic scores are neutral');
     assert.ok(v3Rank >= 0 && legacyRank >= 0);
     assert.ok(v3Rank <= legacyRank, `v3 rank ${v3Rank} must not be worse than legacy ${legacyRank}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('search: section-title plus shared body term ranks the contextual descendant first', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-contextual-bm25-'));
+  const idx = path.join(dir, '.mdss');
+  const neutralEmbed = (texts) => texts.map(() => [1, 0]);
+  try {
+    // Given: both chunks contain the body term, while only the descendant has Deployment in its ancestor path.
+    fs.writeFileSync(path.join(dir, 'a-noise.md'), '# Notes\n\n## Miscellany\n\ngeneric recovery steps for routine work\n');
+    fs.writeFileSync(path.join(dir, 'b-context.md'),
+      '# Handbook\n\n## Deployment\n\n### Rollback\n\ngeneric recovery steps without the ancestor term\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir,
+      modelName: 'Xenova/reviewer-custom-model', embedFn: neutralEmbed });
+
+    // When: hybrid search receives the section title plus shared body term with tied semantic scores.
+    const results = await searchIndex({ loaded: loadIndex(idx), cacheDir: dir,
+      query: 'deployment recovery', k: 2, embedFn: neutralEmbed });
+
+    // Then: contextual BM25 moves the descendant ahead and reports the lexical match.
+    assert.equal(results[0].file, 'b-context.md');
+    assert.deepEqual(results[0].matches, ['deployment', 'recovery']);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -70,9 +70,11 @@ export function rrf(rankings, k = 60) {
   const fused = new Map();
   for (const ranking of rankings) {
     const sorted = [...ranking].sort((a, b) => b.score - a.score);
+    let scoreRank = 0;
     sorted.forEach((item, rank) => {
       if (item.score <= 0) return;
-      fused.set(item.idx, (fused.get(item.idx) || 0) + 1 / (k + rank + 1));
+      if (rank > 0 && item.score < sorted[rank - 1].score) scoreRank = rank;
+      fused.set(item.idx, (fused.get(item.idx) || 0) + 1 / (k + scoreRank + 1));
     });
   }
   return fused;
@@ -135,7 +137,7 @@ function snapshotRuntimeIndex(index, validation) {
     lexicalState = {
       kind: 'persisted-bm25',
       lexical: {
-        format: 'bm25-v1',
+        format: index.lexical.format,
         documentLengths: [...index.lexical.documentLengths],
         postings,
       },
