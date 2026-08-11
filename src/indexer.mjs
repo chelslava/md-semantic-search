@@ -11,7 +11,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { walkMarkdown, parseFile, embed, resolveModel, decodeVec, encodeVec, SCHEMA_VERSION, SCHEMA_MIGRATIONS, withIndexLock } from './core.mjs';
+import { walkMarkdown, parseFile, embed, resolveModel, decodeVec, encodeVec, SCHEMA_VERSION, SCHEMA_MIGRATIONS, withIndexLock, parseSchemaVersion, resolveIndexDimension } from './core.mjs';
+import { validateIndexEnvelope, validateNumericVector } from './index-format.mjs';
+import { analyzeLexicalDocument, buildLexicalIndex, lexicalIdentity, reverseLexicalIndex, validateLexicalIndex } from './lexical.mjs';
 
 /**
  * @typedef {Object} IndexChunk
@@ -36,6 +38,7 @@ import { walkMarkdown, parseFile, embed, resolveModel, decodeVec, encodeVec, SCH
  * @property {boolean} [complete]
  * @property {number} [chunkCount]
  * @property {Record<string,string>} [hashes]
+ * @property {import('./lexical.mjs').LexicalIndex} [lexical]
  * @property {IndexChunk[]} chunks
  */
 
@@ -51,20 +54,6 @@ function isStringRecord(value) {
     typeof value === 'object' &&
     !Array.isArray(value) &&
     Object.values(value).every(entry => typeof entry === 'string');
-}
-
-/** @param {unknown} value */
-function isCheckpointChunk(value) {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-  const chunk = /** @type {Record<string,unknown>} */ (value);
-  if (!['file', 'title', 'heading', 'text', 'chunkHash']
-    .every(field => typeof chunk[field] === 'string')) return false;
-  if (!Array.isArray(chunk.headingPath) ||
-      !chunk.headingPath.every(segment => typeof segment === 'string' && segment.trim().length > 0)) return false;
-  const leaf = chunk.headingPath.at(-1) ?? '';
-  if (leaf !== chunk.heading) return false;
-  return chunk.vec === undefined || (typeof chunk.vec === 'string' && chunk.vec.length > 0 &&
-    /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(chunk.vec));
 }
 
 /**
@@ -209,40 +198,70 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
   /** @type {Record<string,string>} */
   const canonicalHashes = loadJSON(hashesPath, {}, log);
   /** @type {PersistedIndex} */
-  const canonicalIndex = loadJSON(vectorsPath, { chunks: [], model: null }, log);
-
-  // The canonical generation is authoritative even when a recoverable sidecar
-  // exists. Never let a current checkpoint mask a future canonical schema.
-  const canonicalSchema = canonicalIndex.schemaVersion ?? 0;
-  if (canonicalSchema > SCHEMA_VERSION) {
-    throw new Error(
-      `${vectorsPath} uses schema v${canonicalSchema}, but this mdss writes ` +
-      `v${SCHEMA_VERSION} (index built by a newer version) — upgrade ` +
-      `md-semantic-search before re-indexing.`);
+  let canonicalIndex = loadJSON(vectorsPath, { chunks: [], model: null }, log);
+  let canonicalSchema = 0;
+  if (canonicalIndex !== null && typeof canonicalIndex === 'object' &&
+      !Array.isArray(canonicalIndex)) {
+    canonicalSchema = parseSchemaVersion(canonicalIndex.schemaVersion);
+    if (canonicalSchema > SCHEMA_VERSION) {
+      throw new Error(
+        `${vectorsPath} uses schema v${canonicalSchema}, but this mdss writes ` +
+        `v${SCHEMA_VERSION} (index built by a newer version) — upgrade ` +
+        `md-semantic-search before re-indexing.`);
+    }
+  }
+  if (canonicalIndex === null || typeof canonicalIndex !== 'object' ||
+      !Array.isArray(canonicalIndex.chunks)) {
+    log('warning: vectors.json root/chunks are invalid; rebuilding it from scratch.');
+    canonicalIndex = { chunks: [], model: null };
+    canonicalSchema = 0;
+  }
+  if (canonicalSchema === SCHEMA_VERSION) {
+    try {
+      validateIndexEnvelope(canonicalIndex, vectorsPath, {
+        encoding: 'stored', validateVectors: false, validateLexical: false,
+      });
+    } catch (error) {
+      log(`warning: ${error.message}; rebuilding vectors.json from scratch.`);
+      canonicalIndex = { chunks: [], model: null };
+      canonicalSchema = 0;
+    }
   }
 
   /** @type {PersistedIndex|null} */
   const checkpoint = loadJSON(checkpointPath, null, log);
+  let checkpointEnvelopeValid = false;
+  try {
+    if (checkpoint !== null) {
+      validateIndexEnvelope(checkpoint, checkpointPath, {
+        encoding: 'stored', allowMissingVectors: true,
+      });
+      checkpointEnvelopeValid = true;
+    }
+  } catch {
+    checkpointEnvelopeValid = false;
+  }
   const checkpointCompatible = checkpoint !== null &&
+    checkpointEnvelopeValid &&
     checkpoint.schemaVersion === SCHEMA_VERSION &&
     checkpoint.format === INDEX_FORMAT &&
     checkpoint.model === modelIdentity &&
     checkpoint.db === db &&
     typeof checkpoint.modelAlias === 'string' &&
-    typeof checkpoint.dim === 'number' &&
     typeof checkpoint.built === 'string' &&
     typeof checkpoint.complete === 'boolean' &&
     Number.isInteger(checkpoint.chunkCount) &&
     Array.isArray(checkpoint.chunks) &&
     checkpoint.chunkCount === checkpoint.chunks.length &&
-    checkpoint.chunks.every(isCheckpointChunk) &&
-    isStringRecord(checkpoint.hashes);
+    (!checkpoint.complete || checkpoint.chunks.every(chunk => chunk.vec !== undefined)) &&
+    isStringRecord(checkpoint.hashes) &&
+    validateLexicalIndex(checkpoint.lexical, checkpoint.chunks.length) === null;
   const oldHashes = checkpointCompatible ? checkpoint.hashes : canonicalHashes;
   const oldIndex = checkpointCompatible ? checkpoint : canonicalIndex;
 
   // Older schemas are migrated via the table (v0 → v1 is a no-op: the legacy
   // shapes are normalized by the heuristics right below).
-  const sourceSchema = oldIndex.schemaVersion ?? 0;
+  const sourceSchema = parseSchemaVersion(oldIndex.schemaVersion);
   for (let v = sourceSchema + 1; v <= SCHEMA_VERSION; v++) {
     const step = SCHEMA_MIGRATIONS[v];
     if (step) step(oldIndex);
@@ -251,17 +270,34 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
   // v0.4.0+ stores vectors as base64 Float32Array (issue #4); legacy ≤0.3.x
   // indexes hold decimal arrays. Normalize the old format to plain arrays so
   // the chunk-level reuse path (vecByChunkHash) sees numbers either way.
-  if (oldIndex.format === 'binary-v1') {
-    for (const c of oldIndex.chunks) {
-      if (typeof c.vec !== 'string') continue;
+  const oldModel = resolveModel(oldIndex.model || oldIndex.modelAlias);
+  let oldExpectedDim;
+  let oldDimensionValid = true;
+  try {
+    oldExpectedDim = resolveIndexDimension(oldIndex.dim, oldModel.dim);
+  } catch (error) {
+    oldDimensionValid = false;
+    log(`warning: ${error.message}; stored vectors will be rebuilt.`);
+  }
+  for (const c of oldIndex.chunks) {
+    if (typeof c.vec === 'string' && oldIndex.format === 'binary-v1') {
       try {
-        c.vec = decodeVec(c.vec);
+        c.vec = oldDimensionValid ? decodeVec(c.vec, oldExpectedDim) : undefined;
       } catch (e) {
         // A corrupt vector in the OLD index must not abort the re-index: drop
         // it (vec stays undefined → the file-level fast path re-embeds it, see
         // the vec-less chunk handling below) and warn (issue #40).
         log(`warning: dropping corrupt vector for ${c.file}` +
           (c.heading ? ` › ${c.heading}` : '') + ` (${e.message})`);
+        c.vec = undefined;
+      }
+    } else if (c.vec !== undefined) {
+      try {
+        if (!oldDimensionValid) throw new Error('invalid stored dimension');
+        validateNumericVector(c.vec, oldExpectedDim, `chunk ${c.file}`);
+      } catch {
+        log(`warning: dropping corrupt vector for ${c.file}` +
+          (c.heading ? ` › ${c.heading}` : ''));
         c.vec = undefined;
       }
     }
@@ -271,6 +307,26 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
   // incompatible → full rebuild (issue #27: a @revision bump must invalidate).
   const modelChanged = oldIndex.model && oldIndex.model !== modelIdentity;
   const contextVectorsReusable = sourceSchema >= 2 && !modelChanged;
+  let buildDim = model.dim > 0 ? model.dim :
+    (contextVectorsReusable && oldDimensionValid ? oldExpectedDim : undefined);
+  /** @param {unknown} vector */
+  const acceptBuildVector = (vector) => {
+    const length = validateNumericVector(vector, buildDim, 'embedding vector');
+    buildDim ??= length;
+  };
+  /** @param {unknown} vector */
+  const reusableVector = (vector) => {
+    try {
+      acceptBuildVector(vector);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const lexicalValid = sourceSchema === 3 &&
+    validateLexicalIndex(oldIndex.lexical, oldIndex.chunks.length) === null;
+  const oldLexicalRecords = lexicalValid ? reverseLexicalIndex(oldIndex.lexical) : [];
 
   const oldByFile = new Map();
   // chunk-level cache: hash of the passage input -> stored vector. Built from
@@ -278,19 +334,35 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
   // Missing hashes are recomputed only for schema-v2 chunks. Earlier schemas
   // predate contextual passages and must never seed either reuse path.
   const vecByChunkHash = new Map();
-  if (contextVectorsReusable) {
-    for (const c of oldIndex.chunks) {
+  const lexicalByFile = new Map();
+  const lexicalByIdentity = new Map();
+  for (let oldDocId = 0; oldDocId < oldIndex.chunks.length; oldDocId++) {
+    const c = oldIndex.chunks[oldDocId];
+    const lexicalRecord = oldLexicalRecords[oldDocId];
+    if (contextVectorsReusable) {
       if (!oldByFile.has(c.file)) oldByFile.set(c.file, []);
       oldByFile.get(c.file).push(c);
       const key = c.chunkHash || chunkHash(model, c);
       if (c.vec) vecByChunkHash.set(key, c.vec);
     }
+    if (lexicalRecord) {
+      if (!lexicalByFile.has(c.file)) lexicalByFile.set(c.file, []);
+      lexicalByFile.get(c.file).push(lexicalRecord);
+      lexicalByIdentity.set(lexicalIdentity(c), lexicalRecord);
+    }
   }
 
   const newHashes = {};
   const chunks = [];
+  const lexicalRecords = [];
   const toEmbed = [];
   let reused = 0, reusedChunks = 0, changedFiles = 0, skipped = 0;
+
+  /** @param {IndexChunk} chunk @param {import('./lexical.mjs').TermFrequencies} [record] */
+  const appendChunk = (chunk, record) => {
+    chunks.push(chunk);
+    lexicalRecords.push(record ?? analyzeLexicalDocument(chunk));
+  };
 
   /**
    * Serialize all current chunks for crash recovery. Unfinished chunks omit
@@ -302,12 +374,13 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
     format: INDEX_FORMAT,
     model: modelIdentity,
     modelAlias: modelName || 'e5-base',
-    dim: chunks.find(c => c.vec)?.vec?.length ?? model.dim ?? 0,
+    ...(buildDim === undefined ? {} : { dim: buildDim }),
     db,
     built: new Date().toISOString(),
     complete,
     chunkCount: chunks.length,
     hashes: newHashes,
+    lexical: buildLexicalIndex(lexicalRecords),
     chunks: chunks.map(c => ({ ...c, vec: c.vec ? encodeVec(c.vec) : undefined })),
   });
 
@@ -315,28 +388,33 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
     const rel = path.relative(db, abs).split(path.sep).join('/');
     /** @type {IndexChunk[]} */
     let parsed = [];
+    let reusableLexicalRecords;
     try {
       const raw = fs.readFileSync(abs, 'utf8');
       const h = md5(raw);
       newHashes[rel] = h;
+      if (oldHashes[rel] === h) reusableLexicalRecords = lexicalByFile.get(rel);
 
-      if (contextVectorsReusable && oldHashes[rel] === h && oldByFile.has(rel)) {
+      if (sourceSchema === SCHEMA_VERSION && contextVectorsReusable &&
+          oldHashes[rel] === h && oldByFile.has(rel)) {
         const old = oldByFile.get(rel);
         // Backfill chunkHash for chunks that predate the chunk-level cache, so
         // the persisted index is self-contained and no recompute is needed later.
         for (const c of old) {
           if (!c.chunkHash) c.chunkHash = chunkHash(model, c);
         }
-        for (const c of old) {
-          if (c.vec) {
-            chunks.push(c);
+        for (let oldPosition = 0; oldPosition < old.length; oldPosition++) {
+          const c = old[oldPosition];
+          if (c.vec && reusableVector(c.vec)) {
+            appendChunk(c, reusableLexicalRecords?.[oldPosition]);
             reused++;
           } else {
             // Vec-less chunk (legacy index or a corrupt write): reusing it as-is
             // would persist a broken index that crashes every search with
             // `cosine(qVec, c.vec)` on undefined. Re-embed it instead (issue #25).
+            c.vec = undefined;
             toEmbed.push(c);
-            chunks.push(c);
+            appendChunk(c, reusableLexicalRecords?.[oldPosition]);
           }
         }
         continue;
@@ -357,10 +435,11 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
       log(`warning: skipping ${rel} (${e.code || e.message})`);
       continue;
     }
-    for (const c of parsed) {
+    for (let parsedPosition = 0; parsedPosition < parsed.length; parsedPosition++) {
+      const c = parsed[parsedPosition];
       const key = chunkHash(model, c);
       const cached = vecByChunkHash.get(key);
-      if (cached) {
+      if (cached && reusableVector(cached)) {
         c.vec = cached;
         c.chunkHash = key;
         reused++;
@@ -369,7 +448,8 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
         c.chunkHash = key;
         toEmbed.push(c);
       }
-      chunks.push(c);
+      appendChunk(c, reusableLexicalRecords?.[parsedPosition] ??
+        lexicalByIdentity.get(lexicalIdentity(c)));
     }
   }
 
@@ -383,6 +463,19 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
         slice.map(canonicalPassage),
         'passage', model, cacheDir, offline,
       );
+      let batchDim = buildDim;
+      try {
+        if (!Array.isArray(vecs) || vecs.length !== slice.length) throw new Error('batch size');
+        if (vecs.length > 0 && batchDim === undefined) {
+          batchDim = validateNumericVector(vecs[0], undefined, 'embedding vector 0');
+        }
+        for (const vec of vecs) validateNumericVector(vec, batchDim, 'embedding vector');
+      } catch {
+        throw new Error(`embedding returned invalid vectors` +
+          (batchDim === undefined ? '' : ` (expected ${batchDim} dims)`) +
+          ' — run `mdss index` to rebuild');
+      }
+      buildDim = batchDim;
       slice.forEach((c, j) => { c.vec = vecs[j]; });
       completedBatches++;
       if (completedBatches % CHECKPOINT_BATCHES === 0) {
@@ -395,20 +488,25 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
   if (chunks.some(c => !c.vec)) {
     throw new Error('Embedding finished without a vector for every chunk.');
   }
-  const dim = chunks[0]?.vec?.length ?? model.dim ?? 0;
+  for (const chunk of chunks) acceptBuildVector(chunk.vec);
+  const dim = buildDim ?? (model.dim > 0 ? model.dim : undefined);
+  resolveIndexDimension(dim, model.dim);
   const index = {
     schemaVersion: SCHEMA_VERSION, // format gate (issue #39) — bump + add a migration step on change
     format: INDEX_FORMAT,          // vec stored as base64 Float32Array (issue #4)
     model: modelIdentity,          // id@revision — revision is part of the key (#27)
     modelAlias: modelName || 'e5-base',
-    dim,
+    ...(dim === undefined ? {} : { dim }),
     db,
     built: new Date().toISOString(),
     chunkCount: chunks.length,
+    lexical: buildLexicalIndex(lexicalRecords),
     // ~4× smaller on disk than decimal JSON: 768-dim float = 3072 B → 4096 B
     // base64, vs ~8-10 chars per number for decimal.
     chunks: chunks.map(c => ({ ...c, vec: c.vec ? encodeVec(c.vec) : undefined })),
   };
+
+  validateIndexEnvelope(index, 'generated index', { encoding: 'stored' });
 
   atomicWrite(checkpointPath, JSON.stringify({ ...index, complete: true, hashes: newHashes }));
   atomicWrite(vectorsPath, JSON.stringify(index));
@@ -423,7 +521,7 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
     reusedChunks,
     reusedFiles: reused - reusedChunks, // via the file-level fast path
     embedded: toEmbed.length,
-    dim,
+    dim: dim ?? 0,
     model: model.id,
     vectorsPath,
   };

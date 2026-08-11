@@ -9,14 +9,15 @@ import {
 } from '../src/core.mjs';
 import { buildIndex } from '../src/indexer.mjs';
 
-function fakeEmbed(texts) {
+function fakeEmbed(texts, kind, model) {
   return texts.map((t) => {
-    const v = new Array(8).fill(0);
+    const dim = model?.dim > 0 ? model.dim : 8;
+    const v = new Array(dim).fill(0);
     const words = t.toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
     for (const w of words) {
       let h = 7;
       for (let i = 0; i < w.length; i++) h = (h * 31 + w.charCodeAt(i)) >>> 0;
-      v[h % 8] += 1;
+      v[h % dim] += 1;
     }
     const norm = Math.hypot(...v) || 1;
     return v.map((x) => x / norm);

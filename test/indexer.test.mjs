@@ -8,16 +8,18 @@ import { buildIndex, chunkHash } from '../src/indexer.mjs';
 import { searchIndex, loadIndex } from '../src/search.mjs';
 import { resolveModel } from '../src/models.mjs';
 import { decodeVec, SCHEMA_VERSION } from '../src/core.mjs';
+import { _lexicalStats, validateLexicalIndex } from '../src/lexical.mjs';
 
 /** Deterministic fake embed: bag-of-hash 8d, L2-normalized. No model, no network. */
 function fakeEmbed(texts, kind, model, cacheDir) {
   return texts.map((t) => {
-    const v = new Array(8).fill(0);
+    const dim = model?.dim > 0 ? model.dim : 8;
+    const v = new Array(dim).fill(0);
     const words = t.toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
     for (const w of words) {
       let h = 7;
       for (let i = 0; i < w.length; i++) h = (h * 31 + w.charCodeAt(i)) >>> 0;
-      v[h % 8] += 1;
+      v[h % dim] += 1;
     }
     const norm = Math.hypot(...v) || 1;
     return v.map((x) => x / norm);
@@ -146,6 +148,34 @@ test('buildIndex: exact embed passage deduplicates only a title-derived first H1
   }
 });
 
+test('buildIndex: lexical identity prevents chunkHash collision from reusing different TF', async () => {
+  const dir = tempDir('lexical-collision');
+  const idx = path.join(dir, '.mdss');
+  const body = 'shared body content long enough for a chunk';
+  try {
+    writeCorpus(dir, { 'doc.md': `# Old\n\n${body}` });
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const first = readIndex(idx);
+    const forcedCollision = chunkHash(resolveModel('e5-base'), {
+      title: 'New', heading: 'New', headingPath: ['New'], text: body,
+    });
+    first.chunks[0].chunkHash = forcedCollision;
+    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(first));
+    writeCorpus(dir, { 'doc.md': `# New\n\n${body}` });
+    const before = _lexicalStats.documentsAnalyzed;
+
+    const rebuilt = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const current = readIndex(idx);
+
+    assert.equal(rebuilt.reusedChunks, 1, 'canonical embedding passage still reuses its vector');
+    assert.equal(current.chunks[0].chunkHash, forcedCollision, 'the forced vector identity collision is real');
+    assert.equal(_lexicalStats.documentsAnalyzed - before, 1, 'different lexical input is analyzed');
+    assert.deepEqual(current.lexical.postings.new, [[0, 2]], 'new title/leaf frequencies replace the old record');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('buildIndex: first run embeds everything; no-op run reuses everything', async () => {
   const dir = tempDir('init');
   const idx = path.join(dir, '.mdss');
@@ -155,17 +185,22 @@ test('buildIndex: first run embeds everything; no-op run reuses everything', asy
       'b.md': `# B\n\n${sec('Three', big(40))}`,
     });
 
+    const beforeFirst = _lexicalStats.documentsAnalyzed;
     const first = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
     assert.equal(first.files, 2);
     assert.equal(first.embedded, first.chunks, 'first run embeds all chunks');
     assert.equal(first.reused, 0);
     assert.ok(first.dim > 0);
+    assert.equal(_lexicalStats.documentsAnalyzed - beforeFirst, first.chunks);
+    assert.equal(validateLexicalIndex(readIndex(idx).lexical, first.chunks), null);
 
+    const beforeSecond = _lexicalStats.documentsAnalyzed;
     const second = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
     assert.equal(second.embedded, 0, 'no-op run embeds nothing');
     assert.equal(second.reused, second.chunks);
     assert.equal(second.reusedChunks, 0, 'no-op goes through file-level fast path');
     assert.equal(second.reusedFiles, second.chunks);
+    assert.equal(_lexicalStats.documentsAnalyzed, beforeSecond, 'no-op lexically analyzes zero documents');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -210,6 +245,88 @@ test('buildIndex: schema-v1 canonical and checkpoint rebuild once without legacy
   }
 });
 
+test('buildIndex: schema-v2 rebuild reuses vectors and writes an honest v3 lexical index', async () => {
+  const dir = tempDir('schema-v3-upgrade');
+  const idx = path.join(dir, '.mdss');
+  try {
+    writeCorpus(dir, { 'doc.md': `# Doc\n\n${sec('One', big(40))}\n${sec('Two', big(40))}` });
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const v2 = readIndex(idx);
+    v2.schemaVersion = 2;
+    delete v2.lexical;
+    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(v2));
+    const before = _lexicalStats.documentsAnalyzed;
+
+    const upgraded = await buildIndex({
+      db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base',
+      embedFn: () => { throw new Error('v2 vectors must be reused'); },
+    });
+
+    assert.equal(upgraded.embedded, 0);
+    assert.equal(upgraded.reused, upgraded.chunks);
+    assert.equal(_lexicalStats.documentsAnalyzed - before, upgraded.chunks);
+    const current = readIndex(idx);
+    assert.equal(current.schemaVersion, 3);
+    assert.equal(validateLexicalIndex(current.lexical, current.chunks.length), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildIndex: unchanged headingless schema-v2 file is reparsed while its contextual vector is reused', async () => {
+  const dir = tempDir('schema-v3-headingless-upgrade');
+  const idx = path.join(dir, '.mdss');
+  try {
+    writeCorpus(dir, { 'plain.md': 'headingless body content long enough for indexing and reuse' });
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const v2 = readIndex(idx);
+    v2.schemaVersion = 2;
+    delete v2.lexical;
+    v2.chunks[0].heading = '';
+    v2.chunks[0].headingPath = [];
+    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(v2));
+
+    const upgraded = await buildIndex({
+      db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base',
+      embedFn: () => { throw new Error('valid contextual vector must be reused'); },
+    });
+    const current = readIndex(idx);
+
+    assert.equal(upgraded.embedded, 0);
+    assert.equal(upgraded.reusedChunks, 1, 'v2 migration uses chunkHash reuse after reparsing');
+    assert.equal(current.chunks[0].heading, 'plain');
+    assert.deepEqual(current.chunks[0].headingPath, ['plain']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildIndex: corrupt canonical v3 lexical data reuses vectors and repairs postings', async () => {
+  const dir = tempDir('lexical-repair');
+  const idx = path.join(dir, '.mdss');
+  try {
+    writeCorpus(dir, { 'doc.md': `# Doc\n\n${sec('One', 'needle ' + big(40))}` });
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const corrupt = readIndex(idx);
+    corrupt.lexical.documentLengths = [];
+    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(corrupt));
+    const before = _lexicalStats.documentsAnalyzed;
+
+    const repaired = await buildIndex({
+      db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base',
+      embedFn: () => { throw new Error('valid vectors must be reused'); },
+    });
+
+    assert.equal(repaired.embedded, 0);
+    assert.equal(repaired.reused, repaired.chunks);
+    assert.equal(_lexicalStats.documentsAnalyzed - before, repaired.chunks);
+    assert.equal(validateLexicalIndex(readIndex(idx).lexical, repaired.chunks), null);
+    assert.deepEqual(Object.keys(loadIndex(idx)).sort(), ['index', 'model']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('buildIndex: append to a file re-embeds only the new section', async () => {
   const dir = tempDir('append');
   const idx = path.join(dir, '.mdss');
@@ -221,10 +338,12 @@ test('buildIndex: append to a file re-embeds only the new section', async () => 
     // append a third section to the same file
     fs.appendFileSync(path.join(dir, 'log.md'), `\n${sec('Entry 3', big(40))}`);
 
+    const beforeAppend = _lexicalStats.documentsAnalyzed;
     const second = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
     assert.equal(second.chunks, 3);
     assert.equal(second.embedded, 1, 'only the appended section is embedded');
     assert.equal(second.reusedChunks, 2, 'unchanged sections reuse vectors chunk-level');
+    assert.equal(_lexicalStats.documentsAnalyzed - beforeAppend, 1, 'only the appended chunk is analyzed');
 
     const third = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
     assert.equal(third.embedded, 0, 'now fully cached');
@@ -241,10 +360,12 @@ test('buildIndex: editing one section reuses the untouched neighbours', async ()
     await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
 
     writeCorpus(dir, { 'doc.md': `# D\n\n${sec('A', big(40))}\n${sec('B', big(40) + ' CHANGED')}\n${sec('C', big(40))}` });
+    const beforeEdit = _lexicalStats.documentsAnalyzed;
     const res = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
 
     assert.equal(res.embedded, 1, 'only the edited section re-embedded');
     assert.equal(res.reusedChunks, 2, 'A and C reused via chunk cache');
+    assert.equal(_lexicalStats.documentsAnalyzed - beforeEdit, 1);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -262,6 +383,7 @@ test('buildIndex: renaming a parent re-embeds only its subtree and reuses a sibl
       'doc.md': `# Doc\n\n## Renamed parent\n\n### Child\n\n${big(40)}\n\n## Sibling\n\n### Cousin\n\n${big(40)}`,
     });
 
+    const beforeRename = _lexicalStats.documentsAnalyzed;
     const result = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
 
     assert.equal(result.embedded, 1);
@@ -270,6 +392,27 @@ test('buildIndex: renaming a parent re-embeds only its subtree and reuses a sibl
       ['Doc', 'Renamed parent', 'Child'],
       ['Doc', 'Sibling', 'Cousin'],
     ]);
+    assert.equal(_lexicalStats.documentsAnalyzed, beforeRename,
+      'parent-only headingPath changes do not alter lexical documents');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildIndex: model switch plus file edit reuses unaffected lexical documents', async () => {
+  const dir = tempDir('lexical-model-edit');
+  const idx = path.join(dir, '.mdss');
+  try {
+    writeCorpus(dir, { 'doc.md': `# Doc\n\n${sec('Stable', big(40))}\n${sec('Changed', big(40))}` });
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    writeCorpus(dir, { 'doc.md': `# Doc\n\n${sec('Stable', big(40))}\n${sec('Changed', big(40) + ' edited')}` });
+    const before = _lexicalStats.documentsAnalyzed;
+
+    const rebuilt = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-small', embedFn: fakeEmbed });
+
+    assert.equal(rebuilt.embedded, 2, 'model switch re-embeds every vector');
+    assert.equal(_lexicalStats.documentsAnalyzed - before, 1,
+      'only the lexically changed chunk is analyzed');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -282,11 +425,127 @@ test('buildIndex: model switch forces full rebuild', async () => {
     writeCorpus(dir, { 'a.md': `# A\n\n${sec('One', big(40))}` });
     await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
 
+    const beforeSwitch = _lexicalStats.documentsAnalyzed;
     const res = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-small', embedFn: fakeEmbed });
     assert.equal(res.reused, 0, 'no reuse across models');
     assert.equal(res.embedded, res.chunks, 'everything re-embedded');
     const idx2 = readIndex(idx);
     assert.equal(idx2.model, 'Xenova/multilingual-e5-small@main', 'model identity includes @main (issue #27)');
+    assert.equal(_lexicalStats.documentsAnalyzed, beforeSwitch, 'model-only changes reuse lexical analysis');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildIndex: known dimensions are enforced while custom model dimensions are learned', async () => {
+  const dir = tempDir('embed-dimension');
+  const knownIdx = path.join(dir, '.known');
+  const customIdx = path.join(dir, '.custom');
+  try {
+    writeCorpus(dir, { 'a.md': `# A\n\n${sec('One', big(40))}` });
+    await assert.rejects(
+      buildIndex({ db: dir, indexDir: knownIdx, cacheDir: dir, modelName: 'e5-base',
+        embedFn: (texts) => texts.map(() => [1, 0, 0]) }),
+      /invalid vectors \(expected 768 dims\).*mdss index/i,
+    );
+    assert.equal(fs.existsSync(path.join(knownIdx, 'vectors.json')), false);
+
+    const custom = await buildIndex({
+      db: dir, indexDir: customIdx, cacheDir: dir, modelName: 'Xenova/custom-model',
+      embedFn: (texts) => texts.map(() => [1, 0, 0]),
+    });
+    assert.equal(custom.dim, 3);
+    assert.equal(loadIndex(customIdx).index.dim, 3);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildIndex: mixed custom dimensions in the first batch fail before canonical publication', async () => {
+  const dir = tempDir('mixed-custom-dimension');
+  const idx = path.join(dir, '.mdss');
+  try {
+    writeCorpus(dir, {
+      'a.md': `# A\n\n${sec('One', big(40))}\n${sec('Two', big(40))}`,
+    });
+    await assert.rejects(
+      buildIndex({
+        db: dir, indexDir: idx, cacheDir: dir, modelName: 'Xenova/reviewer-custom-model',
+        embedFn: () => [[1, 0], [1, 0, 0]],
+      }),
+      /invalid vectors \(expected 2 dims\).*mdss index/i,
+    );
+    assert.equal(fs.existsSync(path.join(idx, 'vectors.json')), false);
+    assert.equal(fs.existsSync(path.join(idx, '.hashes.json')), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildIndex: custom dimension remains fixed across later batches', async () => {
+  const dir = tempDir('later-custom-dimension');
+  const idx = path.join(dir, '.mdss');
+  let calls = 0;
+  try {
+    writeCorpus(dir, { 'many.md': `# Many\n\n${sections(33)}` });
+    await assert.rejects(
+      buildIndex({
+        db: dir, indexDir: idx, cacheDir: dir, modelName: 'Xenova/reviewer-custom-model',
+        embedFn: (texts) => {
+          calls++;
+          return texts.map(() => calls === 1 ? [1, 0] : [1, 0, 0]);
+        },
+      }),
+      /invalid vectors \(expected 2 dims\).*mdss index/i,
+    );
+    assert.equal(calls, 2);
+    assert.equal(fs.existsSync(path.join(idx, 'vectors.json')), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildIndex: inconsistent reused custom vectors are re-embedded before publication', async () => {
+  const dir = tempDir('reused-custom-dimension');
+  const idx = path.join(dir, '.mdss');
+  try {
+    writeCorpus(dir, { 'a.md': `# A\n\n${sec('One', big(40))}\n${sec('Two', big(40))}` });
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir,
+      modelName: 'Xenova/reviewer-custom-model', embedFn: (texts) => texts.map(() => [1, 0]) });
+    const legacy = readIndex(idx);
+    legacy.schemaVersion = 2;
+    delete legacy.lexical;
+    legacy.chunks[1].vec = Buffer.from(new Float32Array([1, 0, 0]).buffer).toString('base64');
+    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(legacy));
+
+    const rebuilt = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir,
+      modelName: 'Xenova/reviewer-custom-model', embedFn: (texts) => texts.map(() => [1, 0]) });
+    assert.equal(rebuilt.reused, 1);
+    assert.equal(rebuilt.embedded, 1);
+    assert.equal(rebuilt.dim, 2);
+    assert.equal(loadIndex(idx).index.dim, 2);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildIndex: canonical raw known model ids enforce registry dimensions', async () => {
+  const dir = tempDir('raw-known-dimension');
+  const idx = path.join(dir, '.mdss');
+  try {
+    writeCorpus(dir, { 'a.md': `# A\n\n${sec('One', big(40))}` });
+    for (const modelName of [
+      'Xenova/multilingual-e5-base',
+      'Xenova/multilingual-e5-base@review47',
+    ]) {
+      await assert.rejects(
+        buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName,
+          embedFn: (texts) => texts.map(() => [1, 0, 0]) }),
+        /invalid vectors \(expected 768 dims\).*mdss index/i,
+        modelName,
+      );
+      assert.equal(fs.existsSync(path.join(idx, 'vectors.json')), false);
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -299,11 +558,13 @@ test('buildIndex: pinned revision bump forces full rebuild (issue #27)', async (
     writeCorpus(dir, { 'a.md': `# A\n\n${sec('One', big(40))}` });
 
     await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'Xenova/multilingual-e5-small@abc123', embedFn: fakeEmbed });
+    const beforeRevision = _lexicalStats.documentsAnalyzed;
     const res = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'Xenova/multilingual-e5-small@def456', embedFn: fakeEmbed });
     assert.equal(res.reused, 0, 'no reuse across pinned revisions');
     assert.equal(res.embedded, res.chunks, 'full rebuild after @revision bump');
     const idx2 = readIndex(idx);
     assert.equal(idx2.model, 'Xenova/multilingual-e5-small@def456', 'stored model carries the new revision');
+    assert.equal(_lexicalStats.documentsAnalyzed, beforeRevision, 'revision-only changes reuse lexical analysis');
 
     // and a same-revision no-op run still reuses everything
     const noop = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'Xenova/multilingual-e5-small@def456', embedFn: fakeEmbed });
@@ -322,24 +583,29 @@ test('buildIndex: deleted files drop their chunks', async () => {
     assert.equal(first.chunks, 2);
 
     fs.rmSync(path.join(dir, 'gone.md'));
+    const beforeDelete = _lexicalStats.documentsAnalyzed;
     const second = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
     assert.equal(second.chunks, 1, 'chunks of removed file dropped');
     const files = readIndex(idx).chunks.map((c) => c.file);
     assert.deepEqual(files, ['keep.md']);
+    assert.equal(validateLexicalIndex(readIndex(idx).lexical, 1), null);
+    assert.equal(_lexicalStats.documentsAnalyzed, beforeDelete, 'deletion analyzes no surviving documents');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('buildIndex: backfills chunkHash into current-schema chunks without re-embedding', async () => {
+test('buildIndex: backfills chunkHash into schema-v2 chunks without re-embedding', async () => {
   const dir = tempDir('legacy');
   const idx = path.join(dir, '.mdss');
   try {
     writeCorpus(dir, { 'a.md': `# A\n\n${sec('One', big(40))}\n${sec('Two', big(40))}` });
     await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
 
-    // Strip chunkHash while retaining the current contextual schema.
+    // Schema v2 has contextual passages but predates mandatory v3 metadata.
     const index = readIndex(idx);
+    index.schemaVersion = 2;
+    delete index.lexical;
     for (const c of index.chunks) delete c.chunkHash;
     fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
 
@@ -394,7 +660,7 @@ test('buildIndex: writes binary vector format (issue #4)', async () => {
   }
 });
 
-test('buildIndex: reads current-schema decimal vectors.json without re-indexing (issue #4)', async () => {
+test('buildIndex: reads schema-v2 decimal vectors.json without re-indexing (issue #4)', async () => {
   const dir = tempDir('legacyvec');
   const idx = path.join(dir, '.mdss');
   try {
@@ -403,6 +669,8 @@ test('buildIndex: reads current-schema decimal vectors.json without re-indexing 
 
     // convert the binary index back to the legacy ≤0.3.x shape: decimal arrays, no format field
     const index = readIndex(idx);
+    index.schemaVersion = 2;
+    delete index.lexical;
     delete index.format;
     for (const c of index.chunks) c.vec = [...decodeVec(c.vec)];
     fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
@@ -427,6 +695,8 @@ test('buildIndex: legacy chunks with empty vec are re-embedded, search works (is
 
     // simulate a v0.1.x index where chunks had no vec at all
     const index = readIndex(idx);
+    index.schemaVersion = 1;
+    delete index.lexical;
     delete index.format;
     for (const c of index.chunks) delete c.vec;
     fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
@@ -519,7 +789,7 @@ test('buildIndex: interrupted fresh build resumes from the periodic checkpoint (
     assert.equal(checkpoint.format, 'binary-v1');
     assert.equal(checkpoint.model, 'Xenova/multilingual-e5-base@main');
     assert.equal(checkpoint.modelAlias, 'e5-base');
-    assert.equal(checkpoint.dim, 8);
+    assert.equal(checkpoint.dim, 768);
     assert.equal(checkpoint.db, dir);
     assert.equal(typeof checkpoint.built, 'string');
     assert.equal(checkpoint.chunkCount, 9 * 32);
@@ -527,6 +797,7 @@ test('buildIndex: interrupted fresh build resumes from the periodic checkpoint (
     assert.equal(checkpoint.chunks.length, 9 * 32);
     assert.equal(checkpoint.chunks.filter((chunk) => typeof chunk.vec === 'string').length, 8 * 32);
     assert.equal(checkpoint.chunks.filter((chunk) => chunk.vec === undefined).length, 32);
+    assert.equal(validateLexicalIndex(checkpoint.lexical, checkpoint.chunks.length), null);
     assert.ok(checkpoint.chunks.slice(0, 8 * 32).every((chunk) => typeof chunk.vec === 'string'));
     assert.ok(checkpoint.chunks.slice(8 * 32).every((chunk) => chunk.vec === undefined));
     assert.equal(fs.existsSync(path.join(idx, 'vectors.json')), false);
@@ -739,6 +1010,26 @@ test('buildIndex: future canonical schema rejects rebuild despite a compatible c
   }
 });
 
+test('buildIndex: future schema remains authoritative when chunks are malformed', async () => {
+  const dir = tempDir('future-malformed');
+  const idx = path.join(dir, '.mdss');
+  const vectorsPath = path.join(idx, 'vectors.json');
+  try {
+    fs.mkdirSync(idx, { recursive: true });
+    writeCorpus(dir, { 'a.md': `# A\n\n${sec('One', big(40))}` });
+    fs.writeFileSync(vectorsPath, JSON.stringify({ schemaVersion: SCHEMA_VERSION + 1, chunks: null }));
+
+    await assert.rejects(
+      buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed }),
+      /uses schema v4.*upgrade md-semantic-search before re-indexing/i,
+    );
+    assert.deepEqual(JSON.parse(fs.readFileSync(vectorsPath, 'utf8')),
+      { schemaVersion: SCHEMA_VERSION + 1, chunks: null });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('buildIndex: malformed or incompatible checkpoints fall back to canonical without embedding (issue #38)', async () => {
   const dir = tempDir('checkpoint-invalid');
   const idx = path.join(dir, '.mdss');
@@ -789,6 +1080,19 @@ test('buildIndex: malformed or incompatible checkpoints fall back to canonical w
         name: 'heading path leaf mismatch',
         value: { ...canonical, complete: false, hashes, chunks: vectorlessChunks.map((chunk) => ({ ...chunk, headingPath: [...(chunk.headingPath ?? [chunk.heading]).slice(0, -1), 'Other'] })) },
       },
+      {
+        name: 'lexical count mismatch',
+        value: { ...canonical, complete: false, hashes, lexical: { ...canonical.lexical, documentLengths: [] } },
+      },
+      {
+        name: 'wrong vector dimension',
+        value: {
+          ...canonical, complete: true, hashes,
+          chunks: canonical.chunks.map((chunk) => ({
+            ...chunk, vec: Buffer.from(new Float32Array([1, 2, 3]).buffer).toString('base64'),
+          })),
+        },
+      },
     ];
 
     for (const sidecar of sidecars) {
@@ -808,6 +1112,8 @@ test('buildIndex: malformed or incompatible checkpoints fall back to canonical w
       // Then: canonical reuse wins, with no model work, and successful publication cleans the sidecar.
       assert.equal(embedCalls, 0, sidecar.name);
       assert.deepEqual(readIndex(idx).chunks.map((chunk) => chunk.heading), ['Canonical'], sidecar.name);
+      assert.equal(readIndex(idx).dim, canonical.dim, sidecar.name);
+      assert.equal(decodeVec(readIndex(idx).chunks[0].vec, canonical.dim).length, canonical.dim, sidecar.name);
       assert.equal(fs.existsSync(checkpointPath), false, sidecar.name);
     }
   } finally {
