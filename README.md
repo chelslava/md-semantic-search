@@ -224,7 +224,7 @@ mdss check --db /path/to/your/markdown
 #   ok    .hashes.json: parses (64 file(s))
 #   ok    chunks: 725/725 vectors valid (dim from index)
 #   ok    db /path/to/your/markdown: fresh
-#   ok    model cache: e5-base present at ~/.cache/mdss/models--...
+#   ok    model cache: e5-base present at ~/.cache/mdss/Xenova/multilingual-e5-base
 # check: healthy (exit 0)
 ```
 
@@ -235,8 +235,9 @@ schema-v3 BM25 data, required current chunk metadata, model dimension, and
 with the same validator the loader uses (dim mismatch, NaN/Infinity, truncated
 base64, vec-less legacy chunks — the first five offenders are named); db
 staleness (newest file mtime vs `built`, same 5s grace as the stale warning);
-and the transformers.js model cache layout (`models--<org>--<name>`, with the
-pinned `@revision` stripped). A missing model cache is a *warning* by default
+and the Transformers.js FileCache layout (`<cache-dir>/<model-id>` for `main`,
+with a further `<revision>` directory for pinned revisions). A missing model
+cache is a *warning* by default
 (the first online run downloads it) and a *failure* under `--offline`.
 
 Exit code is `0` when healthy and `1` with a problem summary otherwise;
@@ -388,14 +389,23 @@ mdss models
 | `e5-base` ⭐ | `Xenova/multilingual-e5-base` | 768 | Default. Best balance. |
 | `e5-large` | `Xenova/multilingual-e5-large` | 1024 | ~2.2 GB, higher quality. |
 | `bge-m3` | `Xenova/bge-m3` | 1024 | ~2.3 GB. Best cross-lingual separation in tests. |
+| `qwen3-embedding-0.6b` | `onnx-community/Qwen3-Embedding-0.6B-ONNX` | 1024 | ~613 MB q8. Opt-in; instruction-prefixed queries and last-token pooling. |
 
 Switching models invalidates the stored vectors automatically — the next
 `index` run does a full rebuild.
 
 Weights are downloaded in quantized (q8) form when the model repo ships them
-(all `Xenova/*` repos do — e5-base is ~280 MB, not ~1.1 GB fp32).
+(e5-base is ~280 MB instead of ~1.1 GB fp32).
 
-You can also pass any raw `Xenova/*` id, optionally pinning a revision:
+The Qwen3 alias is pinned to a tested model revision and automatically applies
+the retrieval instruction required for queries; indexed passages remain
+unprefixed. Its upstream benchmark is promising, but it has not replaced
+`e5-base` as the default because the project corpus has not been benchmarked
+against it yet. This is experimental enablement rather than completion of issue
+#50: release provenance, the versioned RU/EN benchmark, and the full adapter
+contract remain tracked by #55, #56, and #60.
+
+You can also pass any compatible Hugging Face model id, optionally pinning a revision:
 
 ```bash
 mdss index --db ./docs --model "Xenova/multilingual-e5-small@abc123def"
@@ -413,11 +423,16 @@ weights (a `model_quantized.onnx` file) in the repo.
    stack; oversized sections split on blank lines (~1400 body chars/chunk).
 3. **Embed** the document title, full heading path, and chunk body (`passage:`
    prefix for E5) → store `{file, title, heading, headingPath, text, vec}` in
-   `vectors.json`, plus per-file md5 in `.hashes.json`. Each chunk also stores
+   `vectors.json`, plus per-file md5 in `.hashes.json`. The index stores an
+   adapter fingerprint so formatting, pooling, normalization, or dimension
+   changes invalidate vectors and checkpoints without invalidating lexical
+   records. Each chunk also stores
    `chunkHash` (SHA-256 of that exact contextual passage + model identity), so a
    parent rename invalidates its subtree while unchanged sibling branches reuse
    their vectors.
-4. **Search**: embed the query (`query:` prefix), score every chunk by cosine,
+4. **Search**: embed the query with the selected model's formatter (`query:` for
+   E5, no prefix for BGE-M3, or the retrieval instruction for Qwen3), score every
+   chunk by cosine,
    score query terms from the persisted BM25 postings, then **fuse with RRF**.
    Legacy schema-v0/v1/v2 indexes retain exact token-overlap scoring.
 

@@ -104,6 +104,18 @@ degrades retrieval. The model registry encodes this per-model, because
 **`bge-m3` is the opposite — it wants no prefix at all.** Getting this wrong is
 a silent quality bug.
 
+Qwen3-Embedding uses a third profile: documents remain unprefixed, queries use
+the model's retrieval instruction, and token vectors are pooled from the last
+token rather than averaged. The registry pins these semantics together with a
+specific ONNX revision. A persisted adapter fingerprint covers formatting,
+pooling, normalization, and dimension, so changing a profile cannot silently
+reuse incompatible vectors or checkpoints; model-independent lexical records
+remain reusable. `qwen3-embedding-0.6b` is opt-in (~613 MB q8, 1024 dimensions);
+its published benchmark motivated support, but it has not yet been compared on
+the bilingual project corpus used in Experiment B. This partial enablement does
+not complete issue #50 until #55, #56, and #60 satisfy its provenance,
+human-judged benchmark, and full adapter-contract gates.
+
 ### Chunk by heading, not by page
 Embedding a whole multi-section page into one vector blurs distinct topics.
 We split on Markdown headings (`#`..`######`); sections over ~1400 chars split
@@ -178,6 +190,9 @@ mdss search --db ./your-wiki --semantic "a paraphrase of something you know is i
 
 mdss index  --db ./your-wiki --model bge-m3
 mdss search --db ./your-wiki --semantic "the same paraphrase"
+
+mdss index  --db ./your-wiki --model qwen3-embedding-0.6b
+mdss search --db ./your-wiki --semantic "the same paraphrase"
 ```
 
 Use `--semantic` to see the raw vector ranking (no lexical fusion) when
@@ -189,6 +204,7 @@ evaluating a model — that isolates embedding quality from the lexical lane.
 |--------------|-----|
 | Sensible default, fast, ~280 MB | `e5-base` (default) |
 | Maximum cross-lingual quality, disk/time no object | `bge-m3` |
+| Evaluate a newer 0.6B multilingual model locally | `qwen3-embedding-0.6b` (~613 MB q8) |
 | Smallest footprint and your queries are same-language & literal | `e5-small` (with eyes open) |
 | Best precision on exact identifiers | keep hybrid on (don't pass `--semantic`) |
 | Sharpest top-k on a larger corpus | add `--rerank` (cross-encoder, +280 MB) |

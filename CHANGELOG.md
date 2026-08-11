@@ -7,6 +7,17 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Issue #50 (partial, experimental)** — added the pinned
+  `qwen3-embedding-0.6b` model profile
+  (`onnx-community/Qwen3-Embedding-0.6B-ONNX`, 1024 dimensions, q8). The
+  profile applies Qwen3's query-only retrieval instruction and last-token
+  pooling; exact registered raw IDs inherit the pinned profile unless an
+  explicit `@revision` overrides it. Pinned offline loads use the existing
+  Transformers.js revision directory, and adapter fingerprints prevent
+  incompatible vector/checkpoint reuse while preserving model-independent
+  lexical reuse. `e5-base` remains the default. Issue #50 stays open pending
+  the #55 provenance gate, #56 paired RU/EN benchmark, and the remaining #60
+  adapter-contract acceptance criteria.
 - **Issue #49** — schema-v3 BM25 lexical documents now include the full active
   Markdown heading path, so exact parent-section terms can promote the correct
   nested chunk even when body terms are shared. New builds write `bm25-v2`;
