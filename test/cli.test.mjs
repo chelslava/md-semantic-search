@@ -252,16 +252,18 @@ function writeFakeIndex(dir, extra = {}) {
   fs.mkdirSync(path.join(dir, '.mdss'), { recursive: true });
   const built = extra.built || new Date(Date.now() - 60_000).toISOString();
   fs.writeFileSync(path.join(dir, '.mdss', 'vectors.json'), JSON.stringify({
+    schemaVersion: SCHEMA_VERSION,
     format: 'binary-v1',
+    lexical: { format: 'bm25-v1', documentLengths: [1, 1], postings: { aa: [[0, 1]], bb: [[1, 1]] } },
     model: 'Xenova/multilingual-e5-base@main',
     modelAlias: 'e5-base',
     dim: 768,
     db: dir,
     built,
-    chunkCount: 42,
+    chunkCount: 2,
     chunks: [
-      { file: 'a.md', heading: 'A', text: 'a', vec: 'AAAA' },
-      { file: 'b.md', heading: 'B', text: 'b', vec: 'BBBB' },
+      { file: 'a.md', title: 'A', heading: 'A', headingPath: ['A'], text: 'a', chunkHash: 'ha', vec: Buffer.alloc(768 * 4).toString('base64') },
+      { file: 'b.md', title: 'B', heading: 'B', headingPath: ['B'], text: 'b', chunkHash: 'hb', vec: Buffer.alloc(768 * 4).toString('base64') },
     ],
     ...extra,
   }));
@@ -277,10 +279,13 @@ test('cli: stats --json emits machine-readable fields (issue #21)', () => {
     assert.equal(r.status, 0, r.stderr);
     const s = JSON.parse(r.stdout);
     assert.equal(s.format, 'binary-v1');
+    assert.equal(s.schemaVersion, SCHEMA_VERSION);
+    assert.equal(s.lexicalFormat, 'bm25-v1');
+    assert.equal(s.lexicalStatus, 'persisted-bm25');
     assert.equal(s.model, 'Xenova/multilingual-e5-base@main');
     assert.equal(s.modelAlias, 'e5-base');
     assert.equal(s.dim, 768);
-    assert.equal(s.chunks, 42);
+    assert.equal(s.chunks, 2);
     assert.equal(s.files, 3, 'file count from .hashes.json keys');
     assert.ok(s.indexBytes > 0, 'vectors.json size reported');
     assert.ok(s.ageSeconds > 0 && s.ageSeconds < 120, `age ~60s, got ${s.ageSeconds}`);
@@ -298,8 +303,9 @@ test('cli: stats human output shows format/model/chunks/files/built', () => {
     const r = runCli(['stats', '--db', dir]);
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /format: binary-v1/);
+    assert.match(r.stdout, /schema: v3 · lexical: bm25-v1/);
     assert.match(r.stdout, /model: e5-base \(dim 768\)/);
-    assert.match(r.stdout, /chunks: 42 · files: 3/);
+    assert.match(r.stdout, /chunks: 2 · files: 3/);
     assert.match(r.stdout, /built: .+ ago/);
     assert.match(r.stdout, /db: /);
   } finally {
@@ -391,15 +397,19 @@ import { checkHealth } from '../bin/cli.mjs';
 
 /** Minimal synthetic index dir: 1 file, 1 chunk, dim=4 binary vecs. */
 function makeIndexDir(db, { schemaVersion = SCHEMA_VERSION, vec = [0.1, 0.2, 0.3, 0.4], dim = 4,
-  model = 'Xenova/all-MiniLM-L6-v2', built, chunks } = {}) {
+  model = 'Xenova/all-MiniLM-L6-v2', built, chunks, lexical } = {}) {
   const indexDir = path.join(db, '.mdss');
   fs.mkdirSync(indexDir, { recursive: true });
   const b64 = vec ? Buffer.from(new Float32Array(vec).buffer).toString('base64') : undefined;
   const index = {
     schemaVersion, format: 'binary-v1', model, dim,
     built: built || new Date().toISOString(),
-    chunks: chunks ?? [{ file: 'a.md', title: 'A', heading: 'A', headingPath: ['A'], text: 'text', vec: b64 }],
+    chunkCount: chunks?.length ?? 1,
+    chunks: chunks ?? [{ file: 'a.md', title: 'A', heading: 'A', headingPath: ['A'], text: 'text', chunkHash: 'hash-a', vec: b64 }],
   };
+  if (schemaVersion === 3) {
+    index.lexical = lexical ?? { format: 'bm25-v1', documentLengths: [2], postings: { text: [[0, 1]], aa: [[0, 1]] } };
+  }
   fs.writeFileSync(path.join(indexDir, 'vectors.json'), JSON.stringify(index));
   fs.writeFileSync(path.join(indexDir, '.hashes.json'), JSON.stringify({ 'a.md': 'h' }));
   return indexDir;
@@ -459,7 +469,7 @@ test('checkHealth: vec-less legacy chunk is flagged, not skipped', () => {
   const dir = tempDir('check-vecless');
   try {
     fs.writeFileSync(path.join(dir, 'a.md'), '# A\n\ntext\n');
-    const indexDir = makeIndexDir(dir, { chunks: [{ file: 'a.md', heading: 'A' }] });
+    const indexDir = makeIndexDir(dir, { schemaVersion: 2, chunks: [{ file: 'a.md', heading: 'A' }] });
     const r = checkHealth({ db: dir, indexDir, cacheDir: path.join(dir, 'cache') });
     assert.equal(r.healthy, false);
     assert.match(r.chunks.invalid[0].error, /missing vector/);
@@ -492,6 +502,88 @@ test('checkHealth: unknown newer schemaVersion → index.recognized=false', () =
     assert.equal(r.healthy, false);
     assert.equal(r.index.recognized, false);
     assert.match(r.index.error, /v99.*newer/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('checkHealth: malformed root/schema/chunks and known-model dimension are actionable', () => {
+  const dir = tempDir('check-boundaries');
+  const vectorsPath = path.join(dir, '.mdss', 'vectors.json');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# A\n\ntext\n');
+    const indexDir = makeIndexDir(dir);
+    for (const schemaVersion of ['3', 3.5, -1, Number.MAX_SAFE_INTEGER + 1]) {
+      const current = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
+      fs.writeFileSync(vectorsPath, JSON.stringify({ ...current, schemaVersion }));
+      const report = checkHealth({ db: dir, indexDir, cacheDir: path.join(dir, 'cache') });
+      assert.equal(report.healthy, false);
+      assert.match(report.index.error, /schemaVersion must be a non-negative safe integer.*mdss index/i);
+      makeIndexDir(dir);
+    }
+    fs.writeFileSync(vectorsPath, JSON.stringify(null));
+    assert.match(checkHealth({ db: dir, indexDir, cacheDir: path.join(dir, 'cache') }).index.error,
+      /root must be an object.*mdss index/i);
+    fs.writeFileSync(vectorsPath, JSON.stringify({ schemaVersion: 3, chunks: null }));
+    assert.match(checkHealth({ db: dir, indexDir, cacheDir: path.join(dir, 'cache') }).index.error,
+      /chunks must be an array.*mdss index/i);
+    fs.writeFileSync(vectorsPath, JSON.stringify({ schemaVersion: SCHEMA_VERSION + 1, chunks: null }));
+    assert.match(checkHealth({ db: dir, indexDir, cacheDir: path.join(dir, 'cache') }).index.error,
+      /schema v4.*newer.*upgrade/i);
+    makeIndexDir(dir);
+    const known = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
+    known.model = 'Xenova/multilingual-e5-base@main';
+    known.modelAlias = 'e5-base';
+    known.dim = 4;
+    fs.writeFileSync(vectorsPath, JSON.stringify(known));
+    assert.match(checkHealth({ db: dir, indexDir, cacheDir: path.join(dir, 'cache') }).index.error,
+      /index\.dim 4 does not match known model dimension 768.*mdss index/i);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('checkHealth: genuine v3 missing or malformed lexical data is unhealthy', () => {
+  const dir = tempDir('check-lexical');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# A\n\ntext\n');
+    const indexDir = makeIndexDir(dir, { lexical: { format: 'bm25-v1', documentLengths: [], postings: {} } });
+    const malformed = checkHealth({ db: dir, indexDir, cacheDir: path.join(dir, 'cache') });
+    assert.equal(malformed.healthy, false);
+    assert.match(malformed.index.error, /lexical.*mdss index/i);
+
+    const index = JSON.parse(fs.readFileSync(path.join(indexDir, 'vectors.json'), 'utf8'));
+    delete index.lexical;
+    fs.writeFileSync(path.join(indexDir, 'vectors.json'), JSON.stringify(index));
+    const missing = checkHealth({ db: dir, indexDir, cacheDir: path.join(dir, 'cache') });
+    assert.equal(missing.healthy, false);
+    assert.match(missing.index.error, /lexical.*mdss index/i);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('checkHealth: malformed current chunks, format, and storage match loadIndex failures', () => {
+  const dir = tempDir('check-current-envelope');
+  const vectorsPath = path.join(dir, '.mdss', 'vectors.json');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# A\n\ntext\n');
+    const indexDir = makeIndexDir(dir);
+    const current = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
+    const cases = [
+      [{ ...current, format: 'binary-v9' }, /format must be binary-v1/i],
+      [{ ...current, chunks: [null], chunkCount: 1 }, /chunk 0 must be an object/i],
+      [{ ...current, chunks: [{ ...current.chunks[0], file: 47 }] }, /chunk 0 file must be a string/i],
+      [{ ...current, chunks: [{ ...current.chunks[0], vec: '' }] }, /base64 vector.*empty/i],
+      [{ ...current, chunks: [{ ...current.chunks[0], vec: '!!!!' }] }, /base64 vector.*canonical/i],
+    ];
+    for (const [value, expected] of cases) {
+      fs.writeFileSync(vectorsPath, JSON.stringify(value));
+      const report = checkHealth({ db: dir, indexDir, cacheDir: path.join(dir, 'cache') });
+      assert.equal(report.healthy, false);
+      const error = report.index.error ?? report.chunks.invalid[0]?.error ?? '';
+      assert.match(error, expected);
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -567,6 +659,56 @@ test('cli: doctor alias + --json → exit 0 with healthy report (issue #43)', ()
     assert.equal(j.healthy, true);
     assert.equal(j.chunks.valid, 1);
     assert.equal(j.model.cached, false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('cli: human check prints malformed v3 lexical and schema errors as FAIL', () => {
+  const dir = tempDir('check-cli-errors');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# A\n\ntext\n');
+    const indexDir = makeIndexDir(dir, { lexical: { format: 'bm25-v1', documentLengths: [], postings: {} } });
+    const lexical = runCli(['check', '--db', dir]);
+    assert.equal(lexical.status, 1);
+    assert.match(lexical.stdout, /FAIL.*schema v3 lexical index.*mdss index.*rebuild/i);
+
+    const current = JSON.parse(fs.readFileSync(path.join(indexDir, 'vectors.json'), 'utf8'));
+    current.schemaVersion = '3';
+    fs.writeFileSync(path.join(indexDir, 'vectors.json'), JSON.stringify(current));
+    const schema = runCli(['doctor', '--db', dir]);
+    assert.equal(schema.status, 1);
+    assert.match(schema.stdout, /FAIL.*schemaVersion must be a non-negative safe integer.*mdss index/i);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('cli: check and stats reject invalid current format and vector storage', () => {
+  const dir = tempDir('cli-current-format');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# A\n\ntext\n');
+    const indexDir = makeIndexDir(dir);
+    const vectorsPath = path.join(indexDir, 'vectors.json');
+    const current = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
+    const cases = [
+      [{ ...current, format: 'binary-v9' }, /format must be binary-v1/i],
+      [{ ...current, chunks: [{ ...current.chunks[0], vec: '!!!!' }] }, /base64 vector.*canonical/i],
+      [{ ...current, chunkCount: undefined }, /chunkCount must equal chunks\.length/i],
+      [{ ...current, model: undefined }, /schema v3 model must be a nonempty string/i],
+      [{ ...current, model: '' }, /schema v3 model must be a nonempty string/i],
+    ];
+    for (const [value, expected] of cases) {
+      fs.writeFileSync(vectorsPath, JSON.stringify(value));
+      const check = runCli(['check', '--db', dir]);
+      assert.equal(check.status, 1);
+      assert.match(check.stdout, new RegExp(`FAIL[\\s\\S]*${expected.source}`, 'i'));
+      assert.doesNotMatch(check.stdout, /ok\s+chunks:/i,
+        'invalid current envelopes do not report uncheckable chunks as healthy');
+      const stats = runCli(['stats', '--db', dir, '--json']);
+      assert.equal(stats.status, 1);
+      assert.match(stats.stderr, expected);
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

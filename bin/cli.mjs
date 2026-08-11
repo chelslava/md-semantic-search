@@ -17,8 +17,9 @@ import os from 'node:os';
 import { buildIndex } from '../src/indexer.mjs';
 import { search } from '../src/search.mjs';
 import { createServe, DEFAULT_PORT, DEFAULT_HOST } from '../src/serve.mjs';
-import { MODELS, DEFAULT_MODEL } from '../src/models.mjs';
+import { MODELS, DEFAULT_MODEL, resolveModel } from '../src/models.mjs';
 import { decodeVec, walkMarkdown, SCHEMA_VERSION } from '../src/core.mjs';
+import { inspectIndexSchema, validateCurrentChunk, validateIndexEnvelope, validateNumericVector } from '../src/index-format.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = path.resolve(HERE, '..');
@@ -212,6 +213,11 @@ function cmdStats(opts) {
   } catch (e) {
     die(`${vectorsPath} is not valid JSON (${e.message}); run \`mdss index\` to rebuild.`);
   }
+  try {
+    validateIndexEnvelope(index, vectorsPath, { encoding: 'stored' });
+  } catch (error) {
+    die(error.message);
+  }
 
   // File count = keys of .hashes.json (per-file md5 map written by buildIndex).
   // Fall back to unique chunk file paths when the hashes file is missing (a
@@ -228,7 +234,10 @@ function cmdStats(opts) {
   const builtMs = index.built ? Date.parse(index.built) : NaN;
   const stats = {
     indexDir,
+    schemaVersion: index.schemaVersion ?? 0,
     format: index.format || 'legacy',         // binary-v1 vs pre-0.4 decimal
+    lexicalFormat: index.schemaVersion >= 3 ? (index.lexical?.format || 'invalid') : null,
+    lexicalStatus: index.schemaVersion >= 3 ? 'persisted-bm25' : 'legacy-overlap',
     model: index.model || null,               // id@revision (issue #27)
     modelAlias: index.modelAlias || null,
     dim: index.dim ?? null,
@@ -252,6 +261,7 @@ function cmdStats(opts) {
   process.stdout.write(
     `Index at ${indexDir}\n` +
     `  format: ${stats.format} · model: ${stats.modelAlias || stats.model || '?'} (dim ${stats.dim ?? '?'})\n` +
+    `  schema: v${stats.schemaVersion} · lexical: ${stats.lexicalFormat || stats.lexicalStatus}\n` +
     `  chunks: ${chunks} · files: ${files}\n` +
     `  size: ${(stats.indexBytes / 1024).toFixed(1)} KiB (vectors.json)\n` +
     `  built: ${stats.built || '?'} (${age} ago)\n` +
@@ -311,15 +321,27 @@ export function checkHealth({ db, indexDir, cacheDir, requireOffline = false }) 
     report.healthy = false;
     return report;
   }
-  const schemaVersion = index.schemaVersion ?? 0;
+  let schemaVersion;
+  try {
+    ({ schema: schemaVersion } = inspectIndexSchema(index, 'vectors.json'));
+  } catch (error) {
+    report.index.recognized = false;
+    report.index.error = error.message;
+    report.healthy = false;
+    return report;
+  }
   report.index.schemaVersion = schemaVersion;
   report.index.format = index.format || 'legacy';
   report.index.recognized = schemaVersion <= SCHEMA_VERSION;
-  if (!report.index.recognized) {
-    report.index.error =
-      `schema v${schemaVersion} is newer than this mdss supports (up to v${SCHEMA_VERSION}) — ` +
-      'upgrade md-semantic-search';
+  let validated;
+  try {
+    validated = validateIndexEnvelope(index, 'vectors.json', {
+      encoding: 'stored', validateVectors: false,
+    });
+  } catch (error) {
+    report.index.error = error.message;
     report.healthy = false;
+    return report;
   }
 
   // --- .hashes.json: parses; file count vs chunk count ---
@@ -339,20 +361,29 @@ export function checkHealth({ db, indexDir, cacheDir, requireOffline = false }) 
   // Reuses decodeVec — the exact validator the loader runs (issue #40) — so
   // `mdss check` reports the same "corrupt vector" verdicts without loading
   // the 280MB model.
-  const chunks = index.chunks || [];
-  const dim = index.dim ?? null;
+  const chunks = index.chunks;
+  const expectedDim = validated.dim;
+  const dim = expectedDim ?? null;
   report.chunks.total = chunks.length;
-  for (const c of chunks) {
-    const where = `${c.file}${c.heading ? ` › ${c.heading}` : ''}`;
+  for (let position = 0; position < chunks.length; position++) {
+    const c = chunks[position];
+    const where = c && typeof c === 'object' && !Array.isArray(c)
+      ? `${c.file}${c.heading ? ` › ${c.heading}` : ''}` : `chunk ${position}`;
     let bad = null;
-    if (typeof c.vec === 'string') {
-      try { decodeVec(c.vec, dim ?? undefined); }
-      catch (e) { bad = e.message; }
-    } else if (Array.isArray(c.vec)) {
-      if (dim !== null && c.vec.length !== dim) bad = `vector has ${c.vec.length} dims, expected ${dim}`;
-      else if (c.vec.some(v => !Number.isFinite(v))) bad = 'non-finite value (NaN/Infinity)';
-    } else {
-      bad = 'missing vector (vec-less chunk)';
+    try {
+      if (schemaVersion >= 3) {
+        validateCurrentChunk(c, position, {
+          dim: dim ?? undefined, encoding: 'stored', allowMissingVector: undefined,
+        });
+      } else if (c === null || typeof c !== 'object' || Array.isArray(c)) {
+        throw new Error(`chunk ${position} must be an object — run \`mdss index\` to rebuild`);
+      } else if (typeof c.vec === 'string') {
+        decodeVec(c.vec, dim ?? undefined);
+      } else {
+        validateNumericVector(c.vec, dim ?? undefined, `chunk ${where}`);
+      }
+    } catch (error) {
+      bad = error.message;
     }
     if (bad) {
       report.healthy = false;
@@ -439,7 +470,13 @@ function cmdCheck(opts) {
   }
   out += ok(`vectors.json: parses (schema v${report.index.schemaVersion}, ` +
     `${report.index.format})`);
-  if (!report.index.recognized) out += fail(report.index.error);
+  if (report.index.error) {
+    out += fail(report.index.error);
+    out += 'check: 1+ problem(s) found (exit 1)\n';
+    process.stdout.write(out);
+    process.exitCode = 1;
+    return;
+  }
 
   if (report.hashes.exists && report.hashes.parses) {
     out += ok(`.hashes.json: parses (${report.hashes.files} file(s))`);
