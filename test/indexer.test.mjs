@@ -327,6 +327,60 @@ test('buildIndex: corrupt canonical v3 lexical data reuses vectors and repairs p
   }
 });
 
+test('buildIndex: searchable schema-v3 bm25-v1 reanalyzes once before publishing bm25-v2', async () => {
+  const dir = tempDir('lexical-v2-upgrade');
+  const idx = path.join(dir, '.mdss');
+  const vectorsPath = path.join(idx, 'vectors.json');
+  try {
+    // Given: a valid schema-v3 index with a deliberately stale but searchable bm25-v1 record.
+    writeCorpus(dir, {
+      'doc.md': '# Handbook\n\n## Operations\n\n### Runbook\n\nneedle recovery steps long enough for indexing',
+    });
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir,
+      modelName: 'e5-base', embedFn: fakeEmbed });
+    const legacy = readIndex(idx);
+    legacy.lexical = {
+      format: 'bm25-v1',
+      documentLengths: [1],
+      postings: { needle: [[0, 1]] },
+    };
+    fs.writeFileSync(vectorsPath, JSON.stringify(legacy));
+
+    const oldHits = await searchIndex({ loaded: loadIndex(idx), cacheDir: dir,
+      query: 'needle', k: 1, embedFn: fakeEmbed });
+    assert.equal(oldHits[0].file, 'doc.md', 'the bm25-v1 loader remains searchable');
+    assert.deepEqual(oldHits[0].matches, ['needle']);
+    const beforeUpgrade = _lexicalStats.documentsAnalyzed;
+
+    // When: the unchanged corpus is built over the compatible legacy lexical format.
+    const upgraded = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir,
+      modelName: 'e5-base', embedFn: fakeEmbed });
+
+    // Then: vectors reuse, every stale lexical record is reanalyzed, and bm25-v2 is published.
+    assert.equal(upgraded.embedded, 0);
+    assert.equal(upgraded.reused, upgraded.chunks);
+    assert.equal(_lexicalStats.documentsAnalyzed - beforeUpgrade, upgraded.chunks);
+    const current = readIndex(idx);
+    assert.equal(current.lexical.format, 'bm25-v2');
+    assert.deepEqual(current.lexical.postings.operations, [[0, 1]]);
+    const contextualHits = await searchIndex({ loaded: loadIndex(idx), cacheDir: dir,
+      query: 'operations', k: 1, embedFn: fakeEmbed });
+    assert.equal(contextualHits[0].file, 'doc.md', 'the published bm25-v2 generation is searchable');
+    assert.deepEqual(contextualHits[0].matches, ['operations']);
+
+    // When: the new bm25-v2 generation is built again without corpus changes.
+    const beforeNoop = _lexicalStats.documentsAnalyzed;
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir,
+      modelName: 'e5-base', embedFn: fakeEmbed });
+
+    // Then: eligible bm25-v2 records are reused rather than reanalyzed again.
+    assert.equal(_lexicalStats.documentsAnalyzed, beforeNoop);
+    assert.equal(readIndex(idx).lexical.format, 'bm25-v2');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('buildIndex: append to a file re-embeds only the new section', async () => {
   const dir = tempDir('append');
   const idx = path.join(dir, '.mdss');
@@ -392,8 +446,8 @@ test('buildIndex: renaming a parent re-embeds only its subtree and reuses a sibl
       ['Doc', 'Renamed parent', 'Child'],
       ['Doc', 'Sibling', 'Cousin'],
     ]);
-    assert.equal(_lexicalStats.documentsAnalyzed, beforeRename,
-      'parent-only headingPath changes do not alter lexical documents');
+    assert.equal(_lexicalStats.documentsAnalyzed - beforeRename, 1,
+      'the renamed ancestor reanalyzes only its lexical subtree');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

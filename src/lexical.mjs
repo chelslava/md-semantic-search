@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 /** @typedef {Record<string, number>} TermFrequencies */
 /**
  * @typedef {Object} LexicalIndex
- * @property {'bm25-v1'} format
+ * @property {'bm25-v1'|'bm25-v2'} format
  * @property {number[]} documentLengths
  * @property {Record<string, Array<[number, number]>>} postings
  */
@@ -22,9 +22,24 @@ const STOP = new Set([
 
 export const _lexicalStats = { documentsAnalyzed: 0 };
 
-/** @param {{title:string, heading:string, text:string}} chunk */
+/** Normalize lexical context consistently with canonical passage hashing. */
+function normalize(text) {
+  return (text ?? '').replace(/\r\n?/g, '\n').trim();
+}
+
+/** @param {string} left @param {string} right */
+function equivalent(left, right) {
+  return left.toLowerCase() === right.toLowerCase();
+}
+
+/** @param {{title:string, heading:string, headingPath?:string[], text:string}} chunk */
 export function lexicalDocument(chunk) {
-  return `${chunk.title} ${chunk.heading} ${chunk.text}`;
+  const title = normalize(chunk.title);
+  const heading = normalize(chunk.heading);
+  const ancestors = (chunk.headingPath ?? (heading ? [chunk.heading] : [])).map(normalize);
+  if (ancestors.length > 0 && equivalent(ancestors[0], title)) ancestors.shift();
+  if (ancestors.length > 0 && equivalent(ancestors[ancestors.length - 1], heading)) ancestors.pop();
+  return [title, ...ancestors, heading, normalize(chunk.text)].join('\n');
 }
 
 /** Model-independent identity of the exact lexical document input. */
@@ -40,7 +55,7 @@ export function tokenize(text) {
 }
 
 /**
- * @param {{title:string, heading:string, text:string}} chunk
+ * @param {{title:string, heading:string, headingPath?:string[], text:string}} chunk
  * @returns {TermFrequencies}
  */
 export function analyzeLexicalDocument(chunk) {
@@ -70,7 +85,7 @@ export function buildLexicalIndex(records) {
     }
     return length;
   });
-  return { format: 'bm25-v1', documentLengths, postings };
+  return { format: 'bm25-v2', documentLengths, postings };
 }
 
 /**
@@ -83,7 +98,9 @@ export function validateLexicalIndex(value, chunkCount) {
     return 'lexical must be an object';
   }
   const lexical = /** @type {Record<string, unknown>} */ (value);
-  if (lexical.format !== 'bm25-v1') return 'unknown lexical format';
+  if (lexical.format !== 'bm25-v1' && lexical.format !== 'bm25-v2') {
+    return 'unknown lexical format';
+  }
   if (!Array.isArray(lexical.documentLengths) || lexical.documentLengths.length !== chunkCount ||
       !lexical.documentLengths.every(length => Number.isSafeInteger(length) && length >= 0)) {
     return `documentLengths must contain ${chunkCount} non-negative safe integers`;

@@ -11,6 +11,26 @@ import {
 
 const chunk = (text, title = '', heading = '') => ({ title, heading, text });
 
+test('lexical document: indexes ancestor terms once when title and leaf differ only by normalized case', () => {
+  // Given: a heading path repeats the title and leaf with different case and edge whitespace.
+  const contextualChunk = {
+    title: ' Project Atlas ',
+    heading: ' Recovery Runbook ',
+    headingPath: ['project atlas', 'Operations', 'recovery runbook'],
+    text: 'body signal',
+  };
+
+  // When: the chunk is analyzed as one lexical document.
+  const frequencies = analyzeLexicalDocument(contextualChunk);
+
+  // Then: the ancestor contributes terms without duplicating normalized title or leaf terms.
+  assert.equal(frequencies.operations, 1);
+  assert.equal(frequencies.project, 1);
+  assert.equal(frequencies.atlas, 1);
+  assert.equal(frequencies.recovery, 1);
+  assert.equal(frequencies.runbook, 1);
+});
+
 test('BM25: rare terms have greater IDF than common terms', () => {
   const lexical = buildLexicalIndex([
     analyzeLexicalDocument(chunk('common rare')),
@@ -79,15 +99,20 @@ test('lexical validation safely accepts arbitrary own-property terms', () => {
   assert.equal(bm25Scores(lexical, ['__proto__']).get(0) > 0, true);
 });
 
-test('lexical identity follows title + leaf heading + text, never headingPath or model', () => {
+test('lexical identity changes when an ancestor heading changes', () => {
+  // Given: equivalent leaf chunks under two different ancestor headings.
   const titleHeading = { title: 'Same', heading: 'Same', headingPath: ['Same'], text: 'body' };
   const frontmatter = { title: 'Same', heading: '', headingPath: [], text: 'body' };
+  const underParent = { ...titleHeading, headingPath: ['Parent', 'Same'] };
+  const underRenamedParent = { ...titleHeading, headingPath: ['Renamed', 'Same'] };
 
+  // When: their model-independent lexical identities are calculated.
+  const parentIdentity = lexicalIdentity(underParent);
+  const renamedParentIdentity = lexicalIdentity(underRenamedParent);
+
+  // Then: leaf/title distinctions and ancestor context both affect lexical identity.
   assert.notEqual(lexicalIdentity(titleHeading), lexicalIdentity(frontmatter));
-  assert.equal(
-    lexicalIdentity({ ...titleHeading, headingPath: ['Parent', 'Same'] }),
-    lexicalIdentity({ ...titleHeading, headingPath: ['Renamed', 'Same'] }),
-  );
+  assert.notEqual(parentIdentity, renamedParentIdentity);
 });
 
 test('lexical validation rejects unsafe integers and checked TF-sum overflow', () => {

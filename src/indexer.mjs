@@ -324,9 +324,10 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
     }
   };
 
-  const lexicalValid = sourceSchema === 3 &&
-    validateLexicalIndex(oldIndex.lexical, oldIndex.chunks.length) === null;
-  const oldLexicalRecords = lexicalValid ? reverseLexicalIndex(oldIndex.lexical) : [];
+  const lexicalReusable = sourceSchema === 3 &&
+    validateLexicalIndex(oldIndex.lexical, oldIndex.chunks.length) === null &&
+    oldIndex.lexical.format === 'bm25-v2';
+  const oldLexicalRecords = lexicalReusable ? reverseLexicalIndex(oldIndex.lexical) : [];
 
   const oldByFile = new Map();
   // chunk-level cache: hash of the passage input -> stored vector. Built from
