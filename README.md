@@ -38,7 +38,7 @@ measurements that shaped its defaults.
   path (`title > h1 > h2 > ...`), so a deeply nested passage remains searchable
   by its parent topics without an LLM-generated context step.
 - 🧠 **Hybrid ranking.** Reciprocal Rank Fusion of vector similarity (meaning)
-  and lexical overlap (exact names like `win32`, `TextIOWrapper`).
+  and persisted BM25 postings (exact names like `win32`, `TextIOWrapper`).
 - ⚡ **Two-level incremental.** Per-file md5 (unchanged files skip work) **plus**
   per-chunk hash — inside a *changed* file, sections whose text is unchanged
   reuse their stored vector. Editing one place in a long file re-embeds only the
@@ -121,6 +121,8 @@ Also exported: `resolveModel`, `MODELS`, `DEFAULT_MODEL`, `chunkHash`,
 `tokenize`, `keywordScores`, `rrf`, `cosine`, `encodeVec`/`decodeVec`,
 `walkMarkdown`/`parseFile`/`chunkMarkdown`, `splitFrontmatter`, `extractTitle`,
 `globToRegExp`. Types come from JSDoc (`// @ts-check` + `checkJs`).
+`keywordScores` remains the legacy exact-overlap helper for schema-v0/v1/v2
+indexes and existing library consumers; schema-v3 search uses persisted BM25.
 
 ## Usage
 
@@ -141,11 +143,14 @@ just the new entry). The index output reports the split, e.g.:
 Indexed 64 file(s) → 725 chunks (725 reused [5 chunk-level, 720 file-level], 0 embedded), ... 0.6s
 ```
 
-Schema-v2 indexes persist each chunk's full Markdown heading path and use the
-same canonical contextual passage for embedding and `chunkHash`. Indexes from
-schema v0/v1 remain searchable, but the first `index` run after upgrading
-re-embeds them once so vectors generated without parent-heading context are not
-silently reused. Later runs retain normal file- and chunk-level reuse.
+Schema-v3 indexes persist each chunk's full Markdown heading path plus a compact
+BM25 inverted index inside `vectors.json`. Search tokenizes only the query;
+unchanged files and a model-independent hash of the exact lexical document
+(`title + leaf heading + text`) reuse lexical analysis independently of vector
+reuse. Parent heading-path and model-only changes therefore do not rebuild
+unchanged lexical records. Schema-v0/v1/v2 remain searchable through the legacy
+exact-token overlap lane. A v2 rebuild reuses its contextual vectors while
+adding BM25; v0/v1 still re-embed once because they lack contextual passages.
 
 During long builds, mdss atomically checkpoints progress every eight embedding
 batches (about 256 chunks) to `<index>/.checkpoint.json`. The canonical
@@ -169,21 +174,28 @@ after a re-index or for staleness detection in scripts:
 mdss stats --db /path/to/your/markdown
 # Index at /path/to/your/markdown/.mdss
 #   format: binary-v1 · model: e5-base (dim 768)
+#   schema: v3 · lexical: bm25-v1
 #   chunks: 725 · files: 64
 #   size: 42.1 KiB (vectors.json)
 #   built: 2026-08-08T09:42:58.331Z (2m 12s ago)
 #   db: /path/to/your/markdown
 ```
 
-`mdss stats --json` prints machine-readable JSON: `indexDir`, `format`
-(`binary-v1` vs legacy `decimal`), `model` (id@revision) / `modelAlias`, `dim`,
-`chunks`, `files`, `indexBytes`, `built`, `ageSeconds`, `db`.
+`mdss stats --json` prints machine-readable JSON: `indexDir`, `schemaVersion`,
+`format` (`binary-v1` vs legacy `decimal`), `lexicalFormat`, `lexicalStatus`,
+`model` (id@revision) / `modelAlias`, `dim`, `chunks`, `files`, `indexBytes`,
+`built`, `ageSeconds`, `db`. Stats validates the same schema-v3 envelope and
+stored vectors as the loader; malformed current metadata, unknown formats, and
+corrupt vector storage exit with an actionable error instead of reporting a
+healthy index.
 
 Indexes also carry an explicit `schemaVersion` (issue #39): reading or
 re-indexing over an index written by a **newer** mdss fails with a clear
 "upgrade md-semantic-search" error instead of silently misparsing, and corrupt
-vectors (truncated base64, NaN/Infinity, wrong dimension) are rejected at load
-with the offending chunk named — no more silent NaN scores (issue #40).
+root/schema/chunk shapes, unknown current formats, malformed v3 lexical data,
+and corrupt vectors (non-canonical/truncated base64, NaN/Infinity, wrong or
+model-inconsistent dimensions) are
+rejected at load with an actionable rebuild/upgrade hint.
 
 Index writes are **serialized across processes** with a lockfile
 (`<index>/.mdss.lock`, issue #37): `mdss serve --watch` re-indexes on a timer
@@ -205,7 +217,7 @@ broken?"* rather than *"what's in the index?"*:
 ```bash
 mdss check --db /path/to/your/markdown
 # check: /path/to/your/markdown/.mdss
-#   ok    vectors.json: parses (schema v1, binary-v1)
+#   ok    vectors.json: parses (schema v3, binary-v1)
 #   ok    .hashes.json: parses (64 file(s))
 #   ok    chunks: 725/725 vectors valid (dim from index)
 #   ok    db /path/to/your/markdown: fresh
@@ -213,8 +225,10 @@ mdss check --db /path/to/your/markdown
 # check: healthy (exit 0)
 ```
 
-It validates, in order: `vectors.json` exists / parses / `schemaVersion` +
-`format` recognized; `.hashes.json` parses; **every chunk's decoded vector**
+It validates, in order: `vectors.json` exists / parses; root, `schemaVersion`,
+schema-v3 BM25 data, required current chunk metadata, model dimension, and
+`format` are recognized;
+`.hashes.json` parses; **every chunk's decoded vector**
 with the same validator the loader uses (dim mismatch, NaN/Infinity, truncated
 base64, vec-less legacy chunks — the first five offenders are named); db
 staleness (newest file mtime vs `built`, same 5s grace as the stale warning);
@@ -246,8 +260,8 @@ Top 3 for: "how do I add a new translation language"
 
 ### Reranking (optional, sharper results)
 
-The default ranking scores each chunk *independently* (vector cosine + lexical
-overlap fused with RRF). A **cross-encoder** instead reads the query and the
+The default ranking scores each chunk *independently* (vector cosine + BM25
+fused with RRF; legacy indexes use exact overlap). A **cross-encoder** reads the query and the
 passage **together**, capturing pairwise relevance that independent scores can
 miss — at the cost of one forward pass per candidate.
 
@@ -401,7 +415,8 @@ weights (a `model_quantized.onnx` file) in the repo.
    parent rename invalidates its subtree while unchanged sibling branches reuse
    their vectors.
 4. **Search**: embed the query (`query:` prefix), score every chunk by cosine,
-   score by lexical term-overlap, then **fuse with RRF**. Return top-k chunks.
+   score query terms from the persisted BM25 postings, then **fuse with RRF**.
+   Legacy schema-v0/v1/v2 indexes retain exact token-overlap scoring.
 
 No external services, no database — the whole index is one JSON file and search
 is an in-memory dot-product sweep.

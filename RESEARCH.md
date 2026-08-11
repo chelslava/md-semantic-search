@@ -12,7 +12,7 @@ auditable and reproducible.
 >   ranked an irrelevant page *above* the correct one. `e5-base` fixed it.
 > - **Quantization is not the problem** people assume — int8 vs fp32 changed
 >   cosine scores by <0.003 and never changed the ranking.
-> - **Hybrid (vector + keyword via RRF)** beats either alone: vectors catch
+> - **Hybrid (vector + lexical via RRF)** beats either alone: vectors catch
 >   paraphrases, keywords catch exact identifiers.
 
 ---
@@ -112,15 +112,18 @@ heading, not just "the page where the word appears somewhere."
 
 ### Hybrid ranking via Reciprocal Rank Fusion
 Pure vectors miss exact identifiers (`win32`, `TextIOWrapper`, error codes);
-pure keywords miss paraphrases. We compute two rankings — cosine and lexical
-term-overlap — and fuse them with RRF (`score = Σ 1/(k + rank)`, `k=60`). RRF
+pure lexical search misses paraphrases. We compute two rankings — cosine and
+BM25 over persisted postings — and fuse them with RRF
+(`score = Σ 1/(k + rank)`, `k=60`). Schema-v0/v1/v2 compatibility retains the
+original exact token-overlap ranking used for the measurements below. RRF
 needs no score normalization or weight tuning, which is what makes it robust
 across very different score scales.
 
 ### Stop-words protect the lexical lane
-Cross-lingual queries share function words ("при", "the", "кода") with
-irrelevant documents, letting lexical overlap promote noise. A small ru/en
+Cross-lingual queries share function words ("при", "the", "для") with
+irrelevant documents, letting lexical scoring promote noise. A small ru/en
 stop-list is removed before lexical scoring so RRF fuses signal, not filler.
+Engineering content words such as `код` / `кода` are intentionally retained.
 
 ### Incremental by content hash
 Each file's md5 is stored. Re-indexing reuses embeddings for unchanged files
@@ -130,8 +133,10 @@ Changing the model invalidates all vectors and forces a clean rebuild
 
 ## 6. Experiment C — does cross-encoder re-ranking help?
 
-First-pass ranking (cosine + RRF) scores every chunk *independently*. A
-cross-encoder reads the query and each candidate **together**, capturing
+The historical measurements in this experiment used cosine + exact token
+overlap through RRF; schema-v3 BM25 was implemented later and has not been
+measured on this table. Both first-pass algorithms score every chunk
+*independently*. A cross-encoder reads the query and each candidate **together**, capturing
 pairwise relevance — at the cost of one forward pass per candidate. We compared
 top-1 with and without `--rerank` (`Xenova/bge-reranker-base`, single-class
 XLMRoBERTa, raw logit = relevance score) on the real bilingual wiki:
@@ -168,7 +173,7 @@ mdss search --db ./your-wiki --semantic "the same paraphrase"
 ```
 
 Use `--semantic` to see the raw vector ranking (no lexical fusion) when
-evaluating a model — that isolates embedding quality from the keyword lane.
+evaluating a model — that isolates embedding quality from the lexical lane.
 
 ## 8. Recommendations
 

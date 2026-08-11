@@ -7,6 +7,14 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Issue #47** — schema-v3 embeds a pure-JavaScript BM25 inverted index in
+  `vectors.json`. Current indexes score and produce matches from postings while
+  tokenizing only the query; schema-v0/v1/v2 retain the legacy token-overlap
+  lane. Incremental builds reuse lexical records through a model-independent
+  lexical-document identity. Legacy loaders preserve their visible schema, so
+  transferred/cloned `{index, model}` state still selects overlap without
+  process-local metadata. Checkpoints/load/check/stats share fail-closed current
+  envelope, vector, and dimension validation with actionable hints.
 - **Issue #48** — schema-v2 chunks now retain the full Markdown heading path.
   Embedding and `chunkHash` share one canonical title/path/body passage, so
   nested content is searchable by parent topics and a parent rename re-embeds
@@ -28,8 +36,8 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
   unknown flags fail fast instead of being silently ignored, and `--version`
   prints the package version.
 - **Issue #9** — model cache now defaults to a user-writable location:
-  `$XDG_CACHE_HOME/mdss`, falling back to `~/.cache/mdss` (Windows:
-  `%LOCALAPPDATA%\mdss`), instead of the package dir.
+  `$XDG_CACHE_HOME/mdss`, falling back to `~/.cache/mdss` on every platform
+  (including Windows), instead of the package dir.
 - **Issue #10** — repo hygiene: `// @ts-check` + `tsc --noEmit` type checking
   (`npm run lint`) wired into CI, and this `CHANGELOG.md`.
 - **Issue #4** — binary vector storage: `vec` is now a base64 `Float32Array`
