@@ -7,6 +7,20 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Issue #55 (partial — repo side)** — release provenance verification. New
+  `scripts/verify-pack.mjs` packs the npm artifact into an isolated prefix,
+  installs it, and smokes the **installed** `mdss` shim: `--version` must equal
+  the packaged `package.json` version, `--help` must expose the current
+  commands/options (`index`, `search`, `stats`, `check`, `serve`, `models`,
+  `--rerank`, `--offline`, `--json`, `--version`), and the installed library
+  must export the documented public API. An opt-in real-model smoke
+  (`MDSS_RUN_REAL_MODEL=1`) additionally builds a real e5-small index through
+  the installed CLI and asserts `stats --json` reports `schemaVersion: 3` and
+  `lexicalFormat: bm25-v2` and `check --json` is healthy. The push/PR `ci`
+  workflow runs the fast structural smoke; the scheduled `nightly` workflow
+  runs the real-model smoke reusing the cached model. Remaining dogfood/install
+  side of #55 (updating the global central-KB artifact and rebuilding its
+  index) is tracked outside this repo.
 - **Issue #60** — explicit embedding-model adapter contract. Every registered
   model (`e5-small/base/large`, `bge-m3`, `qwen3-embedding-0.6b`) now declares
   its adapter in `src/models.mjs`: `queryPrefix`/`passagePrefix`, `pooling`,

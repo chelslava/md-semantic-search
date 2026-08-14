@@ -13,3 +13,6 @@ models/
 *.mdss-index.json
 vectors.json
 .hashes.json
+
+# npm pack artifacts (produced by scripts/verify-pack.mjs on failure) — never commit.
+*.tgz

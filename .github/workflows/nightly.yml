@@ -33,3 +33,9 @@ jobs:
 
       - name: Run real Transformers.js smoke suite
         run: node --test test/nightly-real-model.mjs
+
+      - name: Real-model packed-CLI provenance smoke (issue #55)
+        env:
+          MDSS_RUN_REAL_MODEL: '1'
+          MDSS_NIGHTLY_CACHE_DIR: ${{ github.workspace }}/.cache/mdss-nightly
+        run: node scripts/verify-pack.mjs

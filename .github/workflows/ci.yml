@@ -49,6 +49,28 @@ jobs:
       - name: Type-check source modules (tsc --noEmit)
         run: npm run lint
 
+  provenance:
+    # Issue #55: prove the PACKED artifact (what npm installs) — not just the
+    # source tree — is what runs. Packs, installs into an isolated prefix, and
+    # smokes the real installed mdss shim: --version matches package.json,
+    # --help exposes the current commands/options, the installed library has
+    # the documented exports. The real-model index→stats→check smoke is gated
+    # behind MDSS_RUN_REAL_MODEL (scheduled job) so push/PR CI stays
+    # network-free and fast.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify packed CLI provenance and installed exports
+        run: node scripts/verify-pack.mjs
+
   audit:
     # The current Transformers.js tree has upstream advisories with no
     # compatible fix. Report them on every run without masking test/lint status.
