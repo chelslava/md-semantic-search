@@ -7,6 +7,22 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Issue #60** — explicit embedding-model adapter contract. Every registered
+  model (`e5-small/base/large`, `bge-m3`, `qwen3-embedding-0.6b`) now declares
+  its adapter in `src/models.mjs`: `queryPrefix`/`passagePrefix`, `pooling`,
+  `normalize`, `nativeDim` (+ optional `dimensions` MRL policy), `dtype`,
+  `maxTokens`, and a `family` label. `prepareEmbeddingRequest`/`embed` read all
+  vector-producing semantics from the adapter and never infer them from the
+  model name; `getExtractor` loads the adapter-declared `dtype` (default `q8`).
+  A raw Hugging Face id that is not a registered adapter is no longer guessed to
+  be E5-compatible — it resolves to a neutral descriptor that fails at embed
+  time with an actionable message, and `resolveModel` accepts an explicit adapter
+  object for library consumers. The `adapter-v1` fingerprint is unchanged for
+  E5/BGE, so existing schema-v3 indexes and checkpoints keep their vectors
+  reusable. `mdss models`/`stats`/`check` now surface pooling, normalization,
+  dimension, formatting family, and the adapter fingerprint. Issue #50 is no
+  longer blocked by #60; it remains open pending the #55 provenance gate and
+  the #56 paired RU/EN benchmark.
 - **Issue #50 (partial, experimental)** — added the pinned
   `qwen3-embedding-0.6b` model profile
   (`onnx-community/Qwen3-Embedding-0.6B-ONNX`, 1024 dimensions, q8). The
@@ -16,8 +32,7 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
   Transformers.js revision directory, and adapter fingerprints prevent
   incompatible vector/checkpoint reuse while preserving model-independent
   lexical reuse. `e5-base` remains the default. Issue #50 stays open pending
-  the #55 provenance gate, #56 paired RU/EN benchmark, and the remaining #60
-  adapter-contract acceptance criteria.
+  the #55 provenance gate and the #56 paired RU/EN benchmark.
 - **Issue #49** — schema-v3 BM25 lexical documents now include the full active
   Markdown heading path, so exact parent-section terms can promote the correct
   nested chunk even when body terms are shared. New builds write `bm25-v2`;

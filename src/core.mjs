@@ -136,7 +136,12 @@ export async function withIndexLock(indexDir, fn) {
  * @property {number} [dim] - embedding dimension (0 for custom ids)
  * @property {string} [queryPrefix] - E5-style "query: " prefix ('' for bge)
  * @property {string} [passagePrefix] - E5-style "passage: " prefix ('' for bge)
- * @property {'mean'|'last_token'} [pooling] - token pooling strategy (default "mean")
+ * @property {import('./models.mjs').Pooling} [pooling] - token pooling strategy (default "mean")
+ * @property {boolean} [normalize] - whether vectors are L2-normalized (default true)
+ * @property {import('./models.mjs').DType} [dtype] - runtime ONNX dtype (default "q8")
+ * @property {number} [maxTokens] - declared tokenizer budget (context window)
+ * @property {boolean} [unknownAdapter] - true for unconfigured raw ids that
+ *   cannot embed until an explicit adapter is supplied (issue #60)
  * @property {string} [note] - human-readable description
  */
 
@@ -169,11 +174,22 @@ export function getExtractorCacheKey(model, cacheDir, offline) {
 
 /**
  * Lazily load (and cache) a feature-extraction pipeline for a model.
- * @param {ModelDescriptor} model - descriptor from resolveModel()
+ * A neutral unknown-raw-id adapter is rejected here with an actionable message
+ * (issue #60) — the model name is never guessed to be E5/BGE compatible.
+ * @param {ModelDescriptor} model - resolved adapter from resolveModel()
  * @param {string} cacheDir
  * @param {boolean} [offline=false] - never touch the network; require a cached model
  */
 export async function getExtractor(model, cacheDir, offline = false) {
+  if (model.unknownAdapter === true) {
+    throw new Error(
+      `model "${model.id}" is not a registered adapter and has no explicit ` +
+      'configuration, so it cannot embed safely (no E5 prefixes / pooling are ' +
+'guessed). Register it in MODELS or pass an explicit adapter descriptor ' +
+      '(see README "How to add a model") — e.g. for a raw id, supply ' +
+      'queryPrefix/passagePrefix/dim/pooling explicitly.',
+  );
+  }
   const revision = model.revision || 'main';
   const source = getPipelineModelSource(model, cacheDir, offline);
   const key = getExtractorCacheKey(model, cacheDir, offline);
@@ -181,12 +197,13 @@ export async function getExtractor(model, cacheDir, offline = false) {
   const { pipeline, env } = await import('@huggingface/transformers');
   if (cacheDir) env.cacheDir = cacheDir;
   env.allowRemoteModels = !offline;
-  // Prefer the quantized (q8) weights when the model repo ships them — this is
-  // what Xenova/* repos do (e5-base: ~280MB vs ~1.1GB fp32). Without this the
-  // v4 default dtype (fp32 on Node) would download the 4x larger weights.
+  // Use the adapter-declared runtime dtype (default q8 — the v4 default on Node
+  // is fp32, ~4x larger). The declared dtype is part of the runtime load, not
+  // of the vector-producing fingerprint, so a dtype change alone does not
+  // invalidate stored vectors.
   const ext = await pipeline('feature-extraction', source, {
     revision,
-    dtype: 'q8',
+    dtype: model.dtype || 'q8',
   });
   _extractors.set(key, ext);
   return ext;
@@ -194,17 +211,27 @@ export async function getExtractor(model, cacheDir, offline = false) {
 
 /**
  * Prepare model-specific feature-extraction inputs and invocation options.
- * @param {ModelDescriptor} model - descriptor from resolveModel()
+ * All vector-producing semantics come from the resolved adapter (issue #60):
+ * query/document formatting, pooling, and normalization are read from the
+ * descriptor, never inferred from the model name.
+ * @param {ModelDescriptor} model - resolved adapter from resolveModel()
  * @param {string[]} texts
  * @param {'query'|'passage'} kind
- * @returns {{input:string[], options:{pooling:'mean'|'last_token', normalize:true}}}
+ * @returns {{input:string[], options:{pooling:import('./models.mjs').Pooling, normalize:boolean}}}
  */
 export function prepareEmbeddingRequest(model, texts, kind) {
+  if (model.unknownAdapter === true) {
+    throw new Error(
+      `model "${model.id}" is not a registered adapter and has no explicit ` +
+      'configuration, so it cannot embed safely (issue #60) — supply an ' +
+      'explicit adapter descriptor, see README "How to add a model".',
+    );
+  }
   const prefix = kind === 'query' ? model.queryPrefix : model.passagePrefix;
   const input = prefix ? texts.map(text => prefix + text) : texts;
   return {
     input,
-    options: { pooling: model.pooling ?? 'mean', normalize: true },
+    options: { pooling: model.pooling ?? 'mean', normalize: model.normalize !== false },
   };
 }
 

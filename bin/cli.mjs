@@ -232,6 +232,8 @@ function cmdStats(opts) {
 
   const chunks = index.chunkCount ?? (index.chunks ? index.chunks.length : 0);
   const builtMs = index.built ? Date.parse(index.built) : NaN;
+  const adapterRepr = (index.model || index.modelAlias)
+    ? resolveModel(index.model || index.modelAlias) : null;
   const stats = {
     indexDir,
     schemaVersion: index.schemaVersion ?? 0,
@@ -241,6 +243,10 @@ function cmdStats(opts) {
     model: index.model || null,               // id@revision (issue #27)
     modelAlias: index.modelAlias || null,
     dim: index.dim ?? null,
+    pooling: adapterRepr?.pooling ?? 'mean',
+    normalize: adapterRepr?.normalize !== false,
+    adapterFamily: adapterRepr?.family ?? null,
+    adapterFingerprint: index.adapterFingerprint || null,
     chunks,
     files,
     indexBytes: fs.statSync(vectorsPath).size,
@@ -261,6 +267,7 @@ function cmdStats(opts) {
   process.stdout.write(
     `Index at ${indexDir}\n` +
     `  format: ${stats.format} · model: ${stats.modelAlias || stats.model || '?'} (dim ${stats.dim ?? '?'})\n` +
+    `  adapter: ${stats.pooling}${stats.normalize ? '' : ' · raw'}${stats.adapterFamily ? ' · ' + stats.adapterFamily : ''}\n` +
     `  schema: v${stats.schemaVersion} · lexical: ${stats.lexicalFormat || stats.lexicalStatus}\n` +
     `  chunks: ${chunks} · files: ${files}\n` +
     `  size: ${(stats.indexBytes / 1024).toFixed(1)} KiB (vectors.json)\n` +
@@ -418,11 +425,16 @@ export function checkHealth({ db, indexDir, cacheDir, requireOffline = false }) 
   // Offline readiness — the model must be downloaded before search works in
   // --offline mode. Missing cache is a warning unless the user explicitly
   // demands offline readiness (then it's a failure, issue #43).
-  const modelId = index.model ?? null;
+const modelId = index.model ?? null;
   report.model.id = modelId;
   if (modelId) {
     const model = resolveModel(modelId);
-    const cachePath = path.join(cacheDir, model.id, ...(model.revision === 'main' ? [] : [model.revision]));
+    report.model.pooling = model.pooling ?? 'mean';
+    report.model.normalize = model.normalize !== false;
+    report.model.adapterFamily = model.family ?? null;
+    report.model.dim = model.dim ?? null;
+    const cachePath = path.join(cacheDir, model.id,
+      ...((model.revision ?? 'main') === 'main' ? [] : [model.revision]));
     report.model.cachePath = cachePath;
     report.model.cached = fs.existsSync(cachePath);
     if (!report.model.cached) {
@@ -582,9 +594,22 @@ function cmdModels() {
   process.stdout.write('Available models (alias → id):\n\n');
   for (const [alias, m] of Object.entries(MODELS)) {
     const star = alias === DEFAULT_MODEL ? ' (default)' : '';
-    process.stdout.write(`  ${alias}${star}\n    ${m.id} · dim ${m.dim}\n    ${m.note}\n\n`);
+    const pooling = m.pooling ?? 'mean';
+    const normalized = m.normalize !== false ? 'L2' : 'raw';
+    const rev = m.revision ? ` · rev ${m.revision.slice(0, 8)}` : '';
+    process.stdout.write(
+      `  ${alias}${star}\n` +
+      `    ${m.id} · dim ${m.dim}${rev}\n` +
+      `    ${pooling} · ${normalized} · maxTokens ${m.maxTokens ?? '—'} ` +
+      (m.family ? `· family ${m.family}\n` : '\n') +
+      `    ${m.note}\n\n`,
+    );
   }
-  process.stdout.write('You can also pass any compatible Hugging Face model id to --model.\n');
+  process.stdout.write(
+    'Pass a registered id or alias to use a built-in adapter. A raw Hugging Face\n' +
+    'id is NOT guessed to be E5-compatible: it fails at embed time until an\n' +
+    'explicit adapter descriptor is supplied (see README "How to add a model").\n',
+  );
 }
 
 async function cmdServe(opts) {

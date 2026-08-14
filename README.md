@@ -402,10 +402,31 @@ the retrieval instruction required for queries; indexed passages remain
 unprefixed. Its upstream benchmark is promising, but it has not replaced
 `e5-base` as the default because the project corpus has not been benchmarked
 against it yet. This is experimental enablement rather than completion of issue
-#50: release provenance, the versioned RU/EN benchmark, and the full adapter
-contract remain tracked by #55, #56, and #60.
+#50: release provenance and the versioned RU/EN benchmark remain tracked by
+#55 and #56 (the explicit model adapter contract landed in #60).
 
-You can also pass any compatible Hugging Face model id, optionally pinning a revision:
+### How to add a model
+
+Every supported model is an *explicit adapter* in `src/models.mjs` (issue #60).
+The adapter declares exactly which embedding semantics it needs — the shared
+`embed()` path never guesses from the model name:
+
+- `queryPrefix` / `passagePrefix` — text prepended to queries/passages (E5 uses
+  `query: `/`passage: `, BGE none, Qwen3 a retrieval instruction on queries);
+- `pooling` — `'mean'`, `'last_token'`, or `'none'`;
+- `normalize` — whether vectors are L2-normalized;
+- `nativeDim` / `dim` — embedding dimension (and optional `dimensions` for MRL);
+- `dtype` — the ONNX runtime data type loaded at runtime (default `q8`);
+- `maxTokens` — the tokenizer context budget (Qwen3-0.6B is 32768);
+- `family` — an informational formatting/pooling label surfaced by `stats`.
+
+`mdss models` prints each adapter's pooling, normalization, dimension, and
+token budget. `mdss stats` and `mdss check` expose the same adapter fields for
+an existing index, plus its `adapterFingerprint`.
+
+**A raw Hugging Face id that is not a registered adapter is rejected at embed
+time — it does NOT silently inherit E5 prefixes and mean pooling.** Use a
+registered alias (or the explicit object descriptor below):
 
 ```bash
 mdss index --db ./docs --model "Xenova/multilingual-e5-small@abc123def"
@@ -414,6 +435,28 @@ mdss index --db ./docs --model "Xenova/multilingual-e5-small@abc123def"
 Pinned ids invalidate the index too (the revision is part of the model key), so
 a `@revision` bump triggers a full rebuild. Custom ids should have quantized
 weights (a `model_quantized.onnx` file) in the repo.
+
+Library consumers adding a one-off model can pass an explicit adapter object to
+`buildIndex`/`search` instead of editing the registry:
+
+```js
+import { buildIndex } from 'md-semantic-search';
+await buildIndex({
+  db: './docs', indexDir: './.mdss',
+  modelName: {
+    id: 'Xenova/some-embedding-model',
+    nativeDim: 384,
+    queryPrefix: 'query: ',
+    passagePrefix: 'passage: ',
+    pooling: 'mean',
+    normalize: true,
+  },
+});
+```
+
+Without `queryPrefix`/`passagePrefix`/`pooling`/`dim`, a raw id is still treated
+as an unconfigured adapter and indexing fails with a message pointing at this
+section instead of silently producing wrong vectors.
 
 ## How it works
 

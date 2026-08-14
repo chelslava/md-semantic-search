@@ -124,7 +124,7 @@ export function canonicalPassage(chunk) {
  * semantics, so hashing is identical for alias and raw-id spellings (issue #6).
  * Adding `revision` to the key (0.5.0) changes stored hash values vs ≤0.4.x →
  * a one-time re-index of changed sections on upgrade.
- * @param {{id:string, revision?:string, passagePrefix?:string, pooling?:'mean'|'last_token'}} model - resolved model descriptor
+ * @param {{id:string, revision?:string, passagePrefix?:string, pooling?:import('./models.mjs').Pooling}} model - resolved model descriptor
  * @param {{title:string, heading:string, headingPath?:string[], text:string}} chunk
  */
 export function chunkHash(model, chunk) {
@@ -382,8 +382,8 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
   const checkpointSnapshot = (complete) => ({
     schemaVersion: SCHEMA_VERSION,
     format: INDEX_FORMAT,
-    model: modelIdentity,
-    modelAlias: modelName || 'e5-base',
+model: modelIdentity,
+    modelAlias: typeof modelName === 'string' ? (modelName || 'e5-base') : model.id,
     adapterFingerprint,
     ...(buildDim === undefined ? {} : { dim: buildDim }),
     db,
@@ -504,9 +504,9 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
   resolveIndexDimension(dim, model.dim);
   const index = {
     schemaVersion: SCHEMA_VERSION, // format gate (issue #39) — bump + add a migration step on change
-    format: INDEX_FORMAT,          // vec stored as base64 Float32Array (issue #4)
+format: INDEX_FORMAT,          // vec stored as base64 Float32Array (issue #4)
     model: modelIdentity,          // id@revision — revision is part of the key (#27)
-    modelAlias: modelName || 'e5-base',
+    modelAlias: typeof modelName === 'string' ? (modelName || 'e5-base') : model.id,
     adapterFingerprint,
     ...(dim === undefined ? {} : { dim }),
     db,

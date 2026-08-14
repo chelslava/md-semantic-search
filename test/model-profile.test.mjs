@@ -3,6 +3,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import * as core from '../src/core.mjs';
 import { chunkHash } from '../src/indexer.mjs';
+import { normalizeAdapter, embeddingAdapterFingerprint, DEFAULT_MODEL } from '../src/models.mjs';
 
 const QWEN_ALIAS = 'qwen3-embedding-0.6b';
 const QWEN_ID = 'onnx-community/Qwen3-Embedding-0.6B-ONNX';
@@ -188,4 +189,113 @@ test('chunkHash preserves mean hashes and separates last-token pooling', () => {
   // Then
   assert.equal(meanPooling, omittedPooling);
   assert.notEqual(lastTokenPooling, omittedPooling);
+});
+
+// --- issue #60: explicit model adapter contract ---------------------------
+// Registered adapters carry the full vector-producing semantics and route by
+// structural fields, NOT by natural-language instruction prose.
+
+test('adapters expose explicit vector-producing semantics (structural fields)', () => {
+  const names = ['e5-small', 'e5-base', 'e5-large', 'bge-m3', 'qwen3-embedding-0.6b', DEFAULT_MODEL];
+  for (const name of names) {
+    const m = core.resolveModel(name);
+    assert.equal(typeof m.id, 'string', `${name} id`);
+    assert.equal(typeof m.queryPrefix, 'string', `${name} queryPrefix`);
+    assert.equal(typeof m.passagePrefix, 'string', `${name} passagePrefix`);
+    assert.ok(['mean', 'last_token', 'none'].includes(m.pooling), `${name} pooling`);
+    assert.equal(typeof m.dim, 'number', `${name} dim`);
+    assert.equal(typeof m.normalize, 'boolean', `${name} normalize`);
+    assert.equal(m.unknownAdapter, undefined, `${name} is a usable adapter`);
+  }
+});
+
+test('adapters route query/document formatting by structural fields, not prose', () => {
+  // Two structurally identical adapters (same prefixes/pooling) must behave
+  // identically even if their ids differ — routing is field-driven.
+  const a = normalizeAdapter({
+    id: 'Xenova/model-A', nativeDim: 384, dim: 384,
+    queryPrefix: 'q: ', passagePrefix: 'p: ', pooling: 'mean', dtype: 'q8',
+  });
+  const b = normalizeAdapter({
+    id: 'Xenova/model-B', nativeDim: 384, dim: 384,
+    queryPrefix: 'q: ', passagePrefix: 'p: ', pooling: 'mean', dtype: 'q8',
+  });
+  assert.notEqual(a.id, b.id);
+  // Same fingerprint ⇒ same produced vectors for identical adapters.
+  assert.equal(embeddingAdapterFingerprint(a), embeddingAdapterFingerprint(b),
+    'identical structural semantics hash identically regardless of id/revision');
+
+  const req = core.prepareEmbeddingRequest(a, ['token'], 'query');
+  assert.deepEqual(req.options, { pooling: 'mean', normalize: true });
+  assert.deepEqual(req.input, ['q: token']);
+});
+
+test('prepared query/document inputs differ per adapter without duplicating retrieval logic', () => {
+  const e5 = core.resolveModel('e5-base');
+  const qwen = core.resolveModel('qwen3-embedding-0.6b');
+
+  const e5Query = core.prepareEmbeddingRequest(e5, ['rotate'], 'query').input;
+  const e5Passage = core.prepareEmbeddingRequest(e5, ['rotate'], 'passage').input;
+  const qwenQuery = core.prepareEmbeddingRequest(qwen, ['rotate'], 'query').input;
+  const qwenPassage = core.prepareEmbeddingRequest(qwen, ['rotate'], 'passage').input;
+
+  assert.deepEqual(e5Query, ['query: rotate']);
+  assert.deepEqual(e5Passage, ['passage: rotate']);
+  assert.ok(qwenQuery[0].startsWith('Instruct:'), 'Qwen queries carry the retrieval instruction');
+  assert.ok(qwenQuery[0].endsWith('rotate'), 'instruction is a query prefix');
+  assert.deepEqual(qwenPassage, ['rotate'], 'Qwen passages stay unprefixed');
+});
+
+test('unknown raw ids fail safely instead of inheriting E5 heuristics', () => {
+  // Raw id without `bge` in the name must NOT silently get E5 prefixes.
+  const m = core.resolveModel('Xenova/reviewer-custom-model');
+  assert.equal(m.unknownAdapter, true, 'neutral adapter is flagged unknown');
+  assert.equal(m.id, 'Xenova/reviewer-custom-model');
+  assert.throws(
+    () => core.prepareEmbeddingRequest(m, ['x'], 'query'),
+    /not a registered adapter/,
+    'embed attempt fails with an actionable message (issue #60)',
+  );
+});
+
+test('registered repo ids resolve to their owning adapter (no name heuristic)', () => {
+  const byAlias = core.resolveModel('bge-m3');
+  const byRawId = core.resolveModel('Xenova/bge-m3');
+  assert.equal(byRawId.id, byAlias.id);
+  assert.equal(byRawId.queryPrefix, '', 'BGE stays unprefixed via the adapter, not a name match');
+  assert.equal(byRawId.pooling, 'mean');
+
+  const qwenByRawId = core.resolveModel('onnx-community/Qwen3-Embedding-0.6B-ONNX');
+  assert.equal(qwenByRawId.unknownAdapter, undefined, 'registered id is usable');
+  assert.equal(qwenByRawId.pooling, 'last_token');
+});
+
+test('normalizeAdapter validates and pads an explicit descriptor', () => {
+  const m = normalizeAdapter({
+    id: 'custom/m', dim: 384, queryPrefix: 'query: ', passagePrefix: 'passage: ',
+  });
+  assert.equal(m.pooling, 'mean', 'default pooling');
+  assert.equal(m.normalize, true, 'default normalize');
+  assert.equal(m.dtype, 'q8', 'default dtype');
+  assert.equal(m.dim, 384);
+
+  assert.throws(() => normalizeAdapter({ id: 'x/m', pooling: 'bogus' }), /unsupported pooling/);
+  assert.throws(() => normalizeAdapter(null), /adapter must be an object/);
+});
+
+test('fingerprint stays stable for e5-base and bge-m3', () => {
+  // Regression (issue #60): normalizing default fields in the refactored
+  // adapters must NOT change the adapter-v1 fingerprint, so schema-v3 indexes
+  // and checkpoints built before #60 keep their vectors reusable.
+  const e5Fp = embeddingAdapterFingerprint(core.resolveModel('e5-base'));
+  const bgeFp = embeddingAdapterFingerprint(core.resolveModel('bge-m3'));
+  const e5LegacyFp = embeddingAdapterFingerprint({
+    dim: 768, queryPrefix: 'query: ', passagePrefix: 'passage: ', pooling: 'mean', normalize: true,
+  });
+  const bgeLegacyFp = embeddingAdapterFingerprint({
+    dim: 1024, queryPrefix: '', passagePrefix: '', pooling: 'mean', normalize: true,
+  });
+  assert.equal(e5Fp, e5LegacyFp, 'e5-base fingerprint unchanged');
+  assert.equal(bgeFp, bgeLegacyFp, 'bge-m3 fingerprint unchanged');
+  assert.match(e5Fp, /^adapter-v1:[a-f0-9]{64}$/);
 });

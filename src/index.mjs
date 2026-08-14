@@ -32,6 +32,7 @@ export {
 
 export {
   resolveModel, MODELS, DEFAULT_MODEL,
+  normalizeAdapter, embeddingAdapterFingerprint, legacyEmbeddingAdapterFingerprint,
 } from './models.mjs';
 
 export {

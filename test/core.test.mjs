@@ -8,6 +8,7 @@ import {
   walkMarkdown, cosine, parseFile, resolveModel,
   encodeVec, decodeVec, isBinaryIndex,
   SCHEMA_VERSION, SCHEMA_MIGRATIONS,
+  prepareEmbeddingRequest, getExtractor,
 } from '../src/core.mjs';
 
 test('splitFrontmatter: strips leading YAML block', () => {
@@ -385,4 +386,40 @@ test('parseFile: headingless content uses the document title as a valid leaf pat
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('issue #60: unknown raw ids resolve to a neutral adapter that cannot embed', async () => {
+  const custom = resolveModel('Xenova/reviewer-custom-model');
+  assert.equal(custom.unknownAdapter, true, 'unknown raw id is marked neutral/unknown');
+  assert.equal(custom.id, 'Xenova/reviewer-custom-model');
+  assert.equal(custom.dim, 0, 'dimension is unknown, not guessed');
+
+  // The shared embed path refuses to guess E5 semantics for an unconfigured id.
+  assert.throws(
+    () => prepareEmbeddingRequest(custom, ['token'], 'query'),
+    /not a registered adapter.*explicit adapter/i,
+    'prepareEmbeddingRequest rejects unknown adapters with an actionable message',
+  );
+  await assert.rejects(
+    () => getExtractor(custom, './cache', false),
+    /not a registered adapter.*MODELS.*explicit/i,
+    'getExtractor also refuses to load a model without an explicit adapter',
+  );
+});
+
+test('issue #60: an explicit adapter descriptor is usable and validated', async () => {
+  const descriptor = {
+    id: 'Xenova/custom-tiny', nativeDim: 64, dim: 64,
+    queryPrefix: 'q: ', passagePrefix: 'p: ', pooling: 'mean', normalize: true,
+  };
+  const m = resolveModel(descriptor);
+  assert.equal(m.id, 'Xenova/custom-tiny');
+  assert.equal(m.unknownAdapter, undefined, 'explicit descriptor is usable');
+  const req = prepareEmbeddingRequest(m, ['hello'], 'query');
+  assert.deepEqual(req, {
+    input: ['q: hello'],
+    options: { pooling: 'mean', normalize: true },
+  });
+  const passage = prepareEmbeddingRequest(m, ['hello'], 'passage');
+  assert.deepEqual(passage.input, ['p: hello']);
 });
