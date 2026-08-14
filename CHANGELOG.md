@@ -7,6 +7,21 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Issue #56** — reproducible golden-set benchmark. A frozen synthetic RU/EN
+  corpus (`bench/corpus/`, 16 files / 8 topics × 2 languages) plus graded
+  relevance judgements (`bench/fixtures/dev-golden.json`, 60 queries across six
+  categories — natural-question, paraphrase, keyword, alias, hard-negative,
+  identifier — 48 dev / 8 test / 4 holdout, pinned corpus fingerprint). New
+  `bench/fixture.mjs` (schema-v1 validator: `loadFixture`, deterministic
+  `corpusFingerprint`, `splitIntoSlices`) and `src/metrics.mjs` (pure,
+  dependency-free nDCG@k with log2 discount, MRR, Hit@k, Recall@k,
+  `queryMetrics`/`aggregateMetrics`, win/tie/loss). New `scripts/run-bench.mjs`
+  builds the index over the frozen corpus, evaluates the selected slice, and
+  prints aggregate + per-category metrics; `--fake` swaps in a deterministic
+  hash embedder so CI smoke stays network-free (new `golden-smoke` job).
+  Baseline on dev (e5-base, hybrid RRF, k=10): nDCG 0.9254, MRR 0.9167,
+  Hit@10 0.9792, Recall@10 1.0000. RESEARCH.md documents the methodology and
+  baseline. Closes #56 and unblocks the #50 opt-in model benchmark gate.
 - **Issue #55 (partial — repo side)** — release provenance verification. New
   `scripts/verify-pack.mjs` packs the npm artifact into an isolated prefix,
   installs it, and smokes the **installed** `mdss` shim: `--version` must equal

@@ -181,7 +181,50 @@ XLMRoBERTa, raw logit = relevance score) on the real bilingual wiki:
   lazy — nothing loads unless `--rerank` is requested. On a 856-chunk index
   the re-rank pass stays sub-second once the model is cached.
 
-## 7. Reproducing
+## 7. Golden-set benchmark (issue #56)
+
+The experiments above are qualitative. To make quality claims reproducible and
+regression-detectable, the repo ships a **frozen golden set**: a small synthetic
+RU/EN corpus plus graded relevance judgements.
+
+- `bench/corpus/` — 16 markdown files, 8 topics × 2 languages (tokens, i18n,
+  windows stdin, db failover, model cache, obsidian links, backups, search
+  index/server). Content is deliberately plain so embedding quality, not
+  domain vocabulary, drives the scores.
+- `bench/fixtures/dev-golden.json` — 60 queries across six categories
+  (`natural-question`, `paraphrase`, `keyword`, `alias`, `hard-negative`,
+  `identifier`), 48 dev / 8 test / 4 holdout. Grades: 3 = direct answer,
+  2 = useful support, 1 = related, 0 = hard negative. The fixture pins
+  `corpusHash` (sha256 of paths+content) — a changed corpus fails the run.
+- `bench/fixture.mjs` — schema-v1 validator, `loadFixture`, `corpusFingerprint`,
+  deterministic `splitIntoSlices`.
+- `src/metrics.mjs` — nDCG@k (graded, log2 discount), MRR, Hit@k, Recall@k,
+  `queryMetrics`/`aggregateMetrics`, win/tie/loss for paired model comparison.
+- `scripts/run-bench.mjs` — builds the index over the frozen corpus, runs every
+  query of the selected slice, prints aggregate + per-category metrics.
+
+```bash
+node scripts/run-bench.mjs --slice dev          # full dev eval (k=10, e5-base)
+node scripts/run-bench.mjs --fast --json        # CI smoke (k=3)
+node scripts/run-bench.mjs --model bge-m3 --slice dev > /tmp/bge-m3.json
+node scripts/run-bench.mjs --model e5-base --slice dev > /tmp/e5-base.json
+```
+
+Baseline on dev (e5-base, hybrid RRF, k=10, 2026-08-14):
+
+| Metric | Value |
+|--------|-------|
+| nDCG@10 | 0.9254 |
+| MRR | 0.9167 |
+| Hit@10 | 0.9792 |
+| Recall@10 | 1.0000 |
+
+The `hard-negative` category (1.000 nDCG) confirms the hybrid lane separates
+near-duplicate topics; `paraphrase`/`alias` (0.83–0.88) are the categories
+where the embedding is doing real semantic work and where model changes will
+show up first.
+
+## 8. Reproducing
 
 ```bash
 # Build with the default, then with the heavy model, and compare a known query:
@@ -198,7 +241,7 @@ mdss search --db ./your-wiki --semantic "the same paraphrase"
 Use `--semantic` to see the raw vector ranking (no lexical fusion) when
 evaluating a model — that isolates embedding quality from the lexical lane.
 
-## 8. Recommendations
+## 9. Recommendations
 
 | If you want… | Use |
 |--------------|-----|

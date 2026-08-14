@@ -49,6 +49,25 @@ jobs:
       - name: Type-check source modules (tsc --noEmit)
         run: npm run lint
 
+  golden-smoke:
+    # Issue #56: the golden-set harness must at least RUN in CI (fixture schema
+    # valid, frozen corpus hash matches, fake embedder pipeline works end to
+    # end). Uses --fake so no model is downloaded and CI stays network-free.
+    # Real-model eval numbers are produced locally / on demand (see RESEARCH.md).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Golden-set smoke (fixture + fake embedder, offline)
+        run: node scripts/run-bench.mjs --fast --fake --json
+
   provenance:
     # Issue #55: prove the PACKED artifact (what npm installs) — not just the
     # source tree — is what runs. Packs, installs into an isolated prefix, and
