@@ -249,7 +249,7 @@ function cmdStats(opts) {
   // File count = keys of .hashes.json (per-file md5 map written by buildIndex).
   // Fall back to unique chunk file paths when the hashes file is missing (a
   // legacy/corrupt index) rather than dying.
-  let files = 0;
+  let files;
   try {
     const hashes = JSON.parse(fs.readFileSync(hashesPath, 'utf8'));
     files = Object.keys(hashes).length;

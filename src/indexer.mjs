@@ -246,7 +246,6 @@ async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = []
     } catch (error) {
       log(`warning: ${error.message}; rebuilding vectors.json from scratch.`);
       canonicalIndex = { chunks: [], model: null };
-      canonicalSchema = 0;
     }
   }
 
@@ -412,7 +411,7 @@ model: modelIdentity,
   for (const abs of files) {
     const rel = path.relative(db, abs).split(path.sep).join('/');
     /** @type {IndexChunk[]} */
-    let parsed = [];
+    let parsed;
     let reusableLexicalRecords;
     try {
       const raw = fs.readFileSync(abs, 'utf8');
