@@ -143,6 +143,7 @@ export async function withIndexLock(indexDir, fn) {
  * @property {boolean} [normalize] - whether vectors are L2-normalized (default true)
  * @property {import('./models.mjs').DType} [dtype] - runtime ONNX dtype (default "q8")
  * @property {number} [maxTokens] - declared tokenizer budget (context window)
+ * @property {Record<string, unknown>} [sessionOptions] - ONNX Runtime session options (e.g. intraOpNumThreads)
  * @property {boolean} [unknownAdapter] - true for unconfigured raw ids that
  *   cannot embed until an explicit adapter is supplied (issue #60)
  * @property {string} [note] - human-readable description
@@ -163,16 +164,42 @@ export function getPipelineModelSource(model, cacheDir, offline) {
 }
 
 /**
- * Build the in-process extractor identity from the canonical model and source.
+ * Resolve ONNX Runtime session options from model adapter or environment variables (issue #34).
+ * @param {ModelDescriptor} [model]
+ * @returns {Record<string, unknown>|undefined}
+ */
+export function resolveSessionOptions(model) {
+  const envIntra = process.env.MDSS_INTRA_OP_THREADS || process.env.MDSS_NUM_THREADS;
+  const envInter = process.env.MDSS_INTER_OP_THREADS;
+  const intra = envIntra ? parseInt(envIntra, 10) : undefined;
+  const inter = envInter ? parseInt(envInter, 10) : undefined;
+  const opts = model?.sessionOptions || {};
+  const intraOpNumThreads = Number.isSafeInteger(intra) && intra > 0 ? intra : opts.intraOpNumThreads;
+  const interOpNumThreads = Number.isSafeInteger(inter) && inter > 0 ? inter : opts.interOpNumThreads;
+
+  if (intraOpNumThreads === undefined && interOpNumThreads === undefined) {
+    return undefined;
+  }
+  /** @type {Record<string, unknown>} */
+  const result = {};
+  if (intraOpNumThreads !== undefined) result.intraOpNumThreads = intraOpNumThreads;
+  if (interOpNumThreads !== undefined) result.interOpNumThreads = interOpNumThreads;
+  return result;
+}
+
+/**
+ * Get the in-memory cache key for a pipeline extractor session.
  * @param {ModelDescriptor} model
  * @param {string} cacheDir
- * @param {boolean} offline
+ * @param {boolean} [offline]
  * @returns {string}
  */
 export function getExtractorCacheKey(model, cacheDir, offline) {
   const revision = model.revision || 'main';
   const source = getPipelineModelSource(model, cacheDir, offline);
-  return `${model.id}@${revision}|${offline ? 'off' : 'on'}|${source}`;
+  const sessionOptions = resolveSessionOptions(model);
+  const sessionKey = sessionOptions ? JSON.stringify(sessionOptions) : 'default';
+  return `${model.id}@${revision}|${offline ? 'off' : 'on'}|${source}|${sessionKey}`;
 }
 
 /**
@@ -200,14 +227,17 @@ export async function getExtractor(model, cacheDir, offline = false) {
   const { pipeline, env } = await import('@huggingface/transformers');
   if (cacheDir) env.cacheDir = cacheDir;
   env.allowRemoteModels = !offline;
+  const sessionOptions = resolveSessionOptions(model);
   // Use the adapter-declared runtime dtype (default q8 — the v4 default on Node
   // is fp32, ~4x larger). The declared dtype is part of the runtime load, not
   // of the vector-producing fingerprint, so a dtype change alone does not
   // invalidate stored vectors.
-  const ext = await pipeline('feature-extraction', source, {
+  const pipeOpts = {
     revision,
     dtype: model.dtype || 'q8',
-  });
+    ...(sessionOptions ? { session_options: sessionOptions } : {}),
+  };
+  const ext = await pipeline('feature-extraction', source, pipeOpts);
   _extractors.set(key, ext);
   return ext;
 }

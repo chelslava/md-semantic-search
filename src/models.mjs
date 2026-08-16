@@ -39,6 +39,7 @@ import crypto from 'node:crypto';
  * @property {boolean} [normalize=true] - whether vectors are L2-normalized
  * @property {DType} [dtype] - runtime ONNX dtype (default 'q8')
  * @property {number} [maxTokens] - declared tokenizer budget (context window)
+ * @property {Record<string, unknown>} [sessionOptions] - ONNX Runtime session options (e.g. intraOpNumThreads)
  * @property {string} [family] - formatting/pooling family key exposed by
  *   `mdss stats`/`models` (e.g. 'e5', 'bge', 'qwen3'); NOT used for routing
  * @property {string} [note] - human-readable description

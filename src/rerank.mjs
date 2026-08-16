@@ -17,6 +17,8 @@
  * format).
  */
 
+import { resolveSessionOptions } from './core.mjs';
+
 const _rerankers = new Map();
 
 export const RERANK_MODEL = 'Xenova/bge-reranker-base';
@@ -30,7 +32,9 @@ export const RERANK_MODEL = 'Xenova/bge-reranker-base';
  *   model: import('@huggingface/transformers').PreTrainedModel}>}
  */
 export async function getReranker(cacheDir, offline = false) {
-  const key = `${RERANK_MODEL}|${offline ? 'off' : 'on'}`;
+  const sessionOptions = resolveSessionOptions();
+  const sessionKey = sessionOptions ? JSON.stringify(sessionOptions) : 'default';
+  const key = `${RERANK_MODEL}|${offline ? 'off' : 'on'}|${sessionKey}`;
   if (_rerankers.has(key)) return _rerankers.get(key);
   const { AutoModelForSequenceClassification, AutoTokenizer, env } =
     await import('@huggingface/transformers');
@@ -39,7 +43,12 @@ export async function getReranker(cacheDir, offline = false) {
   const tokenizer = await AutoTokenizer.from_pretrained(RERANK_MODEL);
   // q8: the repo ships onnx/model_quantized.onnx (~1/4 of fp32). Same trade as
   // the embedding extractor in core.mjs — near-identical scores, 4x smaller.
-  const model = await AutoModelForSequenceClassification.from_pretrained(RERANK_MODEL, { dtype: 'q8' });
+  /** @type {Record<string, unknown>} */
+  const loadOpts = {
+    dtype: 'q8',
+    ...(sessionOptions ? { session_options: sessionOptions } : {}),
+  };
+  const model = await AutoModelForSequenceClassification.from_pretrained(RERANK_MODEL, loadOpts);
   const r = { tokenizer, model };
   _rerankers.set(key, r);
   return r;
