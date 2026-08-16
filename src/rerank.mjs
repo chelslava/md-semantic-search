@@ -17,7 +17,7 @@
  * format).
  */
 
-import { resolveSessionOptions } from './core.mjs';
+import { resolveSessionOptions, retryWithBackoff } from './core.mjs';
 
 const _rerankers = new Map();
 
@@ -28,30 +28,38 @@ export const RERANK_MODEL = 'Xenova/bge-reranker-base';
  * the first actual re-rank, so `--rerank` costs nothing when not requested.
  * @param {string} cacheDir
  * @param {boolean} [offline=false] - never touch the network; require a cached model
+ * @param {object} [retryOpts]
  * @returns {Promise<{tokenizer: import('@huggingface/transformers').PreTrainedTokenizer,
  *   model: import('@huggingface/transformers').PreTrainedModel}>}
  */
-export async function getReranker(cacheDir, offline = false) {
+export async function getReranker(cacheDir, offline = false, retryOpts = {}) {
   const sessionOptions = resolveSessionOptions();
   const sessionKey = sessionOptions ? JSON.stringify(sessionOptions) : 'default';
   const key = `${RERANK_MODEL}|${offline ? 'off' : 'on'}|${sessionKey}`;
   if (_rerankers.has(key)) return _rerankers.get(key);
-  const { AutoModelForSequenceClassification, AutoTokenizer, env } =
-    await import('@huggingface/transformers');
-  if (cacheDir) env.cacheDir = cacheDir;
-  env.allowRemoteModels = !offline;
-  const tokenizer = await AutoTokenizer.from_pretrained(RERANK_MODEL);
-  // q8: the repo ships onnx/model_quantized.onnx (~1/4 of fp32). Same trade as
-  // the embedding extractor in core.mjs — near-identical scores, 4x smaller.
-  /** @type {Record<string, unknown>} */
-  const loadOpts = {
-    dtype: 'q8',
-    ...(sessionOptions ? { session_options: sessionOptions } : {}),
+
+  const loadPipeline = async () => {
+    const { AutoModelForSequenceClassification, AutoTokenizer, env } =
+      await import('@huggingface/transformers');
+    if (cacheDir) env.cacheDir = cacheDir;
+    env.allowRemoteModels = !offline;
+    const tokenizer = await AutoTokenizer.from_pretrained(RERANK_MODEL);
+    /** @type {Record<string, unknown>} */
+    const loadOpts = {
+      dtype: 'q8',
+      ...(sessionOptions ? { session_options: sessionOptions } : {}),
+    };
+    const model = await AutoModelForSequenceClassification.from_pretrained(RERANK_MODEL, loadOpts);
+    const r = { tokenizer, model };
+    _rerankers.set(key, r);
+    return r;
   };
-  const model = await AutoModelForSequenceClassification.from_pretrained(RERANK_MODEL, loadOpts);
-  const r = { tokenizer, model };
-  _rerankers.set(key, r);
-  return r;
+
+  if (offline) {
+    return await loadPipeline();
+  }
+
+  return await retryWithBackoff(loadPipeline, retryOpts);
 }
 
 /**

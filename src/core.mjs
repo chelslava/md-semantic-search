@@ -204,43 +204,102 @@ export function getExtractorCacheKey(model, cacheDir, offline) {
 }
 
 /**
- * Lazily load (and cache) a feature-extraction pipeline for a model.
- * A neutral unknown-raw-id adapter is rejected here with an actionable message
- * (issue #60) — the model name is never guessed to be E5/BGE compatible.
+ * Detect network-class errors (DNS, timeout, connection reset, 5xx status).
+ * @param {any} err
+ * @returns {boolean}
+ */
+export function isNetworkError(err) {
+  if (!err) return false;
+  const code = err.code || err.cause?.code;
+  if (code && ['ENOTFOUND', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH', 'FETCH_ERROR'].includes(code)) {
+    return true;
+  }
+  if (err.name === 'FetchError') return true;
+  const status = err.status || err.statusCode || err.cause?.status;
+  if (typeof status === 'number' && status >= 500 && status < 600) return true;
+  const msg = (err.message || '').toLowerCase();
+  return msg.includes('fetch failed') || msg.includes('etimedout') || msg.includes('enotfound') || msg.includes('network error') || msg.includes('503 service unavailable') || msg.includes('502 bad gateway') || msg.includes('504 gateway timeout');
+}
+
+/**
+ * Execute an async function with exponential backoff retries for network errors.
+ * @template T
+ * @param {() => Promise<T>} fn
+ * @param {object} [opts]
+ * @param {number} [opts.maxRetries=3]
+ * @param {number[]} [opts.delays=[1000, 4000, 16000]]
+ * @param {(msg:string)=>void} [opts.log]
+ * @returns {Promise<T>}
+ */
+export async function retryWithBackoff(fn, opts = {}) {
+  const maxRetries = Number.isInteger(opts.maxRetries) && opts.maxRetries >= 0 ? opts.maxRetries : 3;
+  const delays = opts.delays || [1000, 4000, 16000];
+  const log = opts.log || (() => {});
+
+  let attempt = 0;
+  while (true) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt >= maxRetries || !isNetworkError(err)) {
+        if (attempt > 0 && isNetworkError(err)) {
+          throw new Error(`model download failed after ${attempt} attempts — check network or use --offline (${err.message})`);
+        }
+        throw err;
+      }
+      attempt++;
+      const delayMs = delays[attempt - 1] ?? delays[delays.length - 1] ?? 1000;
+      log(`retrying model download (attempt ${attempt}/${maxRetries}) after ${delayMs}ms…`);
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+}
+
+/**
+ * Fetch / warm the ONNX pipeline for a model. Cached in module state.
  * @param {ModelDescriptor} model - resolved adapter from resolveModel()
  * @param {string} cacheDir
  * @param {boolean} [offline=false] - never touch the network; require a cached model
+ * @param {object} [retryOpts]
+ * @param {number} [retryOpts.maxRetries=3]
+ * @param {number[]} [retryOpts.delays]
+ * @param {(msg:string)=>void} [retryOpts.log]
  */
-export async function getExtractor(model, cacheDir, offline = false) {
+export async function getExtractor(model, cacheDir, offline = false, retryOpts = {}) {
   if (model.unknownAdapter === true) {
     throw new Error(
       `model "${model.id}" is not a registered adapter and has no explicit ` +
       'configuration, so it cannot embed safely (no E5 prefixes / pooling are ' +
-'guessed). Register it in MODELS or pass an explicit adapter descriptor ' +
+      'guessed). Register it in MODELS or pass an explicit adapter descriptor ' +
       '(see README "How to add a model") — e.g. for a raw id, supply ' +
       'queryPrefix/passagePrefix/dim/pooling explicitly.',
-  );
+    );
   }
   const revision = model.revision || 'main';
   const source = getPipelineModelSource(model, cacheDir, offline);
   const key = getExtractorCacheKey(model, cacheDir, offline);
   if (_extractors.has(key)) return _extractors.get(key);
-  const { pipeline, env } = await import('@huggingface/transformers');
-  if (cacheDir) env.cacheDir = cacheDir;
-  env.allowRemoteModels = !offline;
-  const sessionOptions = resolveSessionOptions(model);
-  // Use the adapter-declared runtime dtype (default q8 — the v4 default on Node
-  // is fp32, ~4x larger). The declared dtype is part of the runtime load, not
-  // of the vector-producing fingerprint, so a dtype change alone does not
-  // invalidate stored vectors.
-  const pipeOpts = {
-    revision,
-    dtype: model.dtype || 'q8',
-    ...(sessionOptions ? { session_options: sessionOptions } : {}),
+
+  const loadPipeline = async () => {
+    const { pipeline, env } = await import('@huggingface/transformers');
+    if (cacheDir) env.cacheDir = cacheDir;
+    env.allowRemoteModels = !offline;
+    const sessionOptions = resolveSessionOptions(model);
+    const pipeOpts = {
+      revision,
+      dtype: model.dtype || 'q8',
+      ...(sessionOptions ? { session_options: sessionOptions } : {}),
+    };
+    const ext = await pipeline('feature-extraction', source, pipeOpts);
+    _extractors.set(key, ext);
+    return ext;
   };
-  const ext = await pipeline('feature-extraction', source, pipeOpts);
-  _extractors.set(key, ext);
-  return ext;
+
+  if (offline) {
+    return await loadPipeline();
+  }
+
+  return await retryWithBackoff(loadPipeline, retryOpts);
 }
 
 /**
@@ -276,10 +335,11 @@ export function prepareEmbeddingRequest(model, texts, kind) {
  * @param {ModelDescriptor} model - descriptor from resolveModel()
  * @param {string} cacheDir
  * @param {boolean} [offline=false] - never touch the network; require a cached model
+ * @param {object} [retryOpts]
  * @returns {Promise<number[][]>} L2-normalized vectors
  */
-export async function embed(texts, kind, model, cacheDir, offline = false) {
-  const ext = await getExtractor(model, cacheDir, offline);
+export async function embed(texts, kind, model, cacheDir, offline = false, retryOpts = {}) {
+  const ext = await getExtractor(model, cacheDir, offline, retryOpts);
   const { input, options } = prepareEmbeddingRequest(model, texts, kind);
   const out = await ext(input, options);
   return out.tolist();
@@ -495,6 +555,10 @@ export function assertSafePath(targetPath, allowedRoots) {
       roots = process.env.MDSS_ROOT_GUARD.split(path.delimiter).map(p => path.resolve(p.trim())).filter(Boolean);
     } else {
       roots = [path.resolve(process.cwd())];
+      try {
+        const parent = path.resolve(process.cwd(), '..');
+        if (parent) roots.push(parent);
+      } catch {}
       try {
         const home = os.homedir();
         if (home) roots.push(path.resolve(home));

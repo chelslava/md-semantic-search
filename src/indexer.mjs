@@ -165,20 +165,21 @@ export function chunkHash(model, chunk) {
  * @param {boolean} [opts._lockHeld=false] - TESTING ONLY: caller already holds the
  *   index lock (we are the inner build). Skips re-acquisition — real callers must
  *   NOT set this (the lock IS the guard against concurrent writers, issue #37).
+ * @param {number} [opts.maxRetries=3] - max retry attempts on transient network errors
  */
 export async function buildIndex(opts) {
   const {
     db, indexDir, cacheDir, modelName, ignore = [], log = () => {},
-    offline = false, embedFn = embed, _lockHeld = false,
+    offline = false, embedFn = embed, _lockHeld = false, maxRetries = 3,
   } = opts;
   // Every write to vectors.json + .hashes.json runs under the index lock
   // (issue #37): the two atomic renames are individually atomic, but TWO
   // concurrent builds interleave and can leave the pair from different runs
   // (a torn logical state). The lock serializes writers; a second process gets
   // a clear "locked by PID …" error instead of corrupting the index.
-  if (_lockHeld) return _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn });
+  if (_lockHeld) return _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn, maxRetries });
   return withIndexLock(indexDir, () =>
-    _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn }));
+    _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn, maxRetries }));
 }
 
 /**
@@ -193,8 +194,9 @@ export async function buildIndex(opts) {
  * @param {(s:string)=>void} [o.log]
  * @param {boolean} [o.offline]
  * @param {Function} [o.embedFn]
+ * @param {number} [o.maxRetries]
  */
-async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = [], log = () => {}, offline = false, embedFn = embed }) {
+async function _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore = [], log = () => {}, offline = false, embedFn = embed, maxRetries = 3 }) {
   const model = resolveModel(modelName);
   // Model identity INCLUDES the pinned revision (issue #27): the README's
   // "pinned ids invalidate the index too (the revision is part of the model
@@ -484,7 +486,7 @@ model: modelIdentity,
       const slice = toEmbed.slice(i, i + BATCH);
       const vecs = await embedFn(
         slice.map(canonicalPassage),
-        'passage', model, cacheDir, offline,
+        'passage', model, cacheDir, offline, { maxRetries, log },
       );
       let batchDim = buildDim;
       try {
