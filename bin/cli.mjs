@@ -49,6 +49,7 @@ function parseArgs(argv) {
     else if (a === '--watch') opts.watch = true;
     else if (a === '--rerank') opts.rerank = true;
     else if (a === '--explain') opts.explain = true;
+    else if (a === '--list-tools') opts.listTools = true;
     else if (a === '--version') opts.version = true;
     else if (a === '-h' || a === '--help') opts.help = true;
     else if (a === '--db') opts.db = nextValue(argv, ++i, a);
@@ -139,6 +140,7 @@ Usage:
   mdss check  --db <dir> [--json]             Diagnose index/db/model cache (alias: doctor)
   mdss search --db <dir> [options] "query"    Search by meaning
   mdss serve  --db <dir> [--port <n>] [--host <ip>] [--watch]  Daemon: warm model + index
+  mdss mcp    --db <dir> [--list-tools]       Start MCP server over stdio for LLM agents / IDEs
   mdss models                                  List available models
 
 Options:
@@ -681,6 +683,26 @@ async function cmdServe(opts) {
   process.on('SIGTERM', () => stop('SIGTERM'));
 }
 
+async function cmdMcp(opts) {
+  if (opts.listTools) {
+    const { MCP_TOOLS } = await import('../src/mcp.mjs');
+    process.stdout.write(JSON.stringify(MCP_TOOLS, null, 2) + '\n');
+    return;
+  }
+  const db = resolveDb(opts);
+  const indexDir = resolveIndexDir(opts, db);
+  const cacheDir = resolveCache(opts);
+  const log = s => process.stderr.write(s + '\n');
+  const { startMcpServer } = await import('../src/mcp.mjs');
+  await startMcpServer({
+    db, indexDir, cacheDir,
+    modelName: opts.model || DEFAULT_MODEL,
+    ignore: opts.ignore,
+    offline: resolveOffline(opts),
+    log,
+  });
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const opts = parseArgs(argv);
@@ -695,6 +717,7 @@ async function main() {
     case 'doctor': return cmdCheck(opts);
     case 'search': return cmdSearch(opts);
     case 'serve': return cmdServe(opts);
+    case 'mcp': return cmdMcp(opts);
     case 'models': return cmdModels();
     default: die(`unknown command: ${cmd}. Try \`mdss --help\`.`);
   }

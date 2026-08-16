@@ -45,3 +45,7 @@ export {
   splitFrontmatter, extractTitle, globToRegExp,
   encodeVec, decodeVec, isBinaryIndex,
 } from './core.mjs';
+
+export {
+  MCP_TOOLS, handleMcpRequest, startMcpServer,
+} from './mcp.mjs';
