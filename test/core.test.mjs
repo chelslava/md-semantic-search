@@ -227,6 +227,21 @@ test('cosine: L2-normalized vectors == dot product', () => {
   assert.ok(Math.abs(cosine(u, [-1, 0, 0]) + 1) < 1e-12);
 });
 
+test('cosine: 768-dim unrolled SIMD buffer dot product matches scalar sum (issue #79)', () => {
+  const dim = 768;
+  const a = new Float32Array(dim);
+  const b = new Float32Array(dim * 2);
+  for (let i = 0; i < dim; i++) {
+    a[i] = (i % 10) * 0.1;
+    b[dim + i] = ((i + 3) % 10) * 0.1;
+  }
+  let scalarSum = 0;
+  for (let i = 0; i < dim; i++) scalarSum += a[i] * b[dim + i];
+
+  const simdSum = cosine(a, b, dim);
+  assert.ok(Math.abs(simdSum - scalarSum) < 1e-5, `simdSum ${simdSum} vs scalar ${scalarSum}`);
+});
+
 test('encodeVec/decodeVec: round-trip preserves float32 values (issue #4)', () => {
   const vec = [0.5, -0.25, 0.75, 1, 0, -1, 3.14159, 2.71828];
   const b64 = encodeVec(vec);
