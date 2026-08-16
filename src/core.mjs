@@ -6,6 +6,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { resolveModel } from './models.mjs';
 import { chunkMarkdownStructural, PARSER_VERSION } from './markdown-parser.mjs';
 
@@ -451,8 +452,68 @@ export function walkMarkdown(dir, ignore = []) {
   return out.sort();
 }
 
+/**
+ * Validate that targetPath resolves within allowed root directories.
+ * @param {string} targetPath
+ * @param {string[]} [allowedRoots]
+ * @returns {string} canonical absolute path
+ */
+export function assertSafePath(targetPath, allowedRoots) {
+  if (typeof targetPath !== 'string' || !targetPath.trim()) {
+    throw new Error('path must be a non-empty string');
+  }
+  const resolved = path.resolve(targetPath);
+  let canonical = resolved;
+  try {
+    canonical = fs.realpathSync(resolved);
+  } catch {
+    // path may not exist yet (e.g. fresh index dir)
+  }
+
+  let roots = allowedRoots;
+  if (!roots || roots.length === 0) {
+    if (process.env.MDSS_ROOT_GUARD) {
+      roots = process.env.MDSS_ROOT_GUARD.split(path.delimiter).map(p => path.resolve(p.trim())).filter(Boolean);
+    } else {
+      roots = [path.resolve(process.cwd())];
+      try {
+        const home = os.homedir();
+        if (home) roots.push(path.resolve(home));
+      } catch {}
+      try {
+        const tmp = os.tmpdir();
+        if (tmp) roots.push(path.resolve(tmp));
+      } catch {}
+    }
+  }
+
+  const isAllowed = roots.some(root => {
+    let canonicalRoot = root;
+    try { canonicalRoot = fs.realpathSync(root); } catch {}
+    const rel = path.relative(canonicalRoot, canonical);
+    return !rel.startsWith('..') && !path.isAbsolute(rel);
+  });
+
+  if (!isAllowed) {
+    throw new Error(`path traversal guard: "${targetPath}" (resolving to "${canonical}") is outside allowed directory roots`);
+  }
+
+  return canonical;
+}
+
+/** Validate glob pattern for forbidden regex control characters. */
+export function validateGlob(glob) {
+  if (typeof glob !== 'string') throw new Error('glob must be a string');
+  if (/[|()$`{}]/.test(glob)) {
+    const match = glob.match(/[|()$`{}]/);
+    throw new Error(`invalid glob pattern "${glob}": forbidden character "${match ? match[0] : ''}"`);
+  }
+  return glob;
+}
+
 /** Minimal glob → RegExp (supports * and **). */
 export function globToRegExp(glob) {
+  validateGlob(glob);
   const esc = glob
     .replace(/[.+^${}()|[\]\\]/g, '\\$&')
     .replace(/\*\*/g, '\u0000')      // placeholder for **

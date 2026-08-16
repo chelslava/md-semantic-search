@@ -28,3 +28,12 @@ Any new high or critical vulnerabilities introduced outside this baseline immedi
 ## Model Security & Custom Model Boundary
 
 When passing custom Hugging Face model IDs or downloading remote ONNX weights, only use models from trusted repositories. Model files are executed locally via ONNX Runtime WebAssembly/Node sessions.
+
+---
+
+## Path Traversal Guards & Input Validation
+
+- **Path Canonicalization**: `--db` and `--index-dir` inputs resolve to canonical absolute paths (`fs.realpathSync`) and are validated against allowed root directories (current working directory and user homedir by default, or explicitly configured via `MDSS_ROOT_GUARD`).
+- **Query Length Cap**: Query strings in `searchIndex` and `POST /search` are capped at 2048 characters to prevent excessive computation or memory consumption.
+- **Glob Validation**: `--ignore` and `--path` globs are validated for control or injection characters (such as `|`, `(`, `)`, `$`, `{`, `}`) before RegExp compilation.
+

@@ -21,7 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { buildIndex } from './indexer.mjs';
 import { loadIndex, searchIndex } from './search.mjs';
-import { walkMarkdown } from './core.mjs';
+import { walkMarkdown, assertSafePath } from './core.mjs';
 
 const DEFAULT_PORT = 8747;
 const DEFAULT_HOST = '127.0.0.1';     // loopback by default — LAN exposure is opt-in via --host
@@ -66,6 +66,9 @@ export async function createServe(opts) {
     watchDelay = WATCH_DELAY_MS,
     embedFn, rerankFn, log = () => {},
   } = opts;
+
+  if (indexDir) assertSafePath(indexDir);
+  if (db) assertSafePath(db);
 
   fs.mkdirSync(indexDir, { recursive: true });
   if (!fs.existsSync(path.join(indexDir, 'vectors.json'))) {
@@ -322,6 +325,7 @@ async function handleRequest(req, res, state) {
     }
     const query = typeof payload.query === 'string' ? payload.query.trim() : '';
     if (!query) { json(res, 400, { error: 'missing "query" string in JSON body' }); return; }
+    if (query.length > 2048) { json(res, 400, { error: 'query exceeds maximum length of 2048 characters' }); return; }
     const k = Number.isInteger(payload.k) && payload.k > 0 ? payload.k : 6;
 
     try {

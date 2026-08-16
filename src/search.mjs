@@ -432,6 +432,8 @@ export function loadIndex(indexDir) {
  *   matches (query terms found in the chunk, issue #13), snippet, and
  *   rerankScore when reranking was enabled (issue #15)
  */
+export const MAX_QUERY_LENGTH = 2048;
+
 export async function searchIndex(opts) {
   const {
     loaded, cacheDir, query, k = 6, semanticOnly = false,
@@ -439,6 +441,10 @@ export async function searchIndex(opts) {
     rerank = false, rerankPool,
     tag, project, type, status, canonicalOnly, custom,
   } = opts;
+
+  if (typeof query === 'string' && query.length > MAX_QUERY_LENGTH) {
+    throw new Error(`query exceeds maximum length of ${MAX_QUERY_LENGTH} characters`);
+  }
   // `??` (not destructuring defaults): serve.mjs passes `embedFn: null` when
   // no override is given, and JS defaults only fire on `undefined` — using ??
   // here makes the real extractor/reranker the fallback for null AND undefined

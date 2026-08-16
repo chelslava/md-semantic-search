@@ -18,7 +18,7 @@ import { buildIndex } from '../src/indexer.mjs';
 import { search } from '../src/search.mjs';
 import { createServe, DEFAULT_PORT, DEFAULT_HOST } from '../src/serve.mjs';
 import { MODELS, DEFAULT_MODEL, resolveModel } from '../src/models.mjs';
-import { decodeVec, walkMarkdown, SCHEMA_VERSION } from '../src/core.mjs';
+import { decodeVec, walkMarkdown, SCHEMA_VERSION, assertSafePath } from '../src/core.mjs';
 import { inspectIndexSchema, validateCurrentChunk, validateIndexEnvelope, validateNumericVector } from '../src/index-format.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -102,13 +102,23 @@ function resolveDb(opts) {
   if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
     die(`--db is not a directory: ${abs}`);
   }
-  return abs;
+  let safeDb;
+  try {
+    safeDb = assertSafePath(abs);
+  } catch (e) {
+    die(e.message);
+  }
+  return safeDb;
 }
 
 function resolveIndexDir(opts, db) {
   // Default: <db>/.mdss. Override with --index-dir or MDSS_INDEX_DIR.
   const dir = opts.indexDir || process.env.MDSS_INDEX_DIR || path.join(db, '.mdss');
-  return path.resolve(dir);
+  try {
+    return assertSafePath(dir);
+  } catch (e) {
+    die(e.message);
+  }
 }
 
 const resolveCache = (opts) =>

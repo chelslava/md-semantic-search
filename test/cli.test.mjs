@@ -91,9 +91,11 @@ test('resolveIndexDir: flag wins, MDSS_INDEX_DIR fallback, default <db>/.mdss', 
   const db = tempDir('idxdb');
   const prev = process.env.MDSS_INDEX_DIR;
   try {
-    assert.equal(resolveIndexDir({ indexDir: '/a' }, db), path.resolve('/a'));
-    process.env.MDSS_INDEX_DIR = '/b';
-    assert.equal(resolveIndexDir({}, db), path.resolve('/b'));
+    const pathA = path.join(db, 'a');
+    const pathB = path.join(db, 'b');
+    assert.equal(resolveIndexDir({ indexDir: pathA }, db), path.resolve(pathA));
+    process.env.MDSS_INDEX_DIR = pathB;
+    assert.equal(resolveIndexDir({}, db), path.resolve(pathB));
     delete process.env.MDSS_INDEX_DIR;
     assert.equal(resolveIndexDir({}, db), path.join(path.resolve(db), '.mdss'));
   } finally {
