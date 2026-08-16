@@ -410,7 +410,10 @@ test('buildIndex: searchable schema-v3 bm25-v1 reanalyzes once before publishing
       documentLengths: [1],
       postings: { needle: [[0, 1]] },
     };
-    fs.writeFileSync(vectorsPath, JSON.stringify(legacy));
+    const jsonStr = JSON.stringify(legacy);
+    fs.writeFileSync(vectorsPath, jsonStr);
+    const digest = crypto.createHash('sha256').update(jsonStr).digest('hex');
+    fs.writeFileSync(path.join(idx, 'vectors.json.sha256'), `${digest}  vectors.json\n`);
 
     const oldHits = await searchIndex({ loaded: loadIndex(idx), cacheDir: dir,
       query: 'needle', k: 1, embedFn: fakeEmbed });

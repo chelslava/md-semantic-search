@@ -62,6 +62,10 @@ function isStringRecord(value) {
  * Read JSON, falling back to `fb` when the file is missing or corrupt.
  * A corrupt-but-present file is reported through `warn` (default: silent) so a
  * torn write or manual edit doesn't silently wipe the previous index state.
+/**
+ * Read JSON, falling back to `fb` when the file is missing or corrupt.
+ * A corrupt-but-present file is reported through `warn` (default: silent) so a
+ * torn write or manual edit doesn't silently wipe the previous index state.
  * @template T
  * @param {string} p
  * @param {T} fb
@@ -88,6 +92,14 @@ function atomicWrite(target, data) {
   const tmp = `${target}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, data);
   fs.renameSync(tmp, target);
+
+  if (path.basename(target) === 'vectors.json') {
+    const digest = crypto.createHash('sha256').update(data).digest('hex');
+    const shaPath = `${target}.sha256`;
+    const shaTmp = `${shaPath}.${process.pid}.tmp`;
+    fs.writeFileSync(shaTmp, `${digest}  vectors.json\n`);
+    fs.renameSync(shaTmp, shaPath);
+  }
 }
 
 /** Normalize text for stable hashing across runs: CRLF -> LF, trim edges. */
