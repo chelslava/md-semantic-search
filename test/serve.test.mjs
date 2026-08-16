@@ -352,7 +352,7 @@ test('serve: binds to loopback by default (DEFAULT_HOST, issue #16)', async () =
       await svc.close();
     }
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
