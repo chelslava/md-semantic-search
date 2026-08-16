@@ -57,13 +57,11 @@ export function parseMarkdownBlocks(body) {
       const startLine = lineNum;
       const codeLines = [line];
       i++;
-      let closed = false;
       while (i < lines.length) {
         const curLine = lines[i];
         codeLines.push(curLine);
         const closeMatch = curLine.match(/^(\s*)(`{3,}|~{3,})\s*$/);
         if (closeMatch && closeMatch[2][0] === fenceChar && closeMatch[2].length >= fenceLen) {
-          closed = true;
           i++;
           break;
         }
@@ -321,7 +319,6 @@ function splitOversizedBlock(text, maxChunk) {
       if (currentLines.length > 0) {
         pieces.push(currentLines.join('\n').trim());
         currentLines = [];
-        currentLen = 0;
       }
       let rest = line;
       while (rest.length > maxChunk) {

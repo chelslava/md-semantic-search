@@ -345,7 +345,7 @@ export function loadIndex(indexDir) {
     // Corrupt index file — name the file and the fix, no raw stack trace
     // (issue #20).
     throw new Error(
-      `${vectorsPath} is not valid JSON (${e.message}); run \`mdss index\` to rebuild.`);
+      `${vectorsPath} is not valid JSON (${e.message}); run \`mdss index\` to rebuild.`, { cause: e });
   }
   const validated = validateIndexEnvelope(parsed, vectorsPath, { encoding: 'stored' });
   const index = /** @type {IndexFile} */ (validated.index);
@@ -396,7 +396,7 @@ export function loadIndex(indexDir) {
         expectedDim ??= c.vec.length;
       } catch (e) {
         const where = c.file + (c.heading ? ` › ${c.heading}` : '');
-        throw new Error(`chunk ${where}: ${e.message}`);
+        throw new Error(`chunk ${where}: ${e.message}`, { cause: e });
       }
     } else {
       const where = c.file + (c.heading ? ` › ${c.heading}` : '');

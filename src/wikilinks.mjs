@@ -34,7 +34,7 @@ export function extractLinks(text) {
   const links = [];
 
   // Match [[target#anchor|label]] or [[target|label]] or [[target]]
-  const wikiRegex = /\[\[([^\]\|#]+)(?:#([^\]\|]+))?(?:\|([^\]]+))?\]\]/g;
+  const wikiRegex = /\[\[([^\]|#]+)(?:#([^\]|]+))?(?:\|([^\]]+))?\]\]/g;
   // Match relative Markdown links [label](./path/to/file.md) or [label](../path.md)
   const mdLinkRegex = /\[([^\]]+)\]\(([^)]+\.md)(?:#([^)]+))?\)/g;
 

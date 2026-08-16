@@ -70,7 +70,7 @@ export function acquireIndexLock(indexDir) {
       return { acquired: true, lockPath };
     } catch (e) {
       if (e.code !== 'EEXIST') {
-        throw new Error(`cannot create index lock ${lockPath}: ${e.message}`);
+        throw new Error(`cannot create index lock ${lockPath}: ${e.message}`, { cause: e });
       }
       // Lock exists — decide whether its holder is still alive / fresh.
       let stat = null;
@@ -243,7 +243,7 @@ export async function retryWithBackoff(fn, opts = {}) {
     } catch (err) {
       if (attempt >= maxRetries || !isNetworkError(err)) {
         if (attempt > 0 && isNetworkError(err)) {
-          throw new Error(`model download failed after ${attempt} attempts — check network or use --offline (${err.message})`);
+          throw new Error(`model download failed after ${attempt} attempts — check network or use --offline (${err.message})`, { cause: err });
         }
         throw err;
       }

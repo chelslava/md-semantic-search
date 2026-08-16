@@ -350,7 +350,7 @@ async function handleRequest(req, res, state) {
       return;
     }
     /** @type {Record<string, any>} */
-    let payload = {};
+    let payload;
     try { payload = body ? JSON.parse(body) : {}; }
     catch (e) {
       json(res, 400, { error: `invalid JSON body: ${e.message}` });

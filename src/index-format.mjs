@@ -70,7 +70,7 @@ export function validateCurrentChunk(chunk, position, options) {
     try {
       decodeVec(value.vec, options.dim);
     } catch (error) {
-      throw new Error(`${vectorWhere}: ${error.message}`);
+      throw new Error(`${vectorWhere}: ${error.message}`, { cause: error });
     }
     return;
   }

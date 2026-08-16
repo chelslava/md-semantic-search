@@ -153,7 +153,7 @@ function setMetadataValue(meta, key, val) {
   }
 
   if (normKey === 'tag' || normKey === 'tags') {
-    let items = [];
+    let items;
     if (Array.isArray(val)) {
       items = val;
     } else if (typeof val === 'string') {
