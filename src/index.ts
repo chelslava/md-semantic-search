@@ -46,3 +46,5 @@ export {
 export {
   MCP_TOOLS, handleMcpRequest, startMcpServer,
 } from './mcp.js';
+
+export { runTui } from './tui.js';
