@@ -3,9 +3,19 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { buildIndex } from '../src/indexer.mjs';
 import { search, searchIndex, loadIndex, tokenize, keywordScores, rrf, _stats } from '../src/search.mjs';
 import { decodeVec, SCHEMA_VERSION } from '../src/core.mjs';
+
+function writeIndex(idx, data) {
+  const json = typeof data === 'string' ? data : JSON.stringify(data);
+  const vectorsPath = path.join(idx, 'vectors.json');
+  fs.writeFileSync(vectorsPath, json);
+  const shaPath = path.join(idx, 'vectors.json.sha256');
+  const digest = crypto.createHash('sha256').update(json).digest('hex');
+  fs.writeFileSync(shaPath, `${digest}  vectors.json\n`);
+}
 
 function fakeEmbed(texts, kind, model) {
   return texts.map((t) => {
@@ -158,7 +168,7 @@ test('issue #18: two queries on one loaded index tokenize the corpus once', asyn
     const legacy = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
     legacy.schemaVersion = 2;
     delete legacy.lexical;
-    fs.writeFileSync(vectorsPath, JSON.stringify(legacy));
+    writeIndex(idx, legacy);
     const loaded = loadIndex(idx);
     const before = _stats.corpusTokenizedChars;
     await searchIndex({ loaded, cacheDir: dir, query: 'coffee', k: 3, embedFn: fakeEmbed });
@@ -266,7 +276,7 @@ test('search: legacy index without model fields still works (validation fallback
     delete index.lexical;
     delete index.model;
     delete index.modelAlias;
-    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
+    writeIndex(idx, index);
 
     const results = await search({ indexDir: idx, cacheDir: dir, query: 'guide', k: 3, embedFn: fakeEmbed });
     assert.equal(results.length, 3, 'search proceeds on a legacy index');
@@ -281,7 +291,7 @@ test('search: schema-v1 index without headingPath remains searchable with unchan
     const index = JSON.parse(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'));
     index.schemaVersion = 1;
     for (const chunk of index.chunks) delete chunk.headingPath;
-    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
+    writeIndex(idx, index);
 
     const results = await search({ indexDir: idx, cacheDir: dir, query: 'coffee', k: 1, embedFn: fakeEmbed });
 
@@ -306,7 +316,7 @@ test('search: legacy decimal vectors.json loads and ranks identically (issue #4)
     delete index.lexical;
     delete index.format;
     for (const c of index.chunks) c.vec = [...decodeVec(c.vec)];
-    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
+    writeIndex(idx, index);
 
     const legacyResults = await search({ indexDir: idx, cacheDir: dir, query: 'coffee', k: 3, embedFn: fakeEmbed });
 
@@ -355,7 +365,7 @@ test('loadIndex: v0/v1/v2 retain the explicit legacy overlap lexical state', asy
       if (schemaVersion === 0) delete legacy.schemaVersion;
       else legacy.schemaVersion = schemaVersion;
       delete legacy.lexical;
-      fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(legacy));
+      writeIndex(idx, legacy);
       const loaded = loadIndex(idx);
       assert.deepEqual(Object.keys(loaded).sort(), ['index', 'model']);
       assert.equal(loaded.index.schemaVersion, schemaVersion === 0 ? undefined : schemaVersion,
@@ -699,7 +709,7 @@ test('loadIndex: decimal vectors reject non-finite and non-number entries', asyn
     index.chunks = index.chunks.map((chunk) => ({
       ...chunk, vec: new Array(768).fill(0).map((value, position) => position === 1 ? null : value),
     }));
-    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
+    writeIndex(idx, index);
     assert.throws(() => loadIndex(idx), /non-finite vector value.*mdss index/i);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -906,7 +916,7 @@ test('loadIndex: wrong-dim vector is caught with the chunk identity (issue #40)'
     const c = index.chunks.find(c => c.file === 'a.md');
     assert.ok(c, 'a.md chunk present');
     c.vec = Buffer.from(new Float32Array([1, 2, 3]).buffer).toString('base64');
-    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
+    writeIndex(idx, index);
 
     assert.throws(
       () => loadIndex(idx),
@@ -935,7 +945,7 @@ test('loadIndex: decimal-array chunk with wrong dim is caught too (issue #40)', 
     delete index.format; // make it look like a legacy ≤0.3.x index
     for (const c of index.chunks) c.vec = [...decodeVec(c.vec)];
     index.chunks.find(c => c.file === 'b.md').vec = [1, 2, 3];
-    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
+    writeIndex(idx, index);
 
     assert.throws(
       () => loadIndex(idx),
@@ -952,7 +962,7 @@ test('loadIndex: newer schemaVersion → clear upgrade error (issue #39)', async
   try {
     const index = JSON.parse(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'));
     index.schemaVersion = SCHEMA_VERSION + 1; // written by a future mdss
-    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
+    writeIndex(idx, index);
 
     assert.throws(
       () => loadIndex(idx),

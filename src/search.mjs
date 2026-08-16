@@ -6,6 +6,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { embed, cosine, decodeVec, globToRegExp, walkMarkdown } from './core.mjs';
 import { validateIndexEnvelope, validateNumericVector } from './index-format.mjs';
 import { rerankScores } from './rerank.mjs';
@@ -336,9 +337,10 @@ export function loadIndex(indexDir) {
   if (!fs.existsSync(vectorsPath)) {
     throw new Error(`No index at ${vectorsPath}. Run \`mdss index\` first.`);
   }
+  const rawBytes = fs.readFileSync(vectorsPath, 'utf8');
   let parsed;
   try {
-    parsed = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
+    parsed = JSON.parse(rawBytes);
   } catch (e) {
     // Corrupt index file — name the file and the fix, no raw stack trace
     // (issue #20).
@@ -347,6 +349,21 @@ export function loadIndex(indexDir) {
   }
   const validated = validateIndexEnvelope(parsed, vectorsPath, { encoding: 'stored' });
   const index = /** @type {IndexFile} */ (validated.index);
+
+  const shaPath = path.join(indexDir, 'vectors.json.sha256');
+  if (fs.existsSync(shaPath)) {
+    try {
+      const shaContent = fs.readFileSync(shaPath, 'utf8').trim();
+      const expectedHash = shaContent.split(/\s+/)[0];
+      const actualHash = crypto.createHash('sha256').update(rawBytes).digest('hex');
+      if (expectedHash && actualHash !== expectedHash) {
+        throw new Error(`vectors.json integrity check failed (SHA-256 mismatch) — run \`mdss index\` to rebuild.`);
+      }
+    } catch (e) {
+      if (e.message.includes('integrity check failed')) throw e;
+    }
+  }
+
   const { schema, model, dim: validatedDim } = validated;
   let expectedDim = validatedDim;
 

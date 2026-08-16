@@ -14,6 +14,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import fs from 'node:fs';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import { buildIndex } from '../src/indexer.mjs';
 import { search } from '../src/search.mjs';
 import { createServe, DEFAULT_PORT, DEFAULT_HOST } from '../src/serve.mjs';
@@ -344,8 +345,22 @@ export function checkHealth({ db, indexDir, cacheDir, requireOffline = false }) 
   }
   report.index.exists = true;
   let index;
+  const raw = fs.readFileSync(vectorsPath, 'utf8');
+  const shaPath = path.join(indexDir, 'vectors.json.sha256');
+  if (fs.existsSync(shaPath)) {
+    try {
+      const shaContent = fs.readFileSync(shaPath, 'utf8').trim();
+      const expectedHash = shaContent.split(/\s+/)[0];
+      const actualHash = crypto.createHash('sha256').update(raw).digest('hex');
+      if (expectedHash && actualHash !== expectedHash) {
+        report.index.error = `vectors.json integrity check failed (SHA-256 mismatch) — run \`mdss index\` to rebuild`;
+        report.healthy = false;
+        return report;
+      }
+    } catch { /* ignore unreadable sha file */ }
+  }
   try {
-    index = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
+    index = JSON.parse(raw);
     report.index.parses = true;
   } catch (e) {
     report.index.error = `${vectorsPath} is not valid JSON (${e.message}); run \`mdss index\` to rebuild`;
