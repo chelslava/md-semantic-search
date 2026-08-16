@@ -50,6 +50,7 @@ function parseArgs(argv) {
     else if (a === '--watch') opts.watch = true;
     else if (a === '--rerank') opts.rerank = true;
     else if (a === '--explain') opts.explain = true;
+    else if (a === '--interactive' || a === '-i') opts.interactive = true;
     else if (a === '--list-tools') opts.listTools = true;
     else if (a === '--version') opts.version = true;
     else if (a === '-h' || a === '--help') opts.help = true;
@@ -579,7 +580,24 @@ function cmdCheck(opts) {
   process.exitCode = report.healthy ? 0 : 1;
 }
 
+async function cmdTui(opts) {
+  const db = resolveDb(opts);
+  const indexDir = resolveIndexDir(opts, db);
+  const cacheDir = resolveCache(opts);
+  const query = opts._.join(' ').trim();
+  const { runTui } = await import('../dist/tui.js');
+  await runTui({
+    db, indexDir, cacheDir, query,
+    k: opts.k || 20,
+    semanticOnly: !!opts.semantic,
+    offline: resolveOffline(opts),
+    path: opts.path.length > 0 ? opts.path : undefined,
+    rerank: !!opts.rerank,
+  });
+}
+
 async function cmdSearch(opts) {
+  if (opts.interactive) return cmdTui(opts);
   const db = resolveDb(opts);
   const indexDir = resolveIndexDir(opts, db);
   const cacheDir = resolveCache(opts);
@@ -735,6 +753,7 @@ async function main() {
     case 'check':
     case 'doctor': return cmdCheck(opts);
     case 'search': return cmdSearch(opts);
+    case 'tui': return cmdTui(opts);
     case 'serve': return cmdServe(opts);
     case 'mcp': return cmdMcp(opts);
     case 'models': return cmdModels();
