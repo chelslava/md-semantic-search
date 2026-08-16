@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fc from 'fast-check';
-import { tokenize } from '../src/lexical.mjs';
-import { cosine } from '../src/core.mjs';
-import { chunkMarkdownStructural } from '../src/markdown-parser.mjs';
+import { tokenize } from '../dist/lexical.js';
+import { cosine } from '../dist/core.js';
+import { chunkMarkdownStructural } from '../dist/markdown-parser.js';
 
 const NUM_RUNS = 500;
 

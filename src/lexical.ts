@@ -1,13 +1,13 @@
-// @ts-check
 import crypto from 'node:crypto';
+import { DocumentMetadata } from './frontmatter.js';
 
-/** @typedef {Record<string, number>} TermFrequencies */
-/**
- * @typedef {Object} LexicalIndex
- * @property {'bm25-v1'|'bm25-v2'} format
- * @property {number[]} documentLengths
- * @property {Record<string, Array<[number, number]>>} postings
- */
+export type TermFrequencies = Record<string, number>;
+
+export interface LexicalIndex {
+  format: 'bm25-v1' | 'bm25-v2';
+  documentLengths: number[];
+  postings: Record<string, Array<[number, number]>>;
+}
 
 const STOP = new Set([
   'the', 'and', 'for', 'are', 'was', 'has', 'with', 'this', 'that', 'from',
@@ -22,18 +22,24 @@ const STOP = new Set([
 
 export const _lexicalStats = { documentsAnalyzed: 0 };
 
-/** Normalize lexical context consistently with canonical passage hashing. */
-function normalize(text) {
+function normalize(text?: string): string {
   return (text ?? '').replace(/\r\n?/g, '\n').trim();
 }
 
-/** @param {string} left @param {string} right */
-function equivalent(left, right) {
+function equivalent(left: string, right: string): boolean {
   return left.toLowerCase() === right.toLowerCase();
 }
 
-/** @param {{title:string, heading:string, headingPath?:string[], text:string}} chunk */
-export function lexicalDocument(chunk) {
+export interface ChunkForLexical {
+  title: string;
+  heading: string;
+  headingPath?: string[];
+  text: string;
+  meta?: DocumentMetadata;
+  file?: string;
+}
+
+export function lexicalDocument(chunk: ChunkForLexical): string {
   const title = normalize(chunk.title);
   const heading = normalize(chunk.heading);
   const ancestors = (chunk.headingPath ?? (heading ? [chunk.heading] : [])).map(normalize);
@@ -42,23 +48,16 @@ export function lexicalDocument(chunk) {
   return [title, ...ancestors, heading, normalize(chunk.text)].join('\n');
 }
 
-/** Model-independent identity of the exact lexical document input. */
-export function lexicalIdentity(chunk) {
+export function lexicalIdentity(chunk: ChunkForLexical): string {
   return crypto.createHash('sha256').update(lexicalDocument(chunk)).digest('hex');
 }
 
-/** @param {string} text @returns {string[]} */
-export function tokenize(text) {
+export function tokenize(text: string): string[] {
   const matches = text.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}#+-]*/gu);
   if (!matches) return [];
-  return matches.filter(term => term.length > 1 && !STOP.has(term));
+  return matches.filter((term) => term.length > 1 && !STOP.has(term));
 }
 
-/**
- * @param {{title:string, heading:string, headingPath?:string[], text:string}} chunk
- * @returns {TermFrequencies}
- */
-/** Default field weights for BM25F */
 export const DEFAULT_FIELD_WEIGHTS = {
   title: 3.0,
   aliases: 3.0,
@@ -66,23 +65,19 @@ export const DEFAULT_FIELD_WEIGHTS = {
   body: 1.0,
 };
 
-/**
- * Field-aware lexical analysis: tokenizes fields separately with BM25F weights.
- * @param {{title:string, heading:string, headingPath?:string[], text:string, meta?:import('./frontmatter.mjs').DocumentMetadata}} chunk
- * @param {typeof DEFAULT_FIELD_WEIGHTS} [weights=DEFAULT_FIELD_WEIGHTS]
- * @returns {TermFrequencies}
- */
-export function analyzeLexicalDocument(chunk, weights = DEFAULT_FIELD_WEIGHTS) {
+export function analyzeLexicalDocument(
+  chunk: ChunkForLexical,
+  weights = DEFAULT_FIELD_WEIGHTS
+): TermFrequencies {
   _lexicalStats.documentsAnalyzed++;
-  /** @type {TermFrequencies} */
-  const frequencies = Object.create(null);
+  const frequencies: TermFrequencies = Object.create(null);
 
   const titleText = chunk.title || '';
   const aliasesText = (chunk.meta?.aliases || []).join(' ');
   const headingText = (chunk.headingPath || [chunk.heading]).join(' ');
   const bodyText = chunk.text || '';
 
-  const addTokens = (text, weight) => {
+  const addTokens = (text: string, weight: number) => {
     for (const term of tokenize(text)) {
       frequencies[term] = (frequencies[term] ?? 0) + weight;
     }
@@ -96,10 +91,8 @@ export function analyzeLexicalDocument(chunk, weights = DEFAULT_FIELD_WEIGHTS) {
   return frequencies;
 }
 
-/** @param {TermFrequencies[]} records @returns {LexicalIndex} */
-export function buildLexicalIndex(records) {
-  /** @type {Record<string, Array<[number, number]>>} */
-  const postings = Object.create(null);
+export function buildLexicalIndex(records: TermFrequencies[]): LexicalIndex {
+  const postings: Record<string, Array<[number, number]>> = Object.create(null);
   const documentLengths = records.map((record, docId) => {
     let length = 0;
     for (const [term, tf] of Object.entries(record)) {
@@ -113,13 +106,7 @@ export function buildLexicalIndex(records) {
   return { format: 'bm25-v2', documentLengths, postings };
 }
 
-/**
- * Damerau-Levenshtein edit distance calculation.
- * @param {string} a
- * @param {string} b
- * @returns {number}
- */
-export function editDistance(a, b) {
+export function editDistance(a: string, b: string): number {
   if (a === b) return 0;
   const alen = a.length;
   const blen = b.length;
@@ -133,17 +120,8 @@ export function editDistance(a, b) {
   for (let i = 1; i <= alen; i++) {
     for (let j = 1; j <= blen; j++) {
       const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      matrix[i][j] = Math.min(
-        matrix[i - 1][j] + 1,
-        matrix[i][j - 1] + 1,
-        matrix[i - 1][j - 1] + cost,
-      );
-      if (
-        i > 1 &&
-        j > 1 &&
-        a[i - 1] === b[j - 2] &&
-        a[i - 2] === b[j - 1]
-      ) {
+      matrix[i][j] = Math.min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
         matrix[i][j] = Math.min(matrix[i][j], matrix[i - 2][j - 2] + cost);
       }
     }
@@ -151,15 +129,11 @@ export function editDistance(a, b) {
   return matrix[alen][blen];
 }
 
-/**
- * Bounded fuzzy matching for title & aliases (Damerau-Levenshtein dist 1-2).
- * Returns map of docId -> fuzzyScore.
- * @param {Array<{file:string, title:string, meta?:import('./frontmatter.mjs').DocumentMetadata}>} chunks
- * @param {string} query
- * @returns {Map<number, number>}
- */
-export function fuzzyTitleAliasScores(chunks, query) {
-  const scores = new Map();
+export function fuzzyTitleAliasScores(
+  chunks: Array<{ file?: string; title: string; meta?: DocumentMetadata }>,
+  query: string
+): Map<number, number> {
+  const scores = new Map<number, number>();
   const qTerms = tokenize(query);
   if (qTerms.length === 0) return scores;
 
@@ -171,7 +145,7 @@ export function fuzzyTitleAliasScores(chunks, query) {
     for (const target of targets) {
       const tTerms = tokenize(target);
       for (const qt of qTerms) {
-        if (qt.length < 3) continue; // skip tiny query tokens
+        if (qt.length < 3) continue;
         for (const tt of tTerms) {
           if (tt.length < 3) continue;
           const maxDist = Math.min(2, Math.floor(qt.length / 3));
@@ -185,31 +159,30 @@ export function fuzzyTitleAliasScores(chunks, query) {
     }
 
     if (maxScore > 0) {
-      scores.set(docId, maxScore * 2.0); // Bounded fuzzy title/alias boost
+      scores.set(docId, maxScore * 2.0);
     }
   }
   return scores;
 }
 
-/**
- * @param {unknown} value
- * @param {number} chunkCount
- * @returns {string|null}
- */
-export function validateLexicalIndex(value, chunkCount) {
+export function validateLexicalIndex(value: unknown, chunkCount: number): string | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     return 'lexical must be an object';
   }
-  const lexical = /** @type {Record<string, unknown>} */ (value);
+  const lexical = value as Record<string, unknown>;
   if (lexical.format !== 'bm25-v1' && lexical.format !== 'bm25-v2') {
     return 'unknown lexical format';
   }
-  if (!Array.isArray(lexical.documentLengths) || lexical.documentLengths.length !== chunkCount ||
-      !lexical.documentLengths.every(length => Number.isFinite(length) && length >= 0)) {
+  if (
+    !Array.isArray(lexical.documentLengths) ||
+    lexical.documentLengths.length !== chunkCount ||
+    !lexical.documentLengths.every((length) => Number.isFinite(length) && length >= 0)
+  ) {
     return `documentLengths must contain ${chunkCount} non-negative numbers`;
   }
-  if (lexical.postings === null || typeof lexical.postings !== 'object' ||
-      Array.isArray(lexical.postings)) return 'postings must be an object';
+  if (lexical.postings === null || typeof lexical.postings !== 'object' || Array.isArray(lexical.postings)) {
+    return 'postings must be an object';
+  }
 
   const sums = new Array(chunkCount).fill(0);
   for (const [term, rawPosting] of Object.entries(lexical.postings)) {
@@ -231,45 +204,40 @@ export function validateLexicalIndex(value, chunkCount) {
     }
   }
   for (let docId = 0; docId < chunkCount; docId++) {
-    if (Math.abs(sums[docId] - lexical.documentLengths[docId]) > 1e-3) {
+    if (Math.abs(sums[docId] - (lexical.documentLengths as number[])[docId]) > 1e-3) {
       return `document ${docId} TF sum does not equal documentLengths`;
     }
   }
   return null;
 }
 
-/** @param {LexicalIndex} lexical @returns {TermFrequencies[]} */
-export function reverseLexicalIndex(lexical) {
-  const records = lexical.documentLengths.map(() => /** @type {TermFrequencies} */ (Object.create(null)));
+export function reverseLexicalIndex(lexical: LexicalIndex): TermFrequencies[] {
+  const records: TermFrequencies[] = lexical.documentLengths.map(() => Object.create(null));
   for (const [term, posting] of Object.entries(lexical.postings)) {
     for (const [docId, tf] of posting) records[docId][term] = tf;
   }
   return records;
 }
 
-/**
- * @param {LexicalIndex} lexical
- * @param {string[]} queryTerms
- * @param {Set<number>} [eligible]
- * @returns {Map<number, number>}
- */
-export function bm25Scores(lexical, queryTerms, eligible) {
-  const scores = new Map();
+export function bm25Scores(
+  lexical: LexicalIndex,
+  queryTerms: string[],
+  eligible?: Set<number>
+): Map<number, number> {
+  const scores = new Map<number, number>();
   const documentCount = lexical.documentLengths.length;
   if (documentCount === 0) return scores;
-  const averageLength = lexical.documentLengths.reduce((sum, length) => sum + length, 0) /
-    documentCount || 1;
+  const averageLength = lexical.documentLengths.reduce((sum, length) => sum + length, 0) / documentCount || 1;
   if (!Number.isFinite(averageLength)) throw new Error('non-finite BM25 average document length');
   for (const term of new Set(queryTerms)) {
-    const posting = Object.prototype.hasOwnProperty.call(lexical.postings, term)
-      ? lexical.postings[term] : undefined;
+    const posting = Object.prototype.hasOwnProperty.call(lexical.postings, term) ? lexical.postings[term] : undefined;
     if (!posting) continue;
     const idf = Math.log(1 + (documentCount - posting.length + 0.5) / (posting.length + 0.5));
     if (!Number.isFinite(idf)) throw new Error(`non-finite BM25 IDF for ${term}`);
     for (const [docId, tf] of posting) {
       if (eligible && !eligible.has(docId)) continue;
       const lengthRatio = lexical.documentLengths[docId] / averageLength;
-      const score = idf * (tf * 2.2) / (tf + 1.2 * (0.25 + 0.75 * lengthRatio));
+      const score = (idf * (tf * 2.2)) / (tf + 1.2 * (0.25 + 0.75 * lengthRatio));
       if (!Number.isFinite(lengthRatio) || !Number.isFinite(score)) {
         throw new Error(`non-finite BM25 score for ${term}`);
       }
@@ -279,12 +247,10 @@ export function bm25Scores(lexical, queryTerms, eligible) {
   return scores;
 }
 
-/** @param {LexicalIndex} lexical @param {string[]} queryTerms @param {number} docId */
-export function matchingTerms(lexical, queryTerms, docId) {
-  const matches = [];
+export function matchingTerms(lexical: LexicalIndex, queryTerms: string[], docId: number): string[] {
+  const matches: string[] = [];
   for (const term of new Set(queryTerms)) {
-    const posting = Object.prototype.hasOwnProperty.call(lexical.postings, term)
-      ? lexical.postings[term] : undefined;
+    const posting = Object.prototype.hasOwnProperty.call(lexical.postings, term) ? lexical.postings[term] : undefined;
     if (posting?.some(([candidate]) => candidate === docId)) matches.push(term);
   }
   return matches;

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildIndex } from '../src/indexer.mjs';
-import { loadIndex } from '../src/search.mjs';
+import { buildIndex } from '../dist/indexer.js';
+import { loadIndex } from '../dist/search.js';
 
 function fakeEmbed(texts, kind, model) {
   return texts.map((t) => {

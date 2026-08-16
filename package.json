@@ -3,9 +3,13 @@
   "version": "0.4.0",
   "description": "Local, private semantic (vector) search over any folder of Markdown files. Finds passages by meaning — cross-lingual — using transformers.js. No API keys, no cloud, no vector database.",
   "type": "module",
-  "main": "./src/index.mjs",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.mjs",
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
     "./package.json": "./package.json"
   },
   "bin": {
@@ -14,15 +18,18 @@
   },
   "files": [
     "bin/",
+    "dist/",
     "src/",
     "README.md",
     "RESEARCH.md",
     "LICENSE"
   ],
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
     "test": "node --test",
-    "lint": "tsc --noEmit && eslint src/ bin/",
-    "lint:eslint": "eslint src/ bin/"
+    "lint": "tsc --noEmit && eslint bin/",
+    "lint:eslint": "eslint bin/"
   },
   "keywords": [
     "semantic-search",

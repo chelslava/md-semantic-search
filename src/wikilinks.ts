@@ -1,48 +1,46 @@
-// @ts-check
 /**
  * Wikilink and backlink relationship extraction and resolution (issue #61).
  * Supports Obsidian wikilinks [[note]], [[note#heading|alias]], and relative Markdown links.
  */
+import { DocumentMetadata } from './frontmatter.js';
 
-/**
- * @typedef {Object} RawLink
- * @property {'wikilink'|'markdown'} type
- * @property {string} target
- * @property {string} [anchor]
- * @property {string} [label]
- * @property {string} raw
- * @property {number} line
- */
+export interface RawLink {
+  type: 'wikilink' | 'markdown';
+  target: string;
+  anchor?: string;
+  label?: string;
+  raw: string;
+  line: number;
+}
 
-/**
- * @typedef {Object} ResolvedLink
- * @property {string} raw
- * @property {string} target
- * @property {string} [resolvedFile]
- * @property {'resolved'|'broken'|'ambiguous'} status
- * @property {number} line
- */
+export interface ResolvedLink {
+  raw: string;
+  target: string;
+  resolvedFile?: string;
+  status: 'resolved' | 'broken' | 'ambiguous';
+  line: number;
+}
 
-/**
- * Extract wikilinks and relative Markdown links from Markdown content.
- * @param {string} text
- * @returns {RawLink[]}
- */
-export function extractLinks(text) {
+export interface LinkDoc {
+  file: string;
+  title?: string;
+  meta?: DocumentMetadata;
+  text?: string;
+}
+
+export function extractLinks(text?: string): RawLink[] {
   if (!text) return [];
   const lines = text.split(/\r?\n/);
-  const links = [];
+  const links: RawLink[] = [];
 
-  // Match [[target#anchor|label]] or [[target|label]] or [[target]]
   const wikiRegex = /\[\[([^\]|#]+)(?:#([^\]|]+))?(?:\|([^\]]+))?\]\]/g;
-  // Match relative Markdown links [label](./path/to/file.md) or [label](../path.md)
   const mdLinkRegex = /\[([^\]]+)\]\(([^)]+\.md)(?:#([^)]+))?\)/g;
 
   for (let i = 0; i < lines.length; i++) {
     const lineNum = i + 1;
     const line = lines[i];
 
-    let match;
+    let match: RegExpExecArray | null;
     wikiRegex.lastIndex = 0;
     while ((match = wikiRegex.exec(line)) !== null) {
       links.push({
@@ -74,20 +72,16 @@ export function extractLinks(text) {
   return links;
 }
 
-/**
- * Resolve extracted links against a map of documents (keyed by relative path/file).
- * @param {RawLink[]} rawLinks
- * @param {string} currentFile
- * @param {Array<{file:string, title?:string, meta?:import('./frontmatter.mjs').DocumentMetadata}>} docs
- * @returns {ResolvedLink[]}
- */
-export function resolveLinks(rawLinks, currentFile, docs) {
+export function resolveLinks(
+  rawLinks: RawLink[],
+  currentFile: string,
+  docs: LinkDoc[]
+): ResolvedLink[] {
   if (!rawLinks || rawLinks.length === 0) return [];
 
-  // Build lookups: titleMap, aliasMap, pathMap
-  const pathMap = new Map();
-  const titleMap = new Map();
-  const aliasMap = new Map();
+  const pathMap = new Map<string, string>();
+  const titleMap = new Map<string, string[]>();
+  const aliasMap = new Map<string, string[]>();
 
   for (const doc of docs) {
     const relFile = doc.file;
@@ -114,16 +108,17 @@ export function resolveLinks(rawLinks, currentFile, docs) {
     }
   }
 
-  return rawLinks.map(link => {
+  return rawLinks.map((link) => {
     const targetKey = link.target.toLowerCase().replace(/\.md$/i, '');
-    let matches = [];
+    let matches: string[] = [];
 
     if (pathMap.has(targetKey)) {
-      matches.push(pathMap.get(targetKey));
+      const found = pathMap.get(targetKey);
+      if (found) matches.push(found);
     } else if (titleMap.has(targetKey)) {
-      matches = titleMap.get(targetKey);
+      matches = titleMap.get(targetKey) || [];
     } else if (aliasMap.has(targetKey)) {
-      matches = aliasMap.get(targetKey);
+      matches = aliasMap.get(targetKey) || [];
     }
 
     matches = [...new Set(matches)];
@@ -154,13 +149,20 @@ export function resolveLinks(rawLinks, currentFile, docs) {
   });
 }
 
-/**
- * Build graph of outgoing links and backlinks across documents.
- * @param {Array<{file:string, title?:string, text:string, meta?:import('./frontmatter.mjs').DocumentMetadata}>} docs
- */
-export function buildRelationshipGraph(docs) {
-  const outgoing = new Map();
-  const backlinks = new Map();
+export interface GraphEdge {
+  file: string;
+  raw: string;
+  line: number;
+}
+
+export interface RelationshipGraph {
+  outgoing: Map<string, GraphEdge[]>;
+  backlinks: Map<string, GraphEdge[]>;
+}
+
+export function buildRelationshipGraph(docs: LinkDoc[]): RelationshipGraph {
+  const outgoing = new Map<string, GraphEdge[]>();
+  const backlinks = new Map<string, GraphEdge[]>();
 
   for (const doc of docs) {
     if (!outgoing.has(doc.file)) outgoing.set(doc.file, []);
@@ -186,23 +188,24 @@ export function buildRelationshipGraph(docs) {
   return { outgoing, backlinks };
 }
 
-/**
- * Traverse graph to find related notes.
- * @param {{outgoing: Map<string, Array<{file:string}>>, backlinks: Map<string, Array<{file:string}>>}} graph
- * @param {string} targetFile
- * @param {object} [opts]
- * @param {'both'|'outgoing'|'backlinks'} [opts.direction='both']
- * @param {number} [opts.depth=1]
- * @returns {Array<{file:string, distance:number, direction:string}>}
- */
-export function getRelatedNotes(graph, targetFile, opts = {}) {
+export interface RelatedNote {
+  file: string;
+  distance: number;
+  direction: string;
+}
+
+export function getRelatedNotes(
+  graph: RelationshipGraph,
+  targetFile: string,
+  opts: { direction?: 'both' | 'outgoing' | 'backlinks'; depth?: number } = {}
+): RelatedNote[] {
   const direction = opts.direction || 'both';
   const maxDepth = opts.depth || 1;
 
-  const visited = new Set([targetFile]);
-  const results = [];
+  const visited = new Set<string>([targetFile]);
+  const results: RelatedNote[] = [];
 
-  const queue = [{ file: targetFile, depth: 0 }];
+  const queue: Array<{ file: string; depth: number }> = [{ file: targetFile, depth: 0 }];
 
   while (queue.length > 0) {
     const curr = queue.shift();
@@ -210,7 +213,7 @@ export function getRelatedNotes(graph, targetFile, opts = {}) {
 
     if (curr.depth >= maxDepth) continue;
 
-    const nextNodes = [];
+    const nextNodes: Array<{ file: string; depth: number }> = [];
 
     if (direction === 'both' || direction === 'outgoing') {
       const outList = graph.outgoing.get(curr.file) || [];

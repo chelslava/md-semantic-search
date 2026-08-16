@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
-import { assertSafePath, validateGlob, globToRegExp } from '../src/core.mjs';
-import { searchIndex, MAX_QUERY_LENGTH } from '../src/search.mjs';
+import { assertSafePath, validateGlob, globToRegExp } from '../dist/core.js';
+import { searchIndex, MAX_QUERY_LENGTH } from '../dist/search.js';
 
 test('assertSafePath: permits valid paths inside CWD and homedir', () => {
   const cwd = process.cwd();

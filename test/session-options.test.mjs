@@ -1,7 +1,7 @@
 // @ts-check
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveSessionOptions, getExtractorCacheKey } from '../src/core.mjs';
+import { resolveSessionOptions, getExtractorCacheKey } from '../dist/core.js';
 
 test('resolveSessionOptions reads environment variables and adapter properties', () => {
   const origIntra = process.env.MDSS_INTRA_OP_THREADS;

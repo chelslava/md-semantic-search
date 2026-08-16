@@ -9,7 +9,7 @@ import {
   encodeVec, decodeVec, isBinaryIndex,
   SCHEMA_VERSION, SCHEMA_MIGRATIONS,
   prepareEmbeddingRequest, getExtractor,
-} from '../src/core.mjs';
+} from '../dist/core.js';
 
 test('splitFrontmatter: strips leading YAML block', () => {
   const raw = '---\ntitle: Hello\nfoo: bar\n---\n\n# Body\n\ntext';

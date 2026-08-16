@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isNetworkError, retryWithBackoff } from '../src/core.mjs';
+import { isNetworkError, retryWithBackoff } from '../dist/core.js';
 
 test('retry: isNetworkError identifies network-class errors correctly', () => {
   assert.equal(isNetworkError({ code: 'ENOTFOUND' }), true);

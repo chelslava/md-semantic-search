@@ -1,55 +1,37 @@
-// @ts-check
 /**
  * Structural Markdown parser and block chunker (issue #57).
  * Parses Markdown source into structured blocks (headings, fenced code,
- * tables, blockquotes, lists, paragraphs) and emits chunk records with:
- * - heading hierarchy (headingPath)
- * - atomic block preservation (no arbitrary line/blank splits inside fences/tables)
- * - 1-indexed startLine and endLine numbers
- * - oversized block continuation handling
+ * tables, blockquotes, lists, paragraphs) and emits chunk records.
  */
 
 export const PARSER_VERSION = 'v1-ast';
 
-/**
- * @typedef {{
- *   type: 'atx_heading' | 'setext_heading' | 'code' | 'table' | 'blockquote' | 'list' | 'paragraph',
- *   level?: number,
- *   headingText?: string,
- *   text: string,
- *   startLine: number,
- *   endLine: number,
- * }} MarkdownBlock
- */
+export interface MarkdownBlock {
+  type: 'atx_heading' | 'setext_heading' | 'code' | 'table' | 'blockquote' | 'list' | 'paragraph';
+  level?: number;
+  headingText?: string;
+  text: string;
+  startLine: number;
+  endLine: number;
+}
 
-/**
- * @typedef {{
- *   heading: string,
- *   headingPath: string[],
- *   text: string,
- *   startLine: number,
- *   endLine: number,
- * }} StructuralChunk
- */
+export interface StructuralChunk {
+  heading: string;
+  headingPath: string[];
+  text: string;
+  startLine: number;
+  endLine: number;
+}
 
-/**
- * Parse Markdown body text into structural blocks.
- * Ignores heading-like syntax inside fenced code blocks.
- * Supports ATX (# .. ######) and Setext (=== and ---) headings.
- * @param {string} body
- * @returns {MarkdownBlock[]}
- */
-export function parseMarkdownBlocks(body) {
+export function parseMarkdownBlocks(body: string): MarkdownBlock[] {
   const lines = body.split(/\r?\n/);
-  /** @type {MarkdownBlock[]} */
-  const blocks = [];
-  
+  const blocks: MarkdownBlock[] = [];
+
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
     const lineNum = i + 1;
-    
-    // 1. Fenced Code Blocks (``` or ~~~)
+
     const fenceMatch = line.match(/^(\s*)(`{3,}|~{3,})(.*)$/);
     if (fenceMatch) {
       const fenceChar = fenceMatch[2][0];
@@ -71,12 +53,11 @@ export function parseMarkdownBlocks(body) {
         type: 'code',
         text: codeLines.join('\n'),
         startLine,
-        endLine: i, // 1-indexed end line
+        endLine: i,
       });
       continue;
     }
-    
-    // 2. ATX Headings (# .. ######)
+
     const atxMatch = line.match(/^(\s{0,3})(#{1,6})\s+(.+?)\s*#*\s*$/);
     if (atxMatch) {
       const level = atxMatch[2].length;
@@ -92,8 +73,7 @@ export function parseMarkdownBlocks(body) {
       i++;
       continue;
     }
-    
-    // 3. Setext Headings (Heading text followed by === or ---)
+
     if (
       i + 1 < lines.length &&
       line.trim().length > 0 &&
@@ -116,17 +96,15 @@ export function parseMarkdownBlocks(body) {
         continue;
       }
     }
-    
-    // 4. Blank lines
+
     if (line.trim() === '') {
       i++;
       continue;
     }
-    
-    // 5. Tables (Lines starting/containing | with header separator)
+
     if (/^\s*\|/.test(line) || (/\|/.test(line) && i + 1 < lines.length && /^\s*\|?\s*[-:]+[-|\s:]*$/.test(lines[i + 1]))) {
       const startLine = lineNum;
-      const tableLines = [];
+      const tableLines: string[] = [];
       while (i < lines.length && (lines[i].includes('|') || /^\s*\|?\s*[-:]+[-|\s:]*$/.test(lines[i]))) {
         tableLines.push(lines[i]);
         i++;
@@ -139,11 +117,10 @@ export function parseMarkdownBlocks(body) {
       });
       continue;
     }
-    
-    // 6. Blockquotes (> ...)
+
     if (/^\s*>/.test(line)) {
       const startLine = lineNum;
-      const bqLines = [];
+      const bqLines: string[] = [];
       while (i < lines.length && (/^\s*>/.test(lines[i]) || (lines[i].trim() !== '' && !/^\s*(?:#{1,6}\s|```|~~~|[-*+]\s|\d+\.\s)/.test(lines[i])))) {
         bqLines.push(lines[i]);
         i++;
@@ -156,8 +133,7 @@ export function parseMarkdownBlocks(body) {
       });
       continue;
     }
-    
-    // 7. Generic Paragraph / Block
+
     const startLine = lineNum;
     const paraLines = [line];
     i++;
@@ -188,44 +164,33 @@ export function parseMarkdownBlocks(body) {
       endLine: i,
     });
   }
-  
+
   return blocks;
 }
 
-/**
- * Convert token budget to character cap (approx 4 chars/token).
- * @param {number} [tokens]
- * @param {number} [defaultMax=1200]
- * @returns {number}
- */
-export function resolveChunkBudget(tokens, defaultMax = 1200) {
+export function resolveChunkBudget(tokens?: number, defaultMax: number = 1200): number {
   if (tokens && Number.isFinite(tokens) && tokens > 0) {
     return Math.max(100, Math.min(8192, Math.round(tokens * 4)));
   }
   return defaultMax;
 }
 
-/**
- * Chunk Markdown blocks structurally with heading context and oversized block continuation.
- * @param {string | MarkdownBlock[]} input
- * @param {number | {maxChunk?:number, targetTokens?:number}} [opts]
- * @returns {StructuralChunk[]}
- */
-export function chunkMarkdownStructural(input, opts) {
+export function chunkMarkdownStructural(
+  input: string | MarkdownBlock[],
+  opts?: number | { maxChunk?: number; targetTokens?: number }
+): StructuralChunk[] {
   const options = typeof opts === 'number' ? { maxChunk: opts } : (opts || {});
   const maxChunk = resolveChunkBudget(options.targetTokens, options.maxChunk ?? 1200);
   const blocks = typeof input === 'string' ? parseMarkdownBlocks(input) : input;
-  /** @type {StructuralChunk[]} */
-  const chunks = [];
-  
-  /** @type {{level:number, heading:string}[]} */
-  const headingStack = [];
-  
-  let currentGroup = [];
+  const chunks: StructuralChunk[] = [];
+
+  const headingStack: Array<{ level: number; heading: string }> = [];
+
+  let currentGroup: string[] = [];
   let currentLen = 0;
   let groupStartLine = 0;
   let groupEndLine = 0;
-  
+
   const flushGroup = () => {
     if (currentGroup.length === 0) return;
     const text = currentGroup.join('\n\n').trim();
@@ -242,7 +207,7 @@ export function chunkMarkdownStructural(input, opts) {
     currentGroup = [];
     currentLen = 0;
   };
-  
+
   for (const block of blocks) {
     if (block.type === 'atx_heading' || block.type === 'setext_heading') {
       flushGroup();
@@ -254,10 +219,10 @@ export function chunkMarkdownStructural(input, opts) {
       headingStack.push({ level, heading });
       continue;
     }
-    
+
     const blockText = block.text.trim();
     if (!blockText) continue;
-    
+
     if (blockText.length > maxChunk) {
       flushGroup();
       const headingPath = headingStack.map(h => h.heading);
@@ -277,12 +242,12 @@ export function chunkMarkdownStructural(input, opts) {
       }
       continue;
     }
-    
+
     const addedLen = currentLen === 0 ? blockText.length : currentLen + 2 + blockText.length;
     if (addedLen > maxChunk && currentGroup.length > 0) {
       flushGroup();
     }
-    
+
     if (currentGroup.length === 0) {
       groupStartLine = block.startLine;
     }
@@ -290,31 +255,25 @@ export function chunkMarkdownStructural(input, opts) {
     currentLen += (currentGroup.length === 1 ? 0 : 2) + blockText.length;
     groupEndLine = block.endLine;
   }
-  
+
   flushGroup();
-  
+
   return chunks.filter(c => c.text.replace(/\s/g, '').length >= 24);
 }
 
-/**
- * Split an oversized block (code fence, table, large paragraph) into bounded pieces.
- * @param {string} text
- * @param {number} maxChunk
- * @returns {string[]}
- */
-function splitOversizedBlock(text, maxChunk) {
+function splitOversizedBlock(text: string, maxChunk: number): string[] {
   const lines = text.split('\n');
-  const pieces = [];
-  let currentLines = [];
+  const pieces: string[] = [];
+  let currentLines: string[] = [];
   let currentLen = 0;
-  
+
   for (const line of lines) {
     if (currentLen + line.length + 1 > maxChunk && currentLines.length > 0) {
       pieces.push(currentLines.join('\n').trim());
       currentLines = [];
       currentLen = 0;
     }
-    
+
     if (line.length > maxChunk) {
       if (currentLines.length > 0) {
         pieces.push(currentLines.join('\n').trim());
@@ -331,14 +290,14 @@ function splitOversizedBlock(text, maxChunk) {
       currentLen = rest.length;
       continue;
     }
-    
+
     currentLines.push(line);
     currentLen += line.length + 1;
   }
-  
+
   if (currentLines.length > 0) {
     pieces.push(currentLines.join('\n').trim());
   }
-  
+
   return pieces;
 }

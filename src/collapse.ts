@@ -1,22 +1,17 @@
-// @ts-check
 /**
  * Result collapse and diversity control helpers (issue #45).
  * Deduplicates / caps multiple chunks per document or canonical identity
  * to increase result diversity in search output.
  */
 
-/**
- * Collapse candidate hits so no single file/canonical document exceeds maxPerFile/maxPerDoc.
- * @template T
- * @param {T[]} results
- * @param {(hit: T) => string} getDocId
- * @param {number} [maxPerDoc=1]
- * @returns {T[]}
- */
-export function collapseResults(results, getDocId, maxPerDoc = 1) {
+export function collapseResults<T>(
+  results: T[],
+  getDocId: (hit: T) => string,
+  maxPerDoc: number = 1
+): T[] {
   if (!maxPerDoc || maxPerDoc <= 0) return results;
-  const counts = new Map();
-  const collapsed = [];
+  const counts = new Map<string, number>();
+  const collapsed: T[] = [];
 
   for (const hit of results) {
     const docId = getDocId(hit);

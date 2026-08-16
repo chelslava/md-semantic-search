@@ -1,10 +1,10 @@
 // @ts-check
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { QueryEmbeddingCache, searchIndex } from '../src/search.mjs';
+import { QueryEmbeddingCache, searchIndex } from '../dist/search.js';
 
 function makeTestIndex() {
-  return /** @type {import('../src/search.mjs').IndexFile} */ ({
+  return /** @type {import('../dist/search.js').IndexFile} */ ({
     format: 'binary-v1',
     schemaVersion: 3,
     model: 'custom-4d',

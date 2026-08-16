@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Public library API for md-semantic-search.
  *
@@ -21,31 +20,29 @@
  * same API works on any folder of markdown anywhere on disk.
  */
 
-export {
-  buildIndex, chunkHash,
-} from './indexer.mjs';
+export { buildIndex, chunkHash } from './indexer.js';
 
 export {
   search, searchIndex, loadIndex,
   tokenize, keywordScores, rrf, QueryEmbeddingCache,
-} from './search.mjs';
+} from './search.js';
 
 export {
   resolveModel, MODELS, DEFAULT_MODEL,
   normalizeAdapter, embeddingAdapterFingerprint, legacyEmbeddingAdapterFingerprint,
-} from './models.mjs';
+} from './models.js';
 
 export {
   getReranker, rerankScores, RERANK_MODEL,
-} from './rerank.mjs';
+} from './rerank.js';
 
 export {
   embed, getExtractor, cosine,
   walkMarkdown, parseFile, chunkMarkdown,
   splitFrontmatter, extractTitle, globToRegExp,
   encodeVec, decodeVec, isBinaryIndex,
-} from './core.mjs';
+} from './core.js';
 
 export {
   MCP_TOOLS, handleMcpRequest, startMcpServer,
-} from './mcp.mjs';
+} from './mcp.js';

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeLexicalDocument, DEFAULT_FIELD_WEIGHTS, editDistance, fuzzyTitleAliasScores } from '../src/lexical.mjs';
+import { analyzeLexicalDocument, DEFAULT_FIELD_WEIGHTS, editDistance, fuzzyTitleAliasScores } from '../dist/lexical.js';
 
 test('analyzeLexicalDocument applies BM25F field weights', () => {
   const chunk = {

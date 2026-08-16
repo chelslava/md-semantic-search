@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { SCHEMA_VERSION } from '../src/core.mjs';
+import { SCHEMA_VERSION } from '../dist/core.js';
 import {
   parseArgs, nextInt, nextValue,
   resolveDb, resolveIndexDir, resolveCache, resolveOffline,

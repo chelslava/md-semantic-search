@@ -11,7 +11,7 @@ import {
   reciprocalRank,
   redundancyAtK,
   winTieLoss,
-} from '../src/metrics.mjs';
+} from '../dist/metrics.js';
 
 /** @type {Record<string, number>} per-doc graded judgements for the examples. */
 const docGrades = { a: 3, b: 0, c: 3, d: 0 };

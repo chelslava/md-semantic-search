@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseMarkdownBlocks, chunkMarkdownStructural, PARSER_VERSION } from '../src/markdown-parser.mjs';
+import { parseMarkdownBlocks, chunkMarkdownStructural, PARSER_VERSION } from '../dist/markdown-parser.js';
 
 test('structural parser version identity', () => {
   assert.equal(typeof PARSER_VERSION, 'string');

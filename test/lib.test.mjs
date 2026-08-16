@@ -14,7 +14,7 @@ import {
   resolveModel, MODELS, DEFAULT_MODEL,
   tokenize, encodeVec, decodeVec, cosine, chunkHash,
 } from 'md-semantic-search';
-import { _stats } from '../src/search.mjs';
+import { _stats } from '../dist/search.js';
 
 function fakeEmbed(texts, kind, model) {
   return texts.map((t) => {
@@ -40,7 +40,7 @@ test('exports map: package root exposes the library API (issue #14)', () => {
 });
 
 test('public API example imports searchIndex before using the repeated-query path', () => {
-  const source = fs.readFileSync(new URL('../src/index.mjs', import.meta.url), 'utf8');
+  const source = fs.readFileSync(new URL('../dist/index.js', import.meta.url), 'utf8');
   assert.match(source,
     /import \{ buildIndex, search, loadIndex, searchIndex, resolveModel, MODELS \} from 'md-semantic-search';/);
 });

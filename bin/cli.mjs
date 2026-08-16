@@ -15,12 +15,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import fs from 'node:fs';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { buildIndex } from '../src/indexer.mjs';
-import { search } from '../src/search.mjs';
-import { createServe, DEFAULT_PORT, DEFAULT_HOST } from '../src/serve.mjs';
-import { MODELS, DEFAULT_MODEL, resolveModel } from '../src/models.mjs';
-import { decodeVec, walkMarkdown, SCHEMA_VERSION, assertSafePath } from '../src/core.mjs';
-import { inspectIndexSchema, validateCurrentChunk, validateIndexEnvelope, validateNumericVector } from '../src/index-format.mjs';
+import { buildIndex } from '../dist/indexer.js';
+import { search } from '../dist/search.js';
+import { createServe, DEFAULT_PORT, DEFAULT_HOST } from '../dist/serve.js';
+import { MODELS, DEFAULT_MODEL, resolveModel } from '../dist/models.js';
+import { decodeVec, walkMarkdown, SCHEMA_VERSION, assertSafePath } from '../dist/core.js';
+import { inspectIndexSchema, validateCurrentChunk, validateIndexEnvelope, validateNumericVector } from '../dist/index-format.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = path.resolve(HERE, '..');
@@ -704,7 +704,7 @@ async function cmdServe(opts) {
 
 async function cmdMcp(opts) {
   if (opts.listTools) {
-    const { MCP_TOOLS } = await import('../src/mcp.mjs');
+    const { MCP_TOOLS } = await import('../dist/mcp.js');
     process.stdout.write(JSON.stringify(MCP_TOOLS, null, 2) + '\n');
     return;
   }
@@ -712,7 +712,7 @@ async function cmdMcp(opts) {
   const indexDir = resolveIndexDir(opts, db);
   const cacheDir = resolveCache(opts);
   const log = s => process.stderr.write(s + '\n');
-  const { startMcpServer } = await import('../src/mcp.mjs');
+  const { startMcpServer } = await import('../dist/mcp.js');
   await startMcpServer({
     db, indexDir, cacheDir,
     modelName: opts.model || DEFAULT_MODEL,

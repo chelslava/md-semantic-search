@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { collapseResults } from '../src/collapse.mjs';
+import { collapseResults } from '../dist/collapse.js';
 
 test('collapseResults limits items per document key', () => {
   const hits = [

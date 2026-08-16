@@ -7,7 +7,7 @@ import {
   lexicalIdentity,
   matchingTerms,
   validateLexicalIndex,
-} from '../src/lexical.mjs';
+} from '../dist/lexical.js';
 
 const chunk = (text, title = '', heading = '') => ({ title, heading, text });
 
