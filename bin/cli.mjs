@@ -63,6 +63,8 @@ function parseArgs(argv) {
     else if (a === '--target-tokens') opts.targetTokens = nextInt(argv, ++i, a);
     else if (a === '--port') opts.port = nextInt(argv, ++i, a);
     else if (a === '--host') opts.host = nextValue(argv, ++i, a);
+    else if (a === '--api-key') opts.apiKey = nextValue(argv, ++i, a);
+    else if (a === '--health-public') opts.healthPublic = true;
     else if (a === '--watch-delay') opts.watchDelay = nextInt(argv, ++i, a);
     else if (a === '--watch-interval') opts.watchInterval = nextInt(argv, ++i, a);
     else if (a === '--since') opts.since = nextValue(argv, ++i, a);
@@ -675,6 +677,8 @@ async function cmdServe(opts) {
     watch: !!opts.watch,
     watchInterval: opts.watchInterval,
     watchDelay: opts.watchDelay,
+    apiKey: opts.apiKey || process.env.MDSS_API_KEY,
+    healthPublic: !!opts.healthPublic || process.env.MDSS_HEALTH_PUBLIC === 'true',
     log,
   });
 

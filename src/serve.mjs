@@ -54,6 +54,8 @@ const MAX_BODY_BYTES = 64 * 1024;     // POST /search body cap (DoS guard, issue
  * @param {boolean} [opts.watch=false]
  * @param {number} [opts.watchInterval=WATCH_INTERVAL_MS]
  * @param {number} [opts.watchDelay=WATCH_DELAY_MS] - quiet-period debounce (issue #42)
+ * @param {string} [opts.apiKey] - Bearer token required for requests (or MDSS_API_KEY)
+ * @param {boolean} [opts.healthPublic=false] - permit GET /health without auth
  * @param {Function} [opts.embedFn] - embed override (tests)
  * @param {Function} [opts.rerankFn] - rerank override (tests)
  * @param {(msg:string)=>void} [opts.log]
@@ -64,6 +66,8 @@ export async function createServe(opts) {
     indexDir, cacheDir, db, modelName = 'e5-base', ignore = [],
     offline = false, watch = false, watchInterval = WATCH_INTERVAL_MS,
     watchDelay = WATCH_DELAY_MS,
+    apiKey = process.env.MDSS_API_KEY,
+    healthPublic = process.env.MDSS_HEALTH_PUBLIC === 'true',
     embedFn, rerankFn, log = () => {},
   } = opts;
 
@@ -77,10 +81,11 @@ export async function createServe(opts) {
     await buildIndex({ db, indexDir, cacheDir, modelName, ignore, offline, log, embedFn });
   }
 
-  /** @type {ServeState} */
+  /** @type {ServeState & {apiKey?: string, healthPublic?: boolean}} */
   const state = {
     loaded: loadIndex(indexDir),
     indexDir, cacheDir, offline, embedFn, rerankFn, watching: watch,
+    apiKey, healthPublic,
   };
 
   const server = http.createServer((req, res) => {
@@ -287,12 +292,40 @@ export async function createServe(opts) {
 }
 
 /**
+ * Constant-time comparison for authentication tokens (timing attack protection).
+ * @param {string} token
+ * @param {string} expectedKey
+ * @returns {boolean}
+ */
+export function isAuthorizedToken(token, expectedKey) {
+  if (!token || typeof token !== 'string') return false;
+  if (!expectedKey || typeof expectedKey !== 'string') return false;
+  const a = Buffer.from(token);
+  const b = Buffer.from(expectedKey);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+/**
  * @param {import('node:http').IncomingMessage} req
  * @param {import('node:http').ServerResponse} res
- * @param {ServeState} state
+ * @param {ServeState & {apiKey?: string, healthPublic?: boolean}} state
  */
 async function handleRequest(req, res, state) {
   const url = new URL(req.url || '/', 'http://localhost');
+
+  if (state.apiKey) {
+    const isPublicHealth = url.pathname === '/health' && req.method === 'GET' && state.healthPublic;
+    if (!isPublicHealth) {
+      const authHeader = req.headers['authorization'];
+      const match = typeof authHeader === 'string' ? authHeader.match(/^Bearer\s+(.+)$/i) : null;
+      const token = match ? match[1].trim() : null;
+      if (!token || !isAuthorizedToken(token, state.apiKey)) {
+        json(res, 401, { error: 'unauthorized' });
+        return;
+      }
+    }
+  }
 
   if (req.method === 'POST' && url.pathname === '/search') {
     // DoS guard (issue #16): honor a declared Content-Length, cap the streamed
