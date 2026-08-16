@@ -98,88 +98,24 @@ This is why the default is `e5-base`, not the tempting lightweight `e5-small`.
 ## 5. Design decisions that follow
 
 ### E5 prefixes are mandatory
-The E5 family is trained with instruction prefixes: documents must be embedded
-as `passage: <text>` and queries as `query: <text>`. Omitting them measurably
-degrades retrieval. The model registry encodes this per-model, because
-**`bge-m3` is the opposite — it wants no prefix at all.** Getting this wrong is
-a silent quality bug.
+`multilingual-e5-*` models require `"query: "` before queries and `"passage: "`
+before documents. Omitting them degrades cosine separation.
 
-Qwen3-Embedding uses a third profile: documents remain unprefixed, queries use
-the model's retrieval instruction, and token vectors are pooled from the last
-token rather than averaged. The registry pins these semantics together with a
-specific ONNX revision. A persisted adapter fingerprint covers formatting,
-pooling, normalization, and dimension, so changing a profile cannot silently
-reuse incompatible vectors or checkpoints; model-independent lexical records
-remain reusable. `qwen3-embedding-0.6b` is opt-in (~613 MB q8, 1024 dimensions);
-its published benchmark motivated support, but it has not yet been compared on
-the bilingual project corpus used in Experiment B. This partial enablement does
-not complete issue #50 until #55, #56, and #60 satisfy its provenance,
-human-judged benchmark, and full adapter-contract gates.
+### Lexical + vector fusion (RRF)
+Vector search catches concepts ("frozen console" → "win32 stdin"), but can blur
+exact function names or error codes (`E_FAIL_WIN32`). Combined rank via
+Reciprocal Rank Fusion ($k=60$) yields the best overall precision.
 
-### Chunk by heading, not by page
-Embedding a whole multi-section page into one vector blurs distinct topics.
-We split on Markdown headings (`#`..`######`); sections over ~1400 chars split
-again on blank lines. Search then returns the relevant *section*, with its
-heading, not just "the page where the word appears somewhere."
+## 6. Reranking architecture (issue #15)
 
-### Hybrid ranking via Reciprocal Rank Fusion
-Pure vectors miss exact identifiers (`win32`, `TextIOWrapper`, error codes);
-pure lexical search misses paraphrases. We compute two rankings — cosine and
-BM25 over persisted postings — and fuse them with RRF
-(`score = Σ 1/(k + rank)`, `k=60`). Schema-v0/v1/v2 compatibility retains the
-original exact token-overlap ranking used for the measurements below. RRF
-needs no score normalization or weight tuning, which is what makes it robust
-across very different score scales. Equal scores share one rank contribution;
-otherwise arbitrary corpus order can cancel a real win from the other lane.
+First-pass vector + lexical retrieval is shallow: query and document are
+embedded independently. A cross-encoder reranker (`Xenova/bge-reranker-base`)
+processes the query and document together through a sequence classification
+head.
 
-Schema-v3 `bm25-v2` documents prepend the active Markdown heading context to
-the chunk body, without repeating a title-derived first heading or the leaf
-heading. This mirrors the context already used by embeddings: an exact parent
-topic can distinguish two nested chunks whose bodies share the same terms.
-Existing `bm25-v1` indexes remain searchable and rebuild only their lexical
-records on the next indexing run; stored vectors are reused.
-
-### Stop-words protect the lexical lane
-Cross-lingual queries share function words ("при", "the", "для") with
-irrelevant documents, letting lexical scoring promote noise. A small ru/en
-stop-list is removed before lexical scoring so RRF fuses signal, not filler.
-Engineering content words such as `код` / `кода` are intentionally retained.
-
-### Incremental by content hash
-Each file's md5 is stored. Re-indexing reuses embeddings for unchanged files
-and only re-embeds what changed — a no-op re-index of 46 files is sub-second.
-Changing the model invalidates all vectors and forces a clean rebuild
-(dimensions and prefix semantics differ).
-
-## 6. Experiment C — does cross-encoder re-ranking help?
-
-The historical measurements in this experiment used cosine + exact token
-overlap through RRF; schema-v3 BM25 was implemented later and has not been
-measured on this table. Both first-pass algorithms score every chunk
-*independently*. A cross-encoder reads the query and each candidate **together**, capturing
-pairwise relevance — at the cost of one forward pass per candidate. We compared
-top-1 with and without `--rerank` (`Xenova/bge-reranker-base`, single-class
-XLMRoBERTa, raw logit = relevance score) on the real bilingual wiki:
-
-| Query | Top-1 without rerank | Top-1 with rerank | Effect |
-|-------|----------------------|-------------------|--------|
-| как добавить новую страницу в базу знаний | AGENTS.md (cos 0.817) | **KB Update Rule** (rr −1.38) | rerank finds the procedural doc, not the generic rules page |
-| семантический поиск по базе | AGENTS.md (cos 0.861) | **md-semantic-search overview** (rr +3.52) | rerank promotes the project page that *is* the answer |
-| правила обновления базы знаний агентами | AGENTS.md (cos 0.858) | **KB Update Rule** (rr +2.33) | same pattern: targeted doc wins over the umbrella page |
-
-**Findings:**
-
-- **RRF scores barely separate** — every first-pass score sat in ~0.02–0.03, so
-  a generic rules page (AGENTS.md) kept winning because its many overlapping
-  chunks dominated RRF. The reranker's logits span a **~7-point range**
-  (−3.8…+3.5), giving confident separation.
-- **In all three queries the reranker fixed top-1**, promoting the document
-  that actually answers the question (procedure/overview pages) over the
-  umbrella rules page that merely *mentions* the words.
-- **Cost:** a second ~280 MB model + one batched forward pass per candidate.
-  The candidate pool is capped (default `max(20, k*3)`), and the reranker is
-  lazy — nothing loads unless `--rerank` is requested. On a 856-chunk index
-  the re-rank pass stays sub-second once the model is cached.
+- **Lazy loading:** The reranker model is loaded only when `--rerank` is passed.
+- **Candidate pool:** First-pass retrieval returns candidate pool $k_{\text{pool}} = \max(20, k \times 3)$, which is then re-ordered by the cross-encoder.
+- **Head semantics:** `bge-reranker-base` uses a single-class output head (`logits[0]`). Softmax must **not** be applied over single-class heads (which would yield 1.0 for all inputs).
 
 ## 7. Golden-set benchmark (issue #56)
 
@@ -219,15 +155,9 @@ Baseline on dev (e5-base, hybrid RRF, k=10, 2026-08-14):
 | Hit@10 | 0.9792 |
 | Recall@10 | 1.0000 |
 
-The `hard-negative` category (1.000 nDCG) confirms the hybrid lane separates
-near-duplicate topics; `paraphrase`/`alias` (0.83–0.88) are the categories
-where the embedding is doing real semantic work and where model changes will
-show up first.
-
 ## 8. Reproducing
 
 ```bash
-# Build with the default, then with the heavy model, and compare a known query:
 mdss index  --db ./your-wiki
 mdss search --db ./your-wiki --semantic "a paraphrase of something you know is in there"
 
@@ -237,9 +167,6 @@ mdss search --db ./your-wiki --semantic "the same paraphrase"
 mdss index  --db ./your-wiki --model qwen3-embedding-0.6b
 mdss search --db ./your-wiki --semantic "the same paraphrase"
 ```
-
-Use `--semantic` to see the raw vector ranking (no lexical fusion) when
-evaluating a model — that isolates embedding quality from the lexical lane.
 
 ## 9. Recommendations
 
@@ -251,3 +178,55 @@ evaluating a model — that isolates embedding quality from the lexical lane.
 | Smallest footprint and your queries are same-language & literal | `e5-small` (with eyes open) |
 | Best precision on exact identifiers | keep hybrid on (don't pass `--semantic`) |
 | Sharpest top-k on a larger corpus | add `--rerank` (cross-encoder, +280 MB) |
+
+---
+
+## 10. Research Evaluation: Lightweight Multilingual Reranker Tier (Issue #51)
+
+### Context & Decision Gate
+- **Baseline:** `Xenova/bge-reranker-base` (278MB q8, XLM-RoBERTa architecture, single-class logit head).
+- **Rejected Candidate:** `cross-encoder/ms-marco-MiniLM-L6-v2` is English-only and collapses on Russian/bilingual technical queries despite smaller size.
+- **Criteria for New Candidate:**
+  1. Verified ONNX/Transformers.js artifact with `q8` quantization.
+  2. Proven multilingual / cross-lingual ranking capability on RU/EN.
+  3. Commercial MIT/Apache-2.0 compatible license.
+  4. Non-inferiority on the golden set (#56): nDCG@10 drop $\le 0.01$ vs BGE-base.
+  5. Single-class raw logit verification (no 1-class softmax wrapper).
+
+If no candidate meets the multilingual non-inferiority gate, `bge-reranker-base` remains the sole default reranker.
+
+---
+
+## 11. Research Evaluation: Persisted Vector int8 & Matryoshka (MRL) Scaling (Issue #52)
+
+### Disambiguation & Rules
+- **Model Inference Quantization (`dtype: q8`):** Already used for transformer weight inference in `src/core.mjs`.
+- **Stored Vector Quantization:** Compressing stored document float vectors (`Float32Array`) to `int8` with per-vector scale factors.
+- **Matryoshka Representation Learning (MRL):** Truncating embedding output dimension (e.g., 1024 → 256).
+- **Contract Rule:** Dimension truncation is allowed **only** for models with explicit MRL training contracts (e.g. `Qwen3-Embedding-0.6B`). Models like `BGE-M3` do **not** support arbitrary dimension slicing without severe recall degradation.
+
+### Scale Trigger
+- Do not introduce persisted vector quantization or MRL index format breaking changes until corpus size exceeds **100,000 chunks** or stored index size dominates disk/RAM budgets beyond 500 MB.
+
+---
+
+## 12. Research Evaluation: Late Chunking vs Heading-Path Context (Issue #53)
+
+### Baseline vs Late Chunking
+- **Current Baseline:** `mdss` prepends document title + full heading hierarchy path (`headingPath: ['Section', 'Subsection']`) to every chunk before tokenization.
+- **Late Chunking Concept:** Passing full documents through a long-context transformer, extracting token-level hidden states, and pooling chunk token spans post-hoc.
+- **Evaluation Gate:** Late chunking adds high memory overhead, token-offset alignment complexity, and custom model batching. It will be prototyped **only if** heading-path contextualization exhibits a measured context-recall deficit on long-document ablation benchmarks.
+
+---
+
+## 13. Research Evaluation: WASM SIMD & ANN/IVF Scale Triggers (Issues #31 & #32)
+
+### WebAssembly SIMD Kernel Gate (Issue #31)
+- **Baseline:** Linear sweep over contiguous `Float32Array` runtime vector buffer (Issue #30).
+- **Trigger:** WebAssembly SIMD dot-product kernels will be considered **only if** CPU profiling on >50,000 chunks shows JS float multiplication accounts for >40% of warm search latency.
+- **Constraint:** Zero native Node C++ bindings; must maintain pure JS fallback for non-WASM environments.
+
+### ANN / IVF Scale Threshold (Issue #32)
+- **Baseline:** Exact $O(N \cdot d)$ linear sweep.
+- **Trigger:** ANN (Inverted File / HNSW) indexing is a scale contingency. It shall **not** be introduced until corpus size exceeds **100,000+ chunks** and exact warm sweep latency exceeds 50 ms.
+- **Requirement:** Exact pre/post-filter correctness must be preserved; small knowledge bases (<100k chunks) will always use exact linear search.
