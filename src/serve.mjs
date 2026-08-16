@@ -313,7 +313,7 @@ async function handleRequest(req, res, state) {
       req.resume(); // drain the rest so the connection is not left half-open
       return;
     }
-    /** @type {{query?:string, k?:number, semanticOnly?:boolean, rerank?:boolean}} */
+    /** @type {Record<string, any>} */
     let payload = {};
     try { payload = body ? JSON.parse(body) : {}; }
     catch (e) {

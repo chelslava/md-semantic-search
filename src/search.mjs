@@ -90,6 +90,9 @@ export function rrf(rankings, k = 60) {
  * @property {string} text
  * @property {number[]|Float32Array} vec
  * @property {string} [chunkHash]
+ * @property {number} [startLine]
+ * @property {number} [endLine]
+ * @property {import('./frontmatter.mjs').DocumentMetadata} [meta]
  */
 
 /**
@@ -107,7 +110,7 @@ export function rrf(rankings, k = 60) {
  */
 
 /** @typedef {{kind:'persisted-bm25', lexical:import('./lexical.mjs').LexicalIndex}|{kind:'legacy-overlap'}} LexicalState */
-/** @typedef {{file:string, title:string, heading:string, text:string, vec:Float32Array}} RuntimeChunk */
+/** @typedef {{file:string, title:string, heading:string, headingPath?:string[], text:string, startLine?:number, endLine?:number, meta?:import('./frontmatter.mjs').DocumentMetadata, vec:Float32Array}} RuntimeChunk */
 /** @typedef {{schema:number, db:(string|undefined), chunks:RuntimeChunk[], lexicalState:LexicalState,
  *   expectedDim:(number|undefined), model:import('./core.mjs').ModelDescriptor}} RuntimeIndexState */
 
@@ -311,6 +314,15 @@ export function loadIndex(indexDir) {
  *   injection; signature (query, texts, cacheDir, offline) => Promise<number[]>
  * @param {Function} [opts.embedFn] - embed override for tests/dependency injection;
  *   signature (texts, kind, model, cacheDir, offline) => Promise<number[][]>
+ * @param {string|string[]} [opts.tag] - filter by tag(s) (issue #58)
+ * @param {string} [opts.project] - filter by project (issue #58)
+ * @param {string} [opts.type] - filter by document type (issue #58)
+ * @param {string} [opts.status] - filter by status (issue #58)
+ * @param {boolean} [opts.canonicalOnly] - filter canonical documents only (issue #58)
+ * @param {Record<string, unknown>} [opts.custom] - custom metadata key-value filters (issue #58)
+ * @param {boolean} [opts.explain] - include explain output (issue #59)
+ * @param {number} [opts.maxPerFile] - cap max results per file (issue #45)
+ * @param {number} [opts.maxPerDoc] - cap max results per document (issue #45)
  * @returns {Promise<Array>} results with file, title, heading, cosine, score,
  *   matches (query terms found in the chunk, issue #13), snippet, and
  *   rerankScore when reranking was enabled (issue #15)
@@ -483,6 +495,15 @@ export async function searchIndex(opts) {
  *   (query, texts, cacheDir, offline) => Promise<number[]>
  * @param {Function} [opts.embedFn] - embed override for tests/dependency injection;
  *   signature (texts, kind, model, cacheDir, offline) => Promise<number[][]>
+ * @param {string|string[]} [opts.tag] - filter by tag(s) (issue #58)
+ * @param {string} [opts.project] - filter by project (issue #58)
+ * @param {string} [opts.type] - filter by document type (issue #58)
+ * @param {string} [opts.status] - filter by status (issue #58)
+ * @param {boolean} [opts.canonicalOnly] - filter canonical documents only (issue #58)
+ * @param {Record<string, unknown>} [opts.custom] - custom metadata key-value filters (issue #58)
+ * @param {boolean} [opts.explain] - include explain output (issue #59)
+ * @param {number} [opts.maxPerFile] - cap max results per file (issue #45)
+ * @param {number} [opts.maxPerDoc] - cap max results per document (issue #45)
  * @returns {Promise<Array>} results with file, title, heading, cosine, score,
  *   matches (query terms found in the chunk, issue #13), snippet
  */
