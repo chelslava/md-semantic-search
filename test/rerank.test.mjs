@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildIndex } from '../src/indexer.mjs';
-import { search, searchIndex, loadIndex } from '../src/search.mjs';
-import { createServe } from '../src/serve.mjs';
+import { buildIndex } from '../dist/indexer.js';
+import { search, searchIndex, loadIndex } from '../dist/search.js';
+import { createServe } from '../dist/serve.js';
 
 function fakeEmbed(texts, kind, model) {
   return texts.map((t) => {

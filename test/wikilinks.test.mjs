@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractLinks, resolveLinks, buildRelationshipGraph, getRelatedNotes } from '../src/wikilinks.mjs';
+import { extractLinks, resolveLinks, buildRelationshipGraph, getRelatedNotes } from '../dist/wikilinks.js';
 
 test('extractLinks parses Obsidian wikilinks and relative Markdown links', () => {
   const markdown = `

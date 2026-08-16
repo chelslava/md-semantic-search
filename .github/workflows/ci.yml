@@ -65,6 +65,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Build TypeScript source
+        run: npm run build
+
       - name: Golden-set smoke (fixture + fake embedder, offline)
         run: node scripts/run-bench.mjs --fast --fake --json
 

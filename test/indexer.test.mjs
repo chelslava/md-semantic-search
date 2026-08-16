@@ -4,11 +4,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { buildIndex, chunkHash } from '../src/indexer.mjs';
-import { searchIndex, loadIndex } from '../src/search.mjs';
-import { resolveModel } from '../src/models.mjs';
-import { decodeVec, SCHEMA_VERSION } from '../src/core.mjs';
-import { _lexicalStats, validateLexicalIndex } from '../src/lexical.mjs';
+import { buildIndex, chunkHash } from '../dist/indexer.js';
+import { searchIndex, loadIndex } from '../dist/search.js';
+import { resolveModel } from '../dist/models.js';
+import { decodeVec, SCHEMA_VERSION } from '../dist/core.js';
+import { _lexicalStats, validateLexicalIndex } from '../dist/lexical.js';
 
 /** Deterministic fake embed: bag-of-hash 8d, L2-normalized. No model, no network. */
 function fakeEmbed(texts, kind, model, cacheDir) {

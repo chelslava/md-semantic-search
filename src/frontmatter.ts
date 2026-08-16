@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Typed YAML Frontmatter parser and metadata normalizer (issue #58).
  * Parses YAML frontmatter into a validated document metadata object without
@@ -6,32 +5,25 @@
  * dates, tags normalization, and canonical document identity.
  */
 
-/**
- * @typedef {{
- *   title?: string,
- *   aliases: string[],
- *   tags: string[],
- *   project?: string,
- *   type?: string,
- *   status?: string,
- *   canonical?: boolean,
- *   canonicalRef?: string,
- *   created?: string,
- *   updated?: string,
- *   custom: Record<string, string | number | boolean | string[]>,
- * }} DocumentMetadata
- */
+export interface DocumentMetadata {
+  title?: string;
+  aliases: string[];
+  tags: string[];
+  project?: string;
+  type?: string;
+  status?: string;
+  canonical?: boolean;
+  canonicalRef?: string;
+  created?: string;
+  updated?: string;
+  custom: Record<string, string | number | boolean | string[]>;
+}
 
-/**
- * Parse raw YAML frontmatter text into a typed DocumentMetadata object.
- * @param {string} rawYaml
- * @returns {DocumentMetadata}
- */
-export function parseFrontmatter(rawYaml) {
-  const metadata = {
-    aliases: /** @type {string[]} */ ([]),
-    tags: /** @type {string[]} */ ([]),
-    custom: /** @type {Record<string, string | number | boolean | string[]>} */ ({}),
+export function parseFrontmatter(rawYaml?: string): DocumentMetadata {
+  const metadata: DocumentMetadata = {
+    aliases: [],
+    tags: [],
+    custom: {},
   };
 
   if (!rawYaml || typeof rawYaml !== 'string') {
@@ -39,8 +31,8 @@ export function parseFrontmatter(rawYaml) {
   }
 
   const lines = rawYaml.split(/\r?\n/);
-  let currentKey = null;
-  let currentBlockList = null;
+  let currentKey: string | null = null;
+  let currentBlockList: string[] | null = null;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -50,7 +42,6 @@ export function parseFrontmatter(rawYaml) {
       continue;
     }
 
-    // Block list item: "  - item"
     const blockListMatch = line.match(/^(\s+)-\s+(.+)$/);
     if (blockListMatch && currentKey && currentBlockList) {
       const val = parseYAMLValue(blockListMatch[2]);
@@ -60,7 +51,6 @@ export function parseFrontmatter(rawYaml) {
       continue;
     }
 
-    // Key-value pair: "key: value" or "key:"
     const kvMatch = line.match(/^([a-zA-Z0-9_-]+):\s*(.*)$/);
     if (kvMatch) {
       if (currentKey && currentBlockList) {
@@ -73,7 +63,6 @@ export function parseFrontmatter(rawYaml) {
       const rawVal = kvMatch[2].trim();
 
       if (rawVal === '') {
-        // Start of potential block list
         currentKey = key;
         currentBlockList = [];
       } else {
@@ -90,15 +79,9 @@ export function parseFrontmatter(rawYaml) {
   return metadata;
 }
 
-/**
- * Parse a raw YAML value string (supports quotes, inline arrays, booleans, numbers).
- * @param {string} raw
- * @returns {string | number | boolean | string[]}
- */
-function parseYAMLValue(raw) {
+function parseYAMLValue(raw: string): string | number | boolean | string[] {
   const trimmed = raw.trim();
 
-  // Inline array: [item1, item2]
   if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
     const inner = trimmed.slice(1, -1).trim();
     if (!inner) return [];
@@ -109,16 +92,13 @@ function parseYAMLValue(raw) {
       .filter((item) => item.length > 0);
   }
 
-  // Quoted string
   if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
     return trimmed.slice(1, -1).trim();
   }
 
-  // Boolean
   if (/^true$/i.test(trimmed)) return true;
   if (/^false$/i.test(trimmed)) return false;
 
-  // Number
   if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
     const num = Number(trimmed);
     if (!Number.isNaN(num)) return num;
@@ -127,13 +107,11 @@ function parseYAMLValue(raw) {
   return trimmed;
 }
 
-/**
- * Set a parsed key-value pair on the DocumentMetadata object.
- * @param {DocumentMetadata} meta
- * @param {string} key
- * @param {string | number | boolean | string[]} val
- */
-function setMetadataValue(meta, key, val) {
+function setMetadataValue(
+  meta: DocumentMetadata,
+  key: string,
+  val: string | number | boolean | string[]
+): void {
   const normKey = key.toLowerCase().replace(/[-_]/g, '');
 
   if (normKey === 'title' && typeof val === 'string') {
@@ -153,7 +131,7 @@ function setMetadataValue(meta, key, val) {
   }
 
   if (normKey === 'tag' || normKey === 'tags') {
-    let items;
+    let items: string[] | (string | number | boolean)[];
     if (Array.isArray(val)) {
       items = val;
     } else if (typeof val === 'string') {
@@ -208,6 +186,5 @@ function setMetadataValue(meta, key, val) {
     return;
   }
 
-  // Store custom property
   meta.custom[key] = val;
 }

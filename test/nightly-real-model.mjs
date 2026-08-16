@@ -7,11 +7,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { cosine, decodeVec, embed, resolveModel } from '../src/core.mjs';
-import { buildIndex, canonicalPassage } from '../src/indexer.mjs';
-import { getReranker, rerankScores } from '../src/rerank.mjs';
-import { search } from '../src/search.mjs';
-import { createServe } from '../src/serve.mjs';
+import { cosine, decodeVec, embed, resolveModel } from '../dist/core.js';
+import { buildIndex, canonicalPassage } from '../dist/indexer.js';
+import { getReranker, rerankScores } from '../dist/rerank.js';
+import { search } from '../dist/search.js';
+import { createServe } from '../dist/serve.js';
 
 const CLI = fileURLToPath(new URL('../bin/cli.mjs', import.meta.url));
 const MODEL_NAME = 'e5-small';

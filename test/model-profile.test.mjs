@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { test } from 'node:test';
-import * as core from '../src/core.mjs';
-import { chunkHash } from '../src/indexer.mjs';
-import { normalizeAdapter, embeddingAdapterFingerprint, DEFAULT_MODEL } from '../src/models.mjs';
+import * as core from '../dist/core.js';
+import { chunkHash } from '../dist/indexer.js';
+import { normalizeAdapter, embeddingAdapterFingerprint, DEFAULT_MODEL } from '../dist/models.js';
 
 const QWEN_ALIAS = 'qwen3-embedding-0.6b';
 const QWEN_ID = 'onnx-community/Qwen3-Embedding-0.6B-ONNX';

@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * MCP (Model Context Protocol) server mode (issue #62).
  * Exposes local semantic search to IDEs and LLM agents (Cursor, Claude Desktop, Copilot)
@@ -7,13 +6,10 @@
 import readline from 'node:readline';
 import fs from 'node:fs';
 import path from 'node:path';
-import { buildIndex } from './indexer.mjs';
-import { loadIndex, searchIndex } from './search.mjs';
+import { buildIndex } from './indexer.js';
+import { loadIndex, searchIndex } from './search.js';
+import { globToRegExp } from './core.js';
 
-/**
- * MCP Tool definitions exported for JSON schema inspection (`mdss mcp --list-tools --json`)
- * and JSON-RPC `tools/list` requests.
- */
 export const MCP_TOOLS = [
   {
     name: 'search_markdown',
@@ -61,22 +57,14 @@ export const MCP_TOOLS = [
   },
 ];
 
-/**
- * Handle an incoming JSON-RPC 2.0 request message against the warm runtime state.
- * @param {any} req - parsed JSON-RPC request object
- * @param {{ loaded: ReturnType<typeof loadIndex>, cacheDir: string, offline: boolean, embedFn?: Function }} state
- * @returns {Promise<any|null>} JSON-RPC 2.0 response object, or null if notification
- */
-export async function handleMcpRequest(req, state) {
+export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir: string; offline: boolean; embedFn?: any }): Promise<any | null> {
   if (!req || typeof req !== 'object') return null;
   const { id, method, params } = req;
 
-  // JSON-RPC 2.0 Notifications (no response expected)
   if (id === undefined || id === null) {
     return null;
   }
 
-  // Handle MCP Protocol methods
   if (method === 'initialize') {
     return {
       jsonrpc: '2.0',
@@ -109,7 +97,7 @@ export async function handleMcpRequest(req, state) {
     const args = params?.arguments || {};
 
     try {
-      let content = [];
+      let content: Array<{ type: string; text: string }> = [];
       if (name === 'search_markdown') {
         const query = typeof args.query === 'string' ? args.query : '';
         const k = Number.isInteger(args.k) && args.k > 0 ? args.k : 6;
@@ -127,22 +115,21 @@ export async function handleMcpRequest(req, state) {
       } else if (name === 'get_chunk') {
         const file = args.file;
         const heading = args.heading;
-        const chunks = state.loaded.index.chunks.filter(c => {
+        const chunks = state.loaded.index.chunks.filter((c: any) => {
           if (c.file !== file) return false;
           if (heading && c.heading.toLowerCase() !== heading.toLowerCase()) return false;
           return true;
         });
         content = [{ type: 'text', text: JSON.stringify(chunks, null, 2) }];
       } else if (name === 'list_files') {
-        const fileCounts = new Map();
+        const fileCounts = new Map<string, number>();
         for (const c of state.loaded.index.chunks) {
           fileCounts.set(c.file, (fileCounts.get(c.file) || 0) + 1);
         }
         let files = [...fileCounts.entries()].map(([file, count]) => ({ file, chunksCount: count }));
         if (args.path) {
-          const { globToRegExp } = await import('./core.mjs');
           const re = globToRegExp(args.path);
-          files = files.filter(f => re.test(f.file));
+          files = files.filter((f) => re.test(f.file));
         }
         content = [{ type: 'text', text: JSON.stringify(files, null, 2) }];
       } else if (name === 'index_status') {
@@ -167,7 +154,7 @@ export async function handleMcpRequest(req, state) {
         id,
         result: { content },
       };
-    } catch (e) {
+    } catch (e: any) {
       return {
         jsonrpc: '2.0',
         id,
@@ -179,7 +166,6 @@ export async function handleMcpRequest(req, state) {
     }
   }
 
-  // Fallback for unknown methods
   return {
     jsonrpc: '2.0',
     id,
@@ -187,23 +173,27 @@ export async function handleMcpRequest(req, state) {
   };
 }
 
-/**
- * Start the stdio MCP server loop.
- * Reads JSON-RPC 2.0 lines from stdin and writes responses to stdout.
- * @param {object} opts
- * @param {string} opts.indexDir
- * @param {string} opts.cacheDir
- * @param {string} [opts.db]
- * @param {string} [opts.modelName='e5-base']
- * @param {string[]} [opts.ignore=[]]
- * @param {boolean} [opts.offline=false]
- * @param {Function} [opts.embedFn]
- * @param {(msg:string)=>void} [opts.log]
- */
-export async function startMcpServer(opts) {
+export interface StartMcpServerOptions {
+  indexDir: string;
+  cacheDir: string;
+  db?: string;
+  modelName?: string;
+  ignore?: string[];
+  offline?: boolean;
+  embedFn?: any;
+  log?: (msg: string) => void;
+}
+
+export async function startMcpServer(opts: StartMcpServerOptions): Promise<{ state: any; rl: readline.Interface }> {
   const {
-    indexDir, cacheDir, db, modelName = 'e5-base', ignore = [],
-    offline = false, embedFn, log = () => {},
+    indexDir,
+    cacheDir,
+    db,
+    modelName = 'e5-base',
+    ignore = [],
+    offline = false,
+    embedFn,
+    log = () => {},
   } = opts;
 
   fs.mkdirSync(indexDir, { recursive: true });
@@ -229,15 +219,17 @@ export async function startMcpServer(opts) {
   rl.on('line', async (line) => {
     const trimmed = line.trim();
     if (!trimmed) return;
-    let req;
+    let req: any;
     try {
       req = JSON.parse(trimmed);
     } catch {
-      process.stdout.write(JSON.stringify({
-        jsonrpc: '2.0',
-        id: null,
-        error: { code: -32700, message: 'Parse error: invalid JSON' },
-      }) + '\n');
+      process.stdout.write(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: null,
+          error: { code: -32700, message: 'Parse error: invalid JSON' },
+        }) + '\n'
+      );
       return;
     }
 

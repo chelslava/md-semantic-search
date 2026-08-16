@@ -5,9 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { MCP_TOOLS, handleMcpRequest } from '../src/mcp.mjs';
-import { buildIndex } from '../src/indexer.mjs';
-import { loadIndex } from '../src/search.mjs';
+import { MCP_TOOLS, handleMcpRequest } from '../dist/mcp.js';
+import { buildIndex } from '../dist/indexer.js';
+import { loadIndex } from '../dist/search.js';
 
 const CLI = fileURLToPath(new URL('../bin/cli.mjs', import.meta.url));
 

@@ -4,11 +4,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { buildIndex } from '../src/indexer.mjs';
-import { createServe, DEFAULT_HOST, MAX_BODY_BYTES } from '../src/serve.mjs';
-import { searchIndex } from '../src/search.mjs';
-import { loadIndex } from '../src/search.mjs';
-import { acquireIndexLock, releaseIndexLock } from '../src/core.mjs';
+import { buildIndex } from '../dist/indexer.js';
+import { createServe, DEFAULT_HOST, MAX_BODY_BYTES } from '../dist/serve.js';
+import { searchIndex } from '../dist/search.js';
+import { loadIndex } from '../dist/search.js';
+import { acquireIndexLock, releaseIndexLock } from '../dist/core.js';
 
 function fakeEmbed(texts, kind, model) {
   return texts.map((t) => {

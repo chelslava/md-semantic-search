@@ -6,8 +6,8 @@ import path from 'node:path';
 import {
   acquireIndexLock, releaseIndexLock, withIndexLock,
   pidAlive, LOCK_FILENAME,
-} from '../src/core.mjs';
-import { buildIndex } from '../src/indexer.mjs';
+} from '../dist/core.js';
+import { buildIndex } from '../dist/indexer.js';
 
 function fakeEmbed(texts, kind, model) {
   return texts.map((t) => {

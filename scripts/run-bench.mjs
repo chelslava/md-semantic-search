@@ -26,8 +26,8 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { loadFixture, corpusFingerprint } from '../bench/fixture.mjs';
-import { queryMetrics, aggregateMetrics } from '../src/metrics.mjs';
-import { buildIndex, loadIndex, searchIndex } from '../src/index.mjs';
+import { queryMetrics, aggregateMetrics } from '../dist/metrics.js';
+import { buildIndex, loadIndex, searchIndex } from '../dist/index.js';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 

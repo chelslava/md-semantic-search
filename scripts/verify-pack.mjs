@@ -144,7 +144,7 @@ try {
 
     // ---- 4. packed library exports -----------------------------------
     console.log('\n[4] verify installed library exports');
-    const lib = await import(pathToFileURL(path.join(installedPkg, 'src', 'index.mjs')).href);
+    const lib = await import(pathToFileURL(path.join(installedPkg, 'dist', 'index.js')).href);
     const expected = ['buildIndex', 'search', 'loadIndex', 'searchIndex',
       'resolveModel', 'MODELS', 'DEFAULT_MODEL', 'chunkHash', 'tokenize',
       'keywordScores', 'rrf', 'embed', 'getExtractor', 'cosine',

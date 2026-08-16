@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { createServe, isAuthorizedToken } from '../src/serve.mjs';
-import { buildIndex } from '../src/indexer.mjs';
+import { createServe, isAuthorizedToken } from '../dist/serve.js';
+import { buildIndex } from '../dist/indexer.js';
 
 function fakeEmbed(texts, kind, model) {
   return texts.map((t) => {

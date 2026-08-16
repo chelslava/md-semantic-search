@@ -4,9 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { buildIndex } from '../src/indexer.mjs';
-import { search, searchIndex, loadIndex, tokenize, keywordScores, rrf, _stats } from '../src/search.mjs';
-import { decodeVec, SCHEMA_VERSION } from '../src/core.mjs';
+import { buildIndex } from '../dist/indexer.js';
+import { search, searchIndex, loadIndex, tokenize, keywordScores, rrf, _stats } from '../dist/search.js';
+import { decodeVec, SCHEMA_VERSION } from '../dist/core.js';
 
 function writeIndex(idx, data) {
   const json = typeof data === 'string' ? data : JSON.stringify(data);
@@ -424,7 +424,7 @@ test('loadIndex: malformed roots, chunks, and schemaVersion fail before migratio
       assert.throws(() => loadIndex(idx), /schemaVersion must be a non-negative safe integer.*mdss index/i);
     }
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch {}
   }
 });
 
