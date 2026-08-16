@@ -9,7 +9,8 @@ import path from 'node:path';
 import { embed, cosine, decodeVec, globToRegExp, walkMarkdown } from './core.mjs';
 import { validateIndexEnvelope, validateNumericVector } from './index-format.mjs';
 import { rerankScores } from './rerank.mjs';
-import { bm25Scores, matchingTerms, tokenize } from './lexical.mjs';
+import { bm25Scores, matchingTerms, tokenize, fuzzyTitleAliasScores } from './lexical.mjs';
+import { collapseResults } from './collapse.mjs';
 export { tokenize } from './lexical.mjs';
 
 // In-memory token-set cache for the lexical lane (issue #18). Tokenizing the
@@ -124,7 +125,11 @@ function snapshotRuntimeIndex(index, validation) {
     file: chunk.file,
     title: chunk.title,
     heading: chunk.heading,
+    headingPath: chunk.headingPath,
     text: chunk.text,
+    startLine: chunk.startLine,
+    endLine: chunk.endLine,
+    meta: chunk.meta,
     vec: Float32Array.from(chunk.vec),
   }));
   let lexicalState = /** @type {LexicalState} */ ({ kind: 'legacy-overlap' });
@@ -315,6 +320,7 @@ export async function searchIndex(opts) {
     loaded, cacheDir, query, k = 6, semanticOnly = false,
     offline = false, path: pathFilter, since,
     rerank = false, rerankPool,
+    tag, project, type, status, canonicalOnly, custom,
   } = opts;
   // `??` (not destructuring defaults): serve.mjs passes `embedFn: null` when
   // no override is given, and JS defaults only fire on `undefined` — using ??
@@ -327,7 +333,7 @@ export async function searchIndex(opts) {
   const { chunks, db, lexicalState, expectedDim } = runtime;
 
   // Candidate filtering happens BEFORE embedding/ranking (issue #13): --path
-  // globs and --since (file mtime) shrink the sweep for large corpora.
+  // globs, --since (file mtime), and frontmatter metadata filters (issue #58) shrink the sweep.
   const pathRes = pathFilter
     ? (Array.isArray(pathFilter) ? pathFilter : [pathFilter]).map(globToRegExp)
     : [];
@@ -337,7 +343,10 @@ export async function searchIndex(opts) {
     if (Number.isNaN(sinceMs)) throw new Error(`Invalid --since date: "${since}" (use YYYY-MM-DD or ISO 8601)`);
   }
   let candidates = chunks.map((chunk, idx) => ({ chunk, idx }));
-  if (pathRes.length > 0 || sinceMs !== undefined) {
+  const hasMetaFilter = tag !== undefined || project !== undefined || type !== undefined ||
+    status !== undefined || canonicalOnly !== undefined || custom !== undefined;
+
+  if (pathRes.length > 0 || sinceMs !== undefined || hasMetaFilter) {
     if (sinceMs !== undefined && !db) {
       throw new Error('--since requires an index that knows its --db (index.db missing). Re-run `mdss index`.');
     }
@@ -352,6 +361,20 @@ export async function searchIndex(opts) {
           mtimeCache.set(chunk.file, m);
         }
         if (m < sinceMs) return false;
+      }
+      if (tag !== undefined) {
+        const reqTags = (Array.isArray(tag) ? tag : [tag]).map(t => String(t).toLowerCase().replace(/^#/, ''));
+        const chunkTags = chunk.meta?.tags || [];
+        if (!reqTags.every(rt => chunkTags.includes(rt))) return false;
+      }
+      if (project !== undefined && chunk.meta?.project !== project) return false;
+      if (type !== undefined && chunk.meta?.type !== type) return false;
+      if (status !== undefined && chunk.meta?.status !== status) return false;
+      if (canonicalOnly && chunk.meta?.canonical === false) return false;
+      if (custom && typeof custom === 'object') {
+        for (const [k, v] of Object.entries(custom)) {
+          if (chunk.meta?.custom?.[k] !== v) return false;
+        }
       }
       return true;
     });
@@ -386,7 +409,11 @@ export async function searchIndex(opts) {
         .map(([idx, score]) => ({ idx, score }))
       : keywordScores(candidates.map(candidate => candidate.chunk), query)
         .map((score, position) => ({ idx: candidates[position].idx, score }));
-    const fused = rrf([semantic, kw]);
+
+    const fuzzy = [...fuzzyTitleAliasScores(candidates.map(c => c.chunk), query).entries()]
+      .map(([position, score]) => ({ idx: candidates[position].idx, score }));
+
+    const fused = rrf([semantic, kw, fuzzy]);
     ranked = [...fused.entries()]
       .map(([idx, fscore]) => ({ idx, fscore, cos: cosByIdx.get(idx) }))
       .sort((a, b) => b.fscore - a.fscore)
@@ -404,8 +431,12 @@ export async function searchIndex(opts) {
       .slice(0, k);
   }
 
+  const hasMetaFields = (m) => Boolean(m && (m.tags?.length > 0 || m.aliases?.length > 0 || m.project || m.type || m.status || m.canonical !== undefined || m.canonicalRef || m.created || m.updated || Object.keys(m.custom || {}).length > 0));
+
+  const explain = opts.explain === true;
+
   // V3 matches come from postings; legacy indexes reuse cached token sets.
-  return ranked.map(r => {
+  const hits = ranked.map(r => {
     const c = chunks[r.idx];
     const matches = lexicalState.kind === 'persisted-bm25'
       ? matchingTerms(lexicalState.lexical, queryTerms, r.idx)
@@ -418,9 +449,17 @@ export async function searchIndex(opts) {
       score: +r.fscore.toFixed(4),
       matches,
       snippet: c.text.replace(/\s+/g, ' ').slice(0, 220),
+      ...(hasMetaFields(c.meta) ? { meta: c.meta } : {}),
+      ...(explain ? { explain: { cosine: +r.cos.toFixed(4), rrfScore: +r.fscore.toFixed(4), bm25Weights: { title: 3.0, aliases: 3.0, headingPath: 1.8, body: 1.0 } } } : {}),
       ...(rerank ? { rerankScore: +(r.rerank ?? 0).toFixed(4) } : {}),
     };
   });
+
+  const maxPerDoc = opts.maxPerFile || opts.maxPerDoc;
+  if (maxPerDoc && maxPerDoc > 0) {
+    return collapseResults(hits, h => h.meta?.canonical || h.file, maxPerDoc).slice(0, k);
+  }
+  return hits;
 }
 
 /**

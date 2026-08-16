@@ -48,6 +48,7 @@ function parseArgs(argv) {
     else if (a === '--offline') opts.offline = true;
     else if (a === '--watch') opts.watch = true;
     else if (a === '--rerank') opts.rerank = true;
+    else if (a === '--explain') opts.explain = true;
     else if (a === '--version') opts.version = true;
     else if (a === '-h' || a === '--help') opts.help = true;
     else if (a === '--db') opts.db = nextValue(argv, ++i, a);
@@ -55,6 +56,9 @@ function parseArgs(argv) {
     else if (a === '--cache-dir') opts.cacheDir = nextValue(argv, ++i, a);
     else if (a === '--model') opts.model = nextValue(argv, ++i, a);
     else if (a === '--k') opts.k = nextInt(argv, ++i, a);
+    else if (a === '--max-per-file') opts.maxPerFile = nextInt(argv, ++i, a);
+    else if (a === '--max-per-doc') opts.maxPerDoc = nextInt(argv, ++i, a);
+    else if (a === '--target-tokens') opts.targetTokens = nextInt(argv, ++i, a);
     else if (a === '--port') opts.port = nextInt(argv, ++i, a);
     else if (a === '--host') opts.host = nextValue(argv, ++i, a);
     else if (a === '--watch-delay') opts.watchDelay = nextInt(argv, ++i, a);
@@ -62,6 +66,14 @@ function parseArgs(argv) {
     else if (a === '--since') opts.since = nextValue(argv, ++i, a);
     else if (a === '--path') opts.path.push(nextValue(argv, ++i, a));
     else if (a === '--ignore') opts.ignore.push(nextValue(argv, ++i, a));
+    else if (a === '--tag') {
+      const v = nextValue(argv, ++i, a);
+      opts.tag = opts.tag ? (Array.isArray(opts.tag) ? [...opts.tag, v] : [opts.tag, v]) : v;
+    }
+    else if (a === '--project') opts.project = nextValue(argv, ++i, a);
+    else if (a === '--type') opts.type = nextValue(argv, ++i, a);
+    else if (a === '--status') opts.status = nextValue(argv, ++i, a);
+    else if (a === '--canonical') opts.canonical = true;
     else if (a.startsWith('-')) die(`unknown option: ${a}. Try \`mdss --help\`.`);
     else opts._.push(a);
   }
@@ -553,6 +565,13 @@ async function cmdSearch(opts) {
     path: opts.path.length > 0 ? opts.path : undefined,
     since: opts.since,
     rerank: !!opts.rerank,
+    tag: opts.tag,
+    project: opts.project,
+    type: opts.type,
+    status: opts.status,
+    canonicalOnly: opts.canonical,
+    explain: !!opts.explain,
+    maxPerFile: opts.maxPerFile || opts.maxPerDoc,
   });
 
   if (opts.json) { process.stdout.write(JSON.stringify(results, null, 2) + '\n'); return; }

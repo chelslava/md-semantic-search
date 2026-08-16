@@ -29,6 +29,13 @@ function tempDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `mdss-${prefix}-`));
 }
 
+function safeRm(p) {
+  if (!p) return;
+  try {
+    fs.rmSync(p, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  } catch {}
+}
+
 /** Start a server on an ephemeral port; returns {url, close}. */
 async function startServe(opts) {
   const svc = await createServe(opts);
@@ -318,7 +325,7 @@ test('serve: --watch defers re-indexing while another process holds the index lo
       await srv.close();
     }
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 

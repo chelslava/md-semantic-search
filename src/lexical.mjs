@@ -58,13 +58,41 @@ export function tokenize(text) {
  * @param {{title:string, heading:string, headingPath?:string[], text:string}} chunk
  * @returns {TermFrequencies}
  */
-export function analyzeLexicalDocument(chunk) {
+/** Default field weights for BM25F */
+export const DEFAULT_FIELD_WEIGHTS = {
+  title: 3.0,
+  aliases: 3.0,
+  headingPath: 1.8,
+  body: 1.0,
+};
+
+/**
+ * Field-aware lexical analysis: tokenizes fields separately with BM25F weights.
+ * @param {{title:string, heading:string, headingPath?:string[], text:string, meta?:import('./frontmatter.mjs').DocumentMetadata}} chunk
+ * @param {typeof DEFAULT_FIELD_WEIGHTS} [weights=DEFAULT_FIELD_WEIGHTS]
+ * @returns {TermFrequencies}
+ */
+export function analyzeLexicalDocument(chunk, weights = DEFAULT_FIELD_WEIGHTS) {
   _lexicalStats.documentsAnalyzed++;
   /** @type {TermFrequencies} */
   const frequencies = Object.create(null);
-  for (const term of tokenize(lexicalDocument(chunk))) {
-    frequencies[term] = (frequencies[term] ?? 0) + 1;
-  }
+
+  const titleText = chunk.title || '';
+  const aliasesText = (chunk.meta?.aliases || []).join(' ');
+  const headingText = (chunk.headingPath || [chunk.heading]).join(' ');
+  const bodyText = chunk.text || '';
+
+  const addTokens = (text, weight) => {
+    for (const term of tokenize(text)) {
+      frequencies[term] = (frequencies[term] ?? 0) + weight;
+    }
+  };
+
+  addTokens(titleText, weights.title);
+  if (aliasesText) addTokens(aliasesText, weights.aliases);
+  if (headingText) addTokens(headingText, weights.headingPath);
+  addTokens(bodyText, weights.body);
+
   return frequencies;
 }
 
@@ -75,17 +103,92 @@ export function buildLexicalIndex(records) {
   const documentLengths = records.map((record, docId) => {
     let length = 0;
     for (const [term, tf] of Object.entries(record)) {
-      if (!Number.isSafeInteger(tf) || tf <= 0 || length > Number.MAX_SAFE_INTEGER - tf) {
-        throw new Error('lexical term frequencies exceed safe integer bounds');
-      }
       length += tf;
       const posting = postings[term] ?? [];
       posting.push([docId, tf]);
       postings[term] = posting;
     }
-    return length;
+    return Number(length.toFixed(3));
   });
   return { format: 'bm25-v2', documentLengths, postings };
+}
+
+/**
+ * Damerau-Levenshtein edit distance calculation.
+ * @param {string} a
+ * @param {string} b
+ * @returns {number}
+ */
+export function editDistance(a, b) {
+  if (a === b) return 0;
+  const alen = a.length;
+  const blen = b.length;
+  if (alen === 0) return blen;
+  if (blen === 0) return alen;
+
+  const matrix = Array.from({ length: alen + 1 }, () => new Array(blen + 1).fill(0));
+  for (let i = 0; i <= alen; i++) matrix[i][0] = i;
+  for (let j = 0; j <= blen; j++) matrix[0][j] = j;
+
+  for (let i = 1; i <= alen; i++) {
+    for (let j = 1; j <= blen; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j - 1] + cost,
+      );
+      if (
+        i > 1 &&
+        j > 1 &&
+        a[i - 1] === b[j - 2] &&
+        a[i - 2] === b[j - 1]
+      ) {
+        matrix[i][j] = Math.min(matrix[i][j], matrix[i - 2][j - 2] + cost);
+      }
+    }
+  }
+  return matrix[alen][blen];
+}
+
+/**
+ * Bounded fuzzy matching for title & aliases (Damerau-Levenshtein dist 1-2).
+ * Returns map of docId -> fuzzyScore.
+ * @param {Array<{file:string, title:string, meta?:import('./frontmatter.mjs').DocumentMetadata}>} chunks
+ * @param {string} query
+ * @returns {Map<number, number>}
+ */
+export function fuzzyTitleAliasScores(chunks, query) {
+  const scores = new Map();
+  const qTerms = tokenize(query);
+  if (qTerms.length === 0) return scores;
+
+  for (let docId = 0; docId < chunks.length; docId++) {
+    const c = chunks[docId];
+    const targets = [c.title, ...(c.meta?.aliases || [])].filter(Boolean);
+    let maxScore = 0;
+
+    for (const target of targets) {
+      const tTerms = tokenize(target);
+      for (const qt of qTerms) {
+        if (qt.length < 3) continue; // skip tiny query tokens
+        for (const tt of tTerms) {
+          if (tt.length < 3) continue;
+          const maxDist = Math.min(2, Math.floor(qt.length / 3));
+          const dist = editDistance(qt, tt);
+          if (dist <= maxDist) {
+            const similarity = 1 - dist / Math.max(qt.length, tt.length);
+            if (similarity > maxScore) maxScore = similarity;
+          }
+        }
+      }
+    }
+
+    if (maxScore > 0) {
+      scores.set(docId, maxScore * 2.0); // Bounded fuzzy title/alias boost
+    }
+  }
+  return scores;
 }
 
 /**
@@ -102,8 +205,8 @@ export function validateLexicalIndex(value, chunkCount) {
     return 'unknown lexical format';
   }
   if (!Array.isArray(lexical.documentLengths) || lexical.documentLengths.length !== chunkCount ||
-      !lexical.documentLengths.every(length => Number.isSafeInteger(length) && length >= 0)) {
-    return `documentLengths must contain ${chunkCount} non-negative safe integers`;
+      !lexical.documentLengths.every(length => Number.isFinite(length) && length >= 0)) {
+    return `documentLengths must contain ${chunkCount} non-negative numbers`;
   }
   if (lexical.postings === null || typeof lexical.postings !== 'object' ||
       Array.isArray(lexical.postings)) return 'postings must be an object';
@@ -122,17 +225,13 @@ export function validateLexicalIndex(value, chunkCount) {
         return `posting for ${term} has a document ID out of range`;
       }
       if (docId <= previous) return `posting for ${term} document IDs must be strictly increasing`;
-      if (!Number.isSafeInteger(tf)) return `posting for ${term} must have a safe integer TF`;
-      if (tf <= 0) return `posting for ${term} must have positive integer TF`;
-      if (sums[docId] > Number.MAX_SAFE_INTEGER - tf) {
-        return `document ${docId} TF sum exceeds safe integer bounds`;
-      }
+      if (!Number.isFinite(tf) || tf <= 0) return `posting for ${term} must have positive TF`;
       sums[docId] += tf;
       previous = docId;
     }
   }
   for (let docId = 0; docId < chunkCount; docId++) {
-    if (sums[docId] !== lexical.documentLengths[docId]) {
+    if (Math.abs(sums[docId] - lexical.documentLengths[docId]) > 1e-3) {
       return `document ${docId} TF sum does not equal documentLengths`;
     }
   }

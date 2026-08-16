@@ -30,6 +30,13 @@ function tempDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `mdss-${prefix}-`));
 }
 
+function safeRm(p) {
+  if (!p) return;
+  try {
+    fs.rmSync(p, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  } catch {}
+}
+
 function writeCorpus(dir, files) {
   for (const [rel, content] of Object.entries(files)) {
     const abs = path.join(dir, rel);
@@ -178,9 +185,9 @@ test('buildIndex: lexical identity prevents chunkHash collision from reusing dif
     assert.equal(rebuilt.reusedChunks, 1, 'canonical embedding passage still reuses its vector');
     assert.equal(current.chunks[0].chunkHash, forcedCollision, 'the forced vector identity collision is real');
     assert.equal(_lexicalStats.documentsAnalyzed - before, 1, 'different lexical input is analyzed');
-    assert.deepEqual(current.lexical.postings.new, [[0, 2]], 'new title/leaf frequencies replace the old record');
+    assert.deepEqual(current.lexical.postings.new, [[0, 4.8]], 'new title/leaf frequencies replace the old record');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -249,7 +256,7 @@ test('buildIndex: schema-v1 canonical and checkpoint rebuild once without legacy
     assert.equal(noop.embedded, 0, 'the completed v2 generation reuses on the next run');
     assert.equal(noop.reused, noop.chunks);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -421,7 +428,7 @@ test('buildIndex: searchable schema-v3 bm25-v1 reanalyzes once before publishing
     assert.equal(_lexicalStats.documentsAnalyzed - beforeUpgrade, upgraded.chunks);
     const current = readIndex(idx);
     assert.equal(current.lexical.format, 'bm25-v2');
-    assert.deepEqual(current.lexical.postings.operations, [[0, 1]]);
+    assert.deepEqual(current.lexical.postings.operations, [[0, 1.8]]);
     const contextualHits = await searchIndex({ loaded: loadIndex(idx), cacheDir: dir,
       query: 'operations', k: 1, embedFn: fakeEmbed });
     assert.equal(contextualHits[0].file, 'doc.md', 'the published bm25-v2 generation is searchable');
@@ -1110,7 +1117,7 @@ test('buildIndex: checkpoint resume reparses corpus changes and reuses only fini
     assert.ok(current.chunks.every((chunk) => typeof chunk.vec === 'string'));
     assert.equal(fs.existsSync(checkpointPath), false);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -1294,7 +1301,7 @@ test('buildIndex: malformed or incompatible checkpoints fall back to canonical w
       assert.equal(fs.existsSync(checkpointPath), false, sidecar.name);
     }
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 

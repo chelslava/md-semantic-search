@@ -7,6 +7,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { resolveModel } from './models.mjs';
+import { chunkMarkdownStructural, PARSER_VERSION } from './markdown-parser.mjs';
+
+export { PARSER_VERSION };
 
 const _extractors = new Map();
 
@@ -453,88 +456,19 @@ export function extractTitle(frontmatter, body, relPath) {
 const DEFAULT_MAX_CHUNK = 1400; // chars; ~350-450 tokens, fits e5/bge context
 
 /**
- * Chunk markdown by headings; oversized sections split further on blank lines.
- * @returns {{heading:string, headingPath:string[], text:string}[]}
+ * Chunk markdown structurally by headings and atomic block boundaries (issue #57).
+ * Oversized sections split further on block boundaries and hard wraps.
+ * @param {string} body
+ * @param {number} [maxChunk=DEFAULT_MAX_CHUNK]
+ * @returns {import('./markdown-parser.mjs').StructuralChunk[]}
  */
 export function chunkMarkdown(body, maxChunk = DEFAULT_MAX_CHUNK) {
-  const lines = body.split('\n');
-  const sections = [];
-  /** @type {{level:number, heading:string}[]} */
-  const headingStack = [];
-  let buf = [];
-  const flush = () => {
-    const text = buf.join('\n').trim();
-    if (text) {
-      const headingPath = headingStack.map(entry => entry.heading);
-      sections.push({ heading: headingPath.at(-1) ?? '', headingPath, text });
-    }
-    buf = [];
-  };
-  for (const line of lines) {
-    const h = line.match(/^(#{1,6})\s+(.+)$/);
-    if (h) {
-      flush();
-      const level = h[1].length;
-      while (headingStack.length > 0 && headingStack[headingStack.length - 1].level >= level) {
-        headingStack.pop();
-      }
-      headingStack.push({ level, heading: h[2].trim() });
-    }
-    else buf.push(line);
-  }
-  flush();
-
-  const chunks = [];
-  for (const sec of sections) {
-    if (sec.text.length <= maxChunk) { chunks.push(sec); continue; }
-    const paras = sec.text.split(/\n\s*\n/);
-    let acc = '';
-    const emit = () => {
-      if (acc.trim()) chunks.push({ ...sec, headingPath: [...sec.headingPath], text: acc.trim() });
-    };
-    for (const p of paras) {
-      if (p.length > maxChunk) {
-        // A single unbroken paragraph exceeds the cap (tables, logs, code):
-        // flush what's accumulated, then hard-wrap the paragraph on its own
-        // so every emitted chunk is within maxChunk (issue #24).
-        emit();
-        for (const piece of hardWrap(p, maxChunk)) {
-          chunks.push({ ...sec, headingPath: [...sec.headingPath], text: piece });
-        }
-        acc = '';
-        continue;
-      }
-      if ((acc + '\n\n' + p).length > maxChunk && acc) {
-        emit();
-        acc = p;
-      } else {
-        acc = acc ? acc + '\n\n' + p : p;
-      }
-    }
-    emit();
-  }
-  return chunks.filter(c => c.text.replace(/\s/g, '').length >= 24);
+  return chunkMarkdownStructural(body, maxChunk);
 }
 
-/**
- * Split one over-long paragraph into pieces of at most `maxChunk` chars,
- * preferring word boundaries (spaces) over hard character cuts.
- * @param {string} text
- * @param {number} maxChunk
- * @returns {string[]}
- */
-function hardWrap(text, maxChunk) {
-  const out = [];
-  let rest = text;
-  while (rest.length > maxChunk) {
-    let cut = rest.lastIndexOf(' ', maxChunk);
-    if (cut <= 0) cut = maxChunk; // no space in window → hard cut mid-word
-    out.push(rest.slice(0, cut).trim());
-    rest = rest.slice(cut).trim();
-  }
-  if (rest) out.push(rest);
-  return out;
-}
+import { parseFrontmatter } from './frontmatter.mjs';
+
+export { parseFrontmatter };
 
 /**
  * Parse one file into title + chunk records (no embeddings yet).
@@ -544,13 +478,15 @@ function hardWrap(text, maxChunk) {
  * @param {string} [raw] - already-read file content. When given, the file is
  *   NOT read from disk again (issue #35: buildIndex already read it for the
  *   md5 fast-path check, so a changed file was being read twice).
- * @returns {{file:string, title:string, heading:string, headingPath:string[], text:string}[]}
+ * @returns {{file:string, title:string, heading:string, headingPath:string[], text:string, startLine?:number, endLine?:number, meta?:import('./frontmatter.mjs').DocumentMetadata}[]}
  */
 export function parseFile(absPath, dbDir, maxChunk, raw) {
   const content = raw ?? fs.readFileSync(absPath, 'utf8');
   const { frontmatter, body } = splitFrontmatter(content);
+  const meta = parseFrontmatter(frontmatter);
   const rel = path.relative(dbDir, absPath).split(path.sep).join('/');
-  const title = extractTitle(frontmatter, body, rel);
+  const title = meta.title || extractTitle(frontmatter, body, rel);
+  const frontmatterLineCount = frontmatter ? frontmatter.split('\n').length + 2 : 0;
   return chunkMarkdown(body, maxChunk).map(c => {
     const heading = c.heading || title;
     return {
@@ -559,6 +495,9 @@ export function parseFile(absPath, dbDir, maxChunk, raw) {
       heading,
       headingPath: c.headingPath.length > 0 ? c.headingPath : [heading],
       text: c.text,
+      startLine: (c.startLine || 1) + frontmatterLineCount,
+      endLine: (c.endLine || 1) + frontmatterLineCount,
+      meta,
     };
   });
 }

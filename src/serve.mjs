@@ -335,6 +335,14 @@ async function handleRequest(req, res, state) {
         offline: state.offline,
         embedFn: state.embedFn,
         rerankFn: state.rerankFn,
+        tag: payload.tag,
+        project: payload.project,
+        type: payload.type,
+        status: payload.status,
+        canonicalOnly: payload.canonicalOnly,
+        custom: payload.custom,
+        explain: !!payload.explain,
+        maxPerFile: payload.maxPerFile || payload.maxPerDoc,
       });
       json(res, 200, { query, k, count: results.length, results });
     } catch (e) {

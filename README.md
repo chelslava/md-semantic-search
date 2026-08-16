@@ -59,10 +59,53 @@ measurements that shaped its defaults.
   terminal plus `mdss serve --watch` never interleave into a torn index. Long
   builds also checkpoint embedding progress and resume after interruption.
 
-## Requirements
+---
 
-- Node.js ≥ 18
-- ~280 MB disk for the default model (downloaded once into a cache dir)
+## Architecture & Retrieval Pipeline
+
+`md-semantic-search` implements a fully local, deterministic Markdown-native retrieval pipeline designed for small-to-medium RU/EN engineering knowledge bases.
+
+```
+┌────────────────┐     ┌───────────────────────┐     ┌──────────────────────┐
+│ Markdown Notes │ ──> │ Structural AST Chunker│ ──> │ Typed Frontmatter &  │
+│  (.md files)   │     │ (src/markdown-parser) │     │ Canonical Identity   │
+└────────────────┘     └───────────────────────┘     └──────────────────────┘
+                                                                │
+     ┌──────────────────────────────────────────────────────────┘
+     ▼
+┌──────────────────────┐     ┌──────────────────────┐     ┌──────────────────────┐
+│ Contextual Embeddings│     │ Field BM25F Postings │     │ Bounded Wikilink /   │
+│   (src/core.mjs)     │     │  (src/lexical.mjs)   │     │ Backlink Graph       │
+└──────────────────────┘     └──────────────────────┘     └──────────────────────┘
+            │                            │                            │
+            └────────────────────┬───────┴────────────────────────────┘
+                                 ▼
+                     ┌──────────────────────┐
+                     │ Reciprocal Rank (RRF)│
+                     │  + Result Collapse   │
+                     │  (src/search.mjs)    │
+                     └──────────────────────┘
+```
+
+1. **Structural AST Parsing** ([`src/markdown-parser.mjs`](./src/markdown-parser.mjs)): Markdown is parsed into structural blocks (headings, fenced code blocks, tables, blockquotes, lists). Block boundaries are preserved atomically.
+2. **Typed Frontmatter & Canonical Identity** ([`src/frontmatter.mjs`](./src/frontmatter.mjs)): YAML frontmatter is parsed into typed metadata (`title`, `aliases`, `tags`, `project`, `type`, `status`, `canonical`, `canonicalRef`).
+3. **Contextual Embeddings** ([`src/core.mjs`](./src/core.mjs)): Passages combine title, full heading hierarchy (`Title > H1 > H2`), and body text, following Anthropic's Contextual Retrieval design to eliminate lost context without an LLM expansion step.
+4. **Field-Aware BM25F & Fuzzy Lookup** ([`src/lexical.mjs`](./src/lexical.mjs)): Inverted lexical postings score `title`, `aliases`, `headingPath`, and `body` with dedicated field weights, complemented by bounded Damerau-Levenshtein fuzzy title matching.
+5. **Relationship Graph** ([`src/wikilinks.mjs`](./src/wikilinks.mjs)): Wikilinks (`[[note]]`) and relative Markdown links resolve to canonical target notes to compute outgoing links and backlinks.
+6. **Reciprocal Rank Fusion & Collapse** ([`src/search.mjs`](./src/search.mjs), [`src/collapse.mjs`](./src/collapse.mjs)): Fuses dense cosine similarity, BM25F lexical scoring, and fuzzy candidates with RRF, followed by optional document collapse (`--max-per-file`) and cross-encoder reranking ([`src/rerank.mjs`](./src/rerank.mjs)).
+
+---
+
+## Comparison with Alternatives
+
+| Approach | Stronger than mdss at | mdss advantage for its target segment |
+|---|---|---|
+| **QMD** | Query expansion, HyDE, LLM reranking, MCP/SDK ecosystem | Smaller default footprint, Node 18, zero native C++ runtime (pure ONNX.js), fast incremental chunk reuse |
+| **Obsidian Hybrid Search** | Obsidian GUI integration, Obsidian vault plugins | Standalone CLI & HTTP API, not tied to Obsidian, crash-safe atomic indexing, robust incremental re-index |
+| **Vector Databases (Qdrant/Pinecone)** | Multi-million chunk scale, distributed vector index, cloud replication | Zero infra, single JSON index, no server/daemon required, fast in-memory sweep for 10k–50k chunks |
+| **Grep / Fzf** | Zero model load time, instant literal string matching | Cross-lingual matching (RU/EN), paraphrase retrieval, semantic understanding while retaining exact BM25 lexical precision |
+
+---
 
 ## Install
 
@@ -87,6 +130,8 @@ cd md-semantic-search
 npm install
 node bin/cli.mjs --help
 ```
+
+---
 
 ## Library usage
 
