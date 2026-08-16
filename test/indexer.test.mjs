@@ -1162,7 +1162,7 @@ test('buildIndex: complete checkpoint repairs a torn canonical pair without embe
     assert.ok(canonical.chunks.every((chunk) => typeof chunk.vec === 'string'));
     assert.equal(fs.existsSync(checkpointPath), false);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 

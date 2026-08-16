@@ -109,10 +109,94 @@ export function rrf(rankings, k = 60) {
  * @property {IndexChunk[]} chunks
  */
 
+/**
+ * Bounded LRU cache for query vectors in daemon/serve mode (issue #33).
+ */
+export class QueryEmbeddingCache {
+  /**
+   * @param {number} [maxSize=100]
+   */
+  constructor(maxSize = 100) {
+    this.maxSize = maxSize;
+    /** @type {Map<string, Float32Array>} */
+    this.cache = new Map();
+    /** @type {Map<string, Promise<Float32Array>>} */
+    this.inFlight = new Map();
+  }
+
+  /**
+   * @param {string} key
+   * @returns {Float32Array|undefined}
+   */
+  get(key) {
+    if (!this.cache.has(key)) return undefined;
+    const value = this.cache.get(key);
+    this.cache.delete(key);
+    this.cache.set(key, /** @type {Float32Array} */ (value));
+    return value;
+  }
+
+  /**
+   * @param {string} key
+   * @param {number[]|Float32Array} vector
+   */
+  set(key, vector) {
+    if (!Array.isArray(vector) && !(vector instanceof Float32Array)) return;
+    if (vector.length === 0) return;
+    const arr = vector instanceof Float32Array ? vector : Float32Array.from(vector);
+    for (let i = 0; i < arr.length; i++) {
+      if (!Number.isFinite(arr[i])) return;
+    }
+    if (this.cache.has(key)) {
+      this.cache.delete(key);
+    } else if (this.cache.size >= this.maxSize) {
+      const oldestKey = this.cache.keys().next().value;
+      if (oldestKey !== undefined) this.cache.delete(oldestKey);
+    }
+    this.cache.set(key, arr);
+  }
+
+  /**
+   * Get or compute with coalescing of concurrent in-flight requests.
+   * @param {string} key
+   * @param {() => Promise<number[]|Float32Array>} fn
+   * @returns {Promise<Float32Array>}
+   */
+  async getOrCompute(key, fn) {
+    const cached = this.get(key);
+    if (cached) return cached;
+    if (this.inFlight.has(key)) {
+      return this.inFlight.get(key);
+    }
+    const promise = (async () => {
+      try {
+        const raw = await fn();
+        this.set(key, raw);
+        const stored = this.get(key);
+        if (stored) return stored;
+        return raw instanceof Float32Array ? raw : Float32Array.from(raw);
+      } finally {
+        this.inFlight.delete(key);
+      }
+    })();
+    this.inFlight.set(key, promise);
+    return promise;
+  }
+
+  clear() {
+    this.cache.clear();
+    this.inFlight.clear();
+  }
+
+  get size() {
+    return this.cache.size;
+  }
+}
+
 /** @typedef {{kind:'persisted-bm25', lexical:import('./lexical.mjs').LexicalIndex}|{kind:'legacy-overlap'}} LexicalState */
 /** @typedef {{file:string, title:string, heading:string, headingPath?:string[], text:string, startLine?:number, endLine?:number, meta?:import('./frontmatter.mjs').DocumentMetadata, vec:Float32Array}} RuntimeChunk */
 /** @typedef {{schema:number, db:(string|undefined), chunks:RuntimeChunk[], lexicalState:LexicalState,
- *   expectedDim:(number|undefined), model:import('./core.mjs').ModelDescriptor}} RuntimeIndexState */
+ *   expectedDim:(number|undefined), model:import('./core.mjs').ModelDescriptor, queryCache:QueryEmbeddingCache}} RuntimeIndexState */
 
 const runtimeIndexStates = new WeakMap();
 
@@ -158,6 +242,7 @@ function snapshotRuntimeIndex(index, validation) {
     lexicalState,
     expectedDim: validation.dim,
     model: { ...validation.model },
+    queryCache: new QueryEmbeddingCache(100),
   };
 }
 
@@ -323,6 +408,7 @@ export function loadIndex(indexDir) {
  * @param {boolean} [opts.explain] - include explain output (issue #59)
  * @param {number} [opts.maxPerFile] - cap max results per file (issue #45)
  * @param {number} [opts.maxPerDoc] - cap max results per document (issue #45)
+ * @param {boolean} [opts.useQueryCache=true] - use query vector embedding cache (issue #33)
  * @returns {Promise<Array>} results with file, title, heading, cosine, score,
  *   matches (query terms found in the chunk, issue #13), snippet, and
  *   rerankScore when reranking was enabled (issue #15)
@@ -392,13 +478,29 @@ export async function searchIndex(opts) {
     });
   }
 
-  const [qVec] = await embedFn([query], 'query', runtime.model, cacheDir, offline);
-  if ((Array.isArray(qVec) || qVec instanceof Float32Array) &&
-      expectedDim !== undefined && qVec.length !== expectedDim) {
-    throw new Error(`query vector has ${qVec.length} dims, expected ${expectedDim} — ` +
-      'run `mdss index` to rebuild');
+  let qVec;
+  if (opts.useQueryCache !== false && runtime.queryCache) {
+    const cacheKey = `${runtime.model.id}:${runtime.model.revision || 'main'}:${expectedDim || 0}:${query.trim().toLowerCase()}`;
+    qVec = await runtime.queryCache.getOrCompute(cacheKey, async () => {
+      const [v] = await embedFn([query], 'query', runtime.model, cacheDir, offline);
+      if ((Array.isArray(v) || v instanceof Float32Array) &&
+          expectedDim !== undefined && v.length !== expectedDim) {
+        throw new Error(`query vector has ${v.length} dims, expected ${expectedDim} — ` +
+          'run `mdss index` to rebuild');
+      }
+      validateNumericVector(v, undefined, 'query vector');
+      return v;
+    });
+  } else {
+    const [v] = await embedFn([query], 'query', runtime.model, cacheDir, offline);
+    if ((Array.isArray(v) || v instanceof Float32Array) &&
+        expectedDim !== undefined && v.length !== expectedDim) {
+      throw new Error(`query vector has ${v.length} dims, expected ${expectedDim} — ` +
+        'run `mdss index` to rebuild');
+    }
+    validateNumericVector(v, undefined, 'query vector');
+    qVec = v;
   }
-  validateNumericVector(qVec, undefined, 'query vector');
   const queryTerms = [...new Set(tokenize(query))];
 
   const semantic = candidates.map(({ chunk, idx }) => {
@@ -504,6 +606,7 @@ export async function searchIndex(opts) {
  * @param {boolean} [opts.explain] - include explain output (issue #59)
  * @param {number} [opts.maxPerFile] - cap max results per file (issue #45)
  * @param {number} [opts.maxPerDoc] - cap max results per document (issue #45)
+ * @param {boolean} [opts.useQueryCache=true] - use query vector embedding cache (issue #33)
  * @returns {Promise<Array>} results with file, title, heading, cosine, score,
  *   matches (query terms found in the chunk, issue #13), snippet
  */

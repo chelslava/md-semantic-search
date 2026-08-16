@@ -27,7 +27,7 @@ export {
 
 export {
   search, searchIndex, loadIndex,
-  tokenize, keywordScores, rrf,
+  tokenize, keywordScores, rrf, QueryEmbeddingCache,
 } from './search.mjs';
 
 export {
