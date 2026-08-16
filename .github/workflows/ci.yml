@@ -91,11 +91,8 @@ jobs:
         run: node scripts/verify-pack.mjs
 
   audit:
-    # The current Transformers.js tree has upstream advisories with no
-    # compatible fix. Report them on every run without masking test/lint status.
-    # Remove continue-on-error once the production tree is clean (issue #17).
+    # Issue #17: gate production dependency vulnerabilities against a dated baseline.
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -107,4 +104,4 @@ jobs:
         run: npm ci
 
       - name: Report production dependency vulnerabilities
-        run: npm audit --omit=dev --audit-level=high
+        run: node scripts/audit-ci.mjs
