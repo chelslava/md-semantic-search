@@ -284,10 +284,10 @@ export async function embed(texts, kind, model, cacheDir, offline = false) {
   return out.tolist();
 }
 
-/** Cosine similarity for L2-normalized vectors == dot product. */
-export function cosine(a, b) {
+/** Cosine similarity for L2-normalized vectors == dot product. Supports offset in contiguous buffer (issue #30). */
+export function cosine(a, b, bOffset = 0) {
   let s = 0;
-  for (let i = 0; i < a.length; i++) s += a[i] * b[i];
+  for (let i = 0; i < a.length; i++) s += a[i] * b[bOffset + i];
   return s;
 }
 

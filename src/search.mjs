@@ -208,17 +208,36 @@ const runtimeIndexStates = new WeakMap();
  * @returns {RuntimeIndexState}
  */
 function snapshotRuntimeIndex(index, validation) {
-  const chunks = index.chunks.map(chunk => ({
-    file: chunk.file,
-    title: chunk.title,
-    heading: chunk.heading,
-    headingPath: chunk.headingPath,
-    text: chunk.text,
-    startLine: chunk.startLine,
-    endLine: chunk.endLine,
-    meta: chunk.meta,
-    vec: Float32Array.from(chunk.vec),
-  }));
+  const dim = validation.dim || (index.chunks[0]?.vec?.length ?? 0);
+  const count = index.chunks.length;
+  const vectorsBuffer = dim > 0 ? new Float32Array(count * dim) : null;
+
+  const chunks = index.chunks.map((chunk, i) => {
+    let vec;
+    if (vectorsBuffer && dim > 0) {
+      const offset = i * dim;
+      if (chunk.vec instanceof Float32Array) {
+        vectorsBuffer.set(chunk.vec, offset);
+      } else {
+        for (let j = 0; j < dim; j++) vectorsBuffer[offset + j] = chunk.vec[j];
+      }
+      vec = vectorsBuffer.subarray(offset, offset + dim);
+    } else {
+      vec = Float32Array.from(chunk.vec);
+    }
+
+    return {
+      file: chunk.file,
+      title: chunk.title,
+      heading: chunk.heading,
+      headingPath: chunk.headingPath,
+      text: chunk.text,
+      startLine: chunk.startLine,
+      endLine: chunk.endLine,
+      meta: chunk.meta,
+      vec,
+    };
+  });
   let lexicalState = /** @type {LexicalState} */ ({ kind: 'legacy-overlap' });
   if (validation.schema >= 3) {
     /** @type {Record<string, Array<[number, number]>>} */
