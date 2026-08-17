@@ -1,0 +1,24 @@
+{
+  "name": "mdss-obsidian",
+  "version": "1.0.0",
+  "description": "Live semantic vector search panel inside Obsidian powered by md-semantic-search.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production"
+  },
+  "keywords": [
+    "obsidian",
+    "obsidian-plugin",
+    "semantic-search",
+    "vector-search",
+    "embeddings"
+  ],
+  "author": "Vyacheslav Chelischev",
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "obsidian": "^1.7.2",
+    "typescript": "^5.8.0"
+  }
+}

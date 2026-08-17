@@ -604,6 +604,10 @@ section instead of silently producing wrong vectors.
 No external services, no database — the whole index is one JSON file and search
 is an in-memory dot-product sweep.
 
+## Integrations
+
+- **Obsidian**: An official plugin is available in [`integrations/obsidian`](./integrations/obsidian) providing a live semantic search panel directly in your vault connected to `mdss serve`.
+
 ## License
 
 MIT © chelslava

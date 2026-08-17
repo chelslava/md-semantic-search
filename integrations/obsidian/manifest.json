@@ -1,0 +1,11 @@
+{
+  "id": "mdss-obsidian",
+  "name": "Markdown Semantic Search",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "Local, private semantic vector search inside Obsidian powered by md-semantic-search (mdss).",
+  "author": "Vyacheslav Chelischev",
+  "authorUrl": "https://github.com/chelslava/md-semantic-search",
+  "fundingUrl": "https://github.com/chelslava/md-semantic-search",
+  "isDesktopOnly": true
+}
