@@ -12,7 +12,7 @@ const BASELINE_ADVISORIES = new Set([
 
 try {
   const stdout = execSync('npm audit --omit=dev --json', { encoding: 'utf8' });
-  const report = JSON.parse(stdout);
+  JSON.parse(stdout);
   console.log('npm audit completed cleanly. No vulnerabilities found.');
   process.exit(0);
 } catch (err) {
@@ -25,7 +25,7 @@ try {
   let report;
   try {
     report = JSON.parse(stdout);
-  } catch (e) {
+  } catch {
     console.error('Failed to parse npm audit JSON output:', stdout);
     process.exit(1);
   }

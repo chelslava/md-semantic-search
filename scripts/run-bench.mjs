@@ -95,7 +95,7 @@ function parseArgs(argv) {
 }
 
 /** Deterministic fake embedder (no model, no network) for CI smoke runs. */
-function fakeEmbed(texts, kind, model, cacheDir) {
+function fakeEmbed(texts, kind, model, _cacheDir) {
   return texts.map((t) => {
     const dim = model?.dim > 0 ? model.dim : 8;
     const v = new Array(dim).fill(0);

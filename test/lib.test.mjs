@@ -37,6 +37,10 @@ test('exports map: package root exposes the library API (issue #14)', () => {
   // missing (issue #29).
   assert.ok(MODELS['e5-base'], 'MODELS registry exposed');
   assert.equal(DEFAULT_MODEL, 'e5-base');
+  assert.equal(typeof tokenize, 'function');
+  assert.equal(typeof encodeVec, 'function');
+  assert.equal(typeof decodeVec, 'function');
+  assert.equal(typeof cosine, 'function');
 });
 
 test('public API example imports searchIndex before using the repeated-query path', () => {

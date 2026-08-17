@@ -11,7 +11,7 @@ import { decodeVec, SCHEMA_VERSION } from '../dist/core.js';
 import { _lexicalStats, validateLexicalIndex } from '../dist/lexical.js';
 
 /** Deterministic fake embed: bag-of-hash 8d, L2-normalized. No model, no network. */
-function fakeEmbed(texts, kind, model, cacheDir) {
+function fakeEmbed(texts, kind, model, _cacheDir) {
   return texts.map((t) => {
     const dim = model?.dim > 0 ? model.dim : 8;
     const v = new Array(dim).fill(0);
@@ -1249,7 +1249,7 @@ test('buildIndex: malformed or incompatible checkpoints fall back to canonical w
       },
       {
         name: 'missing heading path',
-        value: { ...canonical, complete: false, hashes, chunks: vectorlessChunks.map(({ headingPath, ...chunk }) => chunk) },
+        value: { ...canonical, complete: false, hashes, chunks: vectorlessChunks.map(({ headingPath: _headingPath, ...chunk }) => chunk) },
       },
       {
         name: 'non-array heading path',

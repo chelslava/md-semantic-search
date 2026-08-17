@@ -1026,9 +1026,8 @@ test('buildIndex: corrupt vector in the old index is dropped and re-embedded (is
     const stderrChunks = [];
     const orig = process.stderr.write;
     process.stderr.write = (s) => { stderrChunks.push(String(s)); return true; };
-    let r;
     try {
-      r = await buildIndex({
+      await buildIndex({
         db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed,
         log: s => stderrChunks.push(String(s)),
       });

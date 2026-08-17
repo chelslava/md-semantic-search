@@ -7,7 +7,6 @@ import http from 'node:http';
 import { buildIndex } from '../dist/indexer.js';
 import { createServe, DEFAULT_HOST, MAX_BODY_BYTES } from '../dist/serve.js';
 import { searchIndex } from '../dist/search.js';
-import { loadIndex } from '../dist/search.js';
 import { acquireIndexLock, releaseIndexLock } from '../dist/core.js';
 
 function fakeEmbed(texts, kind, model) {

@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import os from 'node:os';
 import { assertSafePath, validateGlob, globToRegExp } from '../dist/core.js';
 import { searchIndex, MAX_QUERY_LENGTH } from '../dist/search.js';
 
