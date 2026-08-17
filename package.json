@@ -30,7 +30,8 @@
     "test": "npm run build && node --test",
     "test:coverage": "npm run build && node --test --experimental-test-coverage --test-coverage-lines=85 --test-coverage-functions=85 --test-coverage-branches=80",
     "lint": "tsc --noEmit && eslint bin/ test/ bench/ scripts/",
-    "lint:eslint": "eslint bin/ test/ bench/ scripts/"
+    "lint:eslint": "eslint bin/ test/ bench/ scripts/",
+    "docs:build": "node scripts/build-docs.mjs"
   },
   "keywords": [
     "semantic-search",
