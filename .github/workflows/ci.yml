@@ -29,8 +29,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run tests
+      - name: Run tests (Node 18)
+        if: matrix.node == 18
         run: npm test
+
+      - name: Run tests and collect coverage (Node 20+)
+        if: matrix.node != 18
+        run: NODE_DISABLE_COLORS=1 npm run test:coverage | tee test-output.txt
+
+      - name: Post coverage summary
+        if: matrix.node != 18 && always()
+        run: |
+          echo "### Code Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`text" >> $GITHUB_STEP_SUMMARY
+          sed -n '/start of coverage report/,/end of coverage report/p' test-output.txt >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
   lint:
     # Type-checks every source module via JSDoc (// @ts-check + checkJs).

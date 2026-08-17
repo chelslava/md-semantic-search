@@ -54,6 +54,10 @@ function parseArgs(argv) {
     else if (a === '--list-tools') opts.listTools = true;
     else if (a === '--version') opts.version = true;
     else if (a === '-h' || a === '--help') opts.help = true;
+    else if (a === '--config') opts.config = nextValue(argv, ++i, a);
+    else if (a === '--format') opts.format = nextValue(argv, ++i, a);
+    else if (a === '--no-vectors' || a === '--no-vector') opts.noVectors = true;
+    else if (a === '--output' || a === '-o') opts.output = nextValue(argv, ++i, a);
     else if (a === '--db') opts.db = nextValue(argv, ++i, a);
     else if (a === '--index-dir') opts.indexDir = nextValue(argv, ++i, a);
     else if (a === '--cache-dir') opts.cacheDir = nextValue(argv, ++i, a);
@@ -100,6 +104,86 @@ function nextInt(argv, i, flag) {
   return k;
 }
 
+const KNOWN_CONFIG_KEYS = new Set([
+  'db', 'model', 'indexDir', 'index-dir', 'cacheDir', 'cache-dir',
+  'ignore', 'path', 'k', 'maxPerFile', 'max-per-file', 'maxPerDoc', 'max-per-doc',
+  'targetTokens', 'target-tokens', 'port', 'host', 'apiKey', 'api-key',
+  'healthPublic', 'health-public', 'watch', 'watchInterval', 'watch-interval',
+  'watchDelay', 'watch-delay', 'offline', 'rerank', 'semantic', 'tag', 'project', 'type', 'status', 'canonical',
+  'format', 'noVectors', 'no-vectors', 'output'
+]);
+
+function findConfigFile(explicitPath) {
+  if (explicitPath) {
+    const abs = path.resolve(explicitPath);
+    if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) die(`config file not found: ${abs}`);
+    return abs;
+  }
+  if (process.env.MDSS_CONFIG) {
+    const abs = path.resolve(process.env.MDSS_CONFIG);
+    if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) die(`config file from MDSS_CONFIG not found: ${abs}`);
+    return abs;
+  }
+  const configNames = ['.mdssrc.json', 'mdss.config.json', '.mdssrc'];
+  let curr = process.cwd();
+  while (true) {
+    for (const name of configNames) {
+      const candidate = path.join(curr, name);
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+        return candidate;
+      }
+    }
+    const parent = path.dirname(curr);
+    if (parent === curr) break;
+    curr = parent;
+  }
+  try {
+    const home = os.homedir();
+    if (home) {
+      for (const name of ['.mdssrc.json', '.mdssrc']) {
+        const candidate = path.join(home, name);
+        if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+          return candidate;
+        }
+      }
+    }
+  } catch {}
+  return null;
+}
+
+function loadConfigFile(configPath) {
+  if (!configPath) return { config: {}, path: null, unknownKeys: [], error: null };
+  try {
+    const raw = fs.readFileSync(configPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { config: {}, path: configPath, unknownKeys: [], error: `Config at ${configPath} must be a JSON object` };
+    }
+    const unknownKeys = Object.keys(parsed).filter(k => !KNOWN_CONFIG_KEYS.has(k));
+    const normalized = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      const camel = k.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+      normalized[camel] = v;
+    }
+    return { config: normalized, path: configPath, unknownKeys, error: null };
+  } catch (e) {
+    return { config: {}, path: configPath, unknownKeys: [], error: `Failed to parse config at ${configPath}: ${e.message}` };
+  }
+}
+
+function applyConfigDefaults(opts, config) {
+  for (const [k, v] of Object.entries(config)) {
+    if (k === 'ignore' || k === 'path') {
+      if ((!opts[k] || opts[k].length === 0) && v !== undefined) {
+        opts[k] = Array.isArray(v) ? [...v] : [v];
+      }
+    } else if (opts[k] === undefined && v !== undefined) {
+      opts[k] = v;
+    }
+  }
+  return opts;
+}
+
 function resolveDb(opts) {
   const db = opts.db || process.env.MDSS_DB;
   if (!db) die('Missing --db <dir> (or set MDSS_DB). Path to your .md folder.');
@@ -142,16 +226,21 @@ Usage:
   mdss index  --db <dir> [options]            Build/refresh the index
   mdss stats  --db <dir> [--json]             Index stats without loading the model
   mdss check  --db <dir> [--json]             Diagnose index/db/model cache (alias: doctor)
+  mdss export --db <dir> [options]            Export index to JSONL / CSV / Parquet
   mdss search --db <dir> [options] "query"    Search by meaning
   mdss serve  --db <dir> [--port <n>] [--host <ip>] [--watch]  Daemon: warm model + index
   mdss mcp    --db <dir> [--list-tools]       Start MCP server over stdio for LLM agents / IDEs
   mdss models                                  List available models
 
 Options:
+  --config <file>     Path to config file (default: .mdssrc.json / mdss.config.json).
   --db <dir>          Folder of .md files (or env MDSS_DB). Can be anywhere.
   --index-dir <dir>   Where to store the index (default: <db>/.mdss).
   --cache-dir <dir>   Model cache dir (default: ~/.cache/mdss, or MDSS_CACHE_DIR).
   --model <name|id>   Embedding model (default: ${DEFAULT_MODEL}). See \`mdss models\`.
+  --format <fmt>      Export format: jsonl (default), csv, parquet (export).
+  --no-vectors        Omit vector embeddings from export (export).
+  --output <file>     Output file path (export, default: stdout).
   --ignore <glob>     Skip files/paths (repeatable). e.g. --ignore "log.md".
   --path <glob>       Search only files matching glob (repeatable). e.g. --path "docs/**".
   --since <date>      Search only files modified at/after date (YYYY-MM-DD or ISO).
@@ -180,11 +269,41 @@ Examples:
   curl -X POST localhost:8747/search -d '{"query":"rotate api token","k":5}'
 `;
 
+function formatDuration(sec) {
+  const s = Math.max(0, Math.floor(sec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const remainingS = s % 60;
+  return `${h}:${String(m).padStart(2, '0')}:${String(remainingS).padStart(2, '0')}`;
+}
+
 async function cmdIndex(opts) {
   const db = resolveDb(opts);
   const indexDir = resolveIndexDir(opts, db);
   const cacheDir = resolveCache(opts);
   const t0 = Date.now();
+  let lastProgressUpdate = 0;
+
+  const onProgress = (done, total, chunksPerSec) => {
+    if (!process.stderr.isTTY || opts.json || total <= 100) return;
+    const now = Date.now();
+    if (now - lastProgressUpdate < 500 && done < total) return;
+    lastProgressUpdate = now;
+    const percent = Math.floor((done / total) * 100);
+    const barWidth = 10;
+    const filled = Math.min(barWidth, Math.max(0, Math.round((done / total) * barWidth)));
+    const bar = '[' + '#'.repeat(filled) + '-'.repeat(barWidth - filled) + ']';
+    const remaining = total - done;
+    const etaSec = chunksPerSec > 0 ? remaining / chunksPerSec : 0;
+    const etaStr = formatDuration(etaSec);
+    const speedStr = `${chunksPerSec.toFixed(1)} chunks/s`;
+    const line = `${bar} ${percent}% │ ${done}/${total} chunks │ ${speedStr} │ ETA ${etaStr}`;
+    process.stderr.write(`\r${line}`);
+    if (done >= total) {
+      process.stderr.write('\n');
+    }
+  };
+
   let r;
   try {
     r = await buildIndex({
@@ -192,7 +311,11 @@ async function cmdIndex(opts) {
       modelName: opts.model || DEFAULT_MODEL,
       ignore: opts.ignore,
       offline: resolveOffline(opts),
-      log: s => process.stderr.write(s + '\n'),
+      log: s => {
+        if (process.stderr.isTTY && !opts.json && /^\s+\d+\/\d+$/.test(s)) return;
+        process.stderr.write(s + '\n');
+      },
+      onProgress,
     });
   } catch (e) {
     // A held index lock (issue #37) is an EXPECTED operational state (a second
@@ -305,13 +428,126 @@ function cmdStats(opts) {
 }
 
 /**
+ * `mdss export` — export the index as JSONL / CSV / Parquet for downstream pipelines (issue #77).
+ */
+async function cmdExport(opts) {
+  const db = resolveDb(opts);
+  const indexDir = resolveIndexDir(opts, db);
+  const vectorsPath = path.join(indexDir, 'vectors.json');
+  if (!fs.existsSync(vectorsPath)) {
+    die(`No index at ${vectorsPath}. Run \`mdss index\` first.`);
+  }
+
+  let index;
+  try {
+    index = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
+  } catch (e) {
+    die(`${vectorsPath} is not valid JSON (${e.message}); run \`mdss index\` to rebuild.`);
+  }
+
+  const format = (opts.format || 'jsonl').toLowerCase();
+  const noVectors = !!opts.noVectors;
+  const outStream = opts.output ? fs.createWriteStream(path.resolve(opts.output), 'utf8') : process.stdout;
+
+  const chunks = Array.isArray(index.chunks) ? index.chunks : [];
+  const dim = index.dim;
+
+  if (format === 'jsonl') {
+    for (const c of chunks) {
+      let vec = undefined;
+      if (!noVectors && c.vec !== undefined) {
+        if (typeof c.vec === 'string') {
+          try {
+            vec = Array.from(decodeVec(c.vec, dim));
+          } catch {
+            vec = null;
+          }
+        } else if (Array.isArray(c.vec) || ArrayBuffer.isView(c.vec)) {
+          vec = Array.from(c.vec);
+        }
+      }
+      const record = {
+        file: c.file,
+        title: c.title,
+        heading: c.heading,
+        headingPath: c.headingPath,
+        text: c.text,
+        ...(noVectors ? {} : { vec }),
+        ...(c.chunkHash ? { chunkHash: c.chunkHash } : {}),
+        ...(c.startLine !== undefined ? { startLine: c.startLine } : {}),
+        ...(c.endLine !== undefined ? { endLine: c.endLine } : {}),
+        ...(c.meta ? { meta: c.meta } : {}),
+      };
+      outStream.write(JSON.stringify(record) + '\n');
+    }
+    if (opts.output) {
+      await new Promise((resolve) => outStream.end(resolve));
+    }
+  } else if (format === 'csv') {
+    const escapeCsv = (val) => {
+      const str = String(val ?? '');
+      if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+        return '"' + str.replace(/"/g, '""') + '"';
+      }
+      return str;
+    };
+    outStream.write('file,title,heading,headingPath,text\n');
+    for (const c of chunks) {
+      const pathStr = Array.isArray(c.headingPath) ? c.headingPath.join(' > ') : (c.heading || '');
+      const row = [
+        escapeCsv(c.file),
+        escapeCsv(c.title),
+        escapeCsv(c.heading),
+        escapeCsv(pathStr),
+        escapeCsv(c.text),
+      ].join(',');
+      outStream.write(row + '\n');
+    }
+    if (opts.output) {
+      await new Promise((resolve) => outStream.end(resolve));
+    }
+  } else if (format === 'parquet') {
+    let parquet;
+    try {
+      // @ts-ignore
+      parquet = await import('parquetjs-lite');
+    } catch {
+      die('Parquet export requires optional dependency "parquetjs-lite". Install with: npm install parquetjs-lite');
+    }
+    if (!opts.output) {
+      die('Parquet export requires an output file via --output <file.parquet>');
+    }
+    const schemaFields = {
+      file: { type: 'UTF8' },
+      title: { type: 'UTF8' },
+      heading: { type: 'UTF8' },
+      text: { type: 'UTF8' },
+    };
+    const schema = new parquet.ParquetSchema(schemaFields);
+    const outFile = path.resolve(opts.output);
+    const writer = await parquet.ParquetWriter.openFile(schema, outFile);
+    for (const c of chunks) {
+      await writer.appendRow({
+        file: c.file || '',
+        title: c.title || '',
+        heading: c.heading || '',
+        text: c.text || '',
+      });
+    }
+    await writer.close();
+  } else {
+    die(`unknown export format: "${format}". Supported formats: jsonl, csv, parquet.`);
+  }
+}
+
+/**
  * Offline diagnostics for the index/db/model-cache trio (issue #43) — the
  * `mdss check` / `mdss doctor` backend. Pure read-only: parses vectors.json +
  * .hashes.json, validates every stored vector with decodeVec (the same
  * validator the loader uses), walks the db for staleness, and checks the
  * transformers.js cache layout for the index's model. NEVER loads the
  * embedding model and NEVER touches the network.
- * @param {{db:string, indexDir:string, cacheDir:string, requireOffline?:boolean}} paths
+ * @param {{db:string, indexDir:string, cacheDir:string, requireOffline?:boolean, config?:any}} paths
  * @returns {CheckReport}
  */
 
@@ -328,7 +564,7 @@ function cmdStats(opts) {
  * @property {{exists:boolean, stale:boolean, error:(string|null)}} db
  * @property {{id:(string|null), cached:boolean, cachePath:(string|null), error:(string|null)}} model
  */
-export function checkHealth({ db, indexDir, cacheDir, requireOffline = false }) {
+function checkHealth({ db, indexDir, cacheDir, requireOffline = false, config = null }) {
   const report = {
     healthy: true,
     index: { exists: false, parses: false, schemaVersion: null, format: null, recognized: true, error: null },
@@ -336,7 +572,21 @@ export function checkHealth({ db, indexDir, cacheDir, requireOffline = false }) 
     chunks: { total: 0, valid: 0, invalid: [] },
     db: { exists: true, stale: false, error: null },
     model: { id: null, cached: false, cachePath: null, error: null },
+    config: null,
   };
+
+  // --- config file: exists, valid JSON, schema / unknown keys (issue #68) ---
+  if (config && config.path) {
+    report.config = {
+      path: config.path,
+      valid: !config.error && (!config.unknownKeys || config.unknownKeys.length === 0),
+      unknownKeys: config.unknownKeys || [],
+      error: config.error || (config.unknownKeys && config.unknownKeys.length > 0 ? `unknown config keys: ${config.unknownKeys.join(', ')}` : null),
+    };
+    if (!report.config.valid) {
+      report.healthy = false;
+    }
+  }
   const vectorsPath = path.join(indexDir, 'vectors.json');
   const hashesPath = path.join(indexDir, '.hashes.json');
 
@@ -499,7 +749,11 @@ function cmdCheck(opts) {
   const db = resolveDb(opts);
   const indexDir = resolveIndexDir(opts, db);
   const cacheDir = resolveCache(opts);
-  const report = checkHealth({ db, indexDir, cacheDir, requireOffline: resolveOffline(opts) });
+  const report = checkHealth({
+    db, indexDir, cacheDir,
+    requireOffline: resolveOffline(opts),
+    config: opts._config,
+  });
 
   if (opts.json) {
     process.stdout.write(JSON.stringify(report, null, 2) + '\n');
@@ -571,6 +825,14 @@ function cmdCheck(opts) {
     }
   } else {
     out += warn('model: index has no model field (legacy index)');
+  }
+
+  if (report.config) {
+    if (report.config.valid) {
+      out += ok(`config: ${report.config.path}`);
+    } else {
+      out += fail(`config: ${report.config.path} (${report.config.error})`);
+    }
   }
 
   out += report.healthy
@@ -743,6 +1005,14 @@ async function cmdMcp(opts) {
 async function main() {
   const argv = process.argv.slice(2);
   const opts = parseArgs(argv);
+  const configPath = findConfigFile(opts.config);
+  const loadedConfig = loadConfigFile(configPath);
+  if (loadedConfig.error && opts.config) {
+    die(loadedConfig.error);
+  }
+  opts._config = loadedConfig;
+  applyConfigDefaults(opts, loadedConfig.config);
+
   const cmd = opts._.shift();
 
   if (opts.version) { process.stdout.write(`${VERSION}\n`); return; }
@@ -752,6 +1022,7 @@ async function main() {
     case 'stats': return cmdStats(opts);
     case 'check':
     case 'doctor': return cmdCheck(opts);
+    case 'export': return cmdExport(opts);
     case 'search': return cmdSearch(opts);
     case 'tui': return cmdTui(opts);
     case 'serve': return cmdServe(opts);
@@ -773,5 +1044,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 export {
   parseArgs, nextInt, nextValue,
   resolveDb, resolveIndexDir, resolveCache, resolveOffline,
+  findConfigFile, loadConfigFile, applyConfigDefaults, KNOWN_CONFIG_KEYS,
+  checkHealth, cmdExport,
   die, main, HELP, VERSION,
 };

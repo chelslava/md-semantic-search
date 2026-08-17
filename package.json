@@ -28,6 +28,7 @@
     "build": "tsc -p tsconfig.build.json",
     "prepack": "npm run build",
     "test": "npm run build && node --test",
+    "test:coverage": "npm run build && node --test --experimental-test-coverage --test-coverage-lines=85 --test-coverage-functions=85 --test-coverage-branches=80",
     "lint": "tsc --noEmit && eslint bin/",
     "lint:eslint": "eslint bin/"
   },

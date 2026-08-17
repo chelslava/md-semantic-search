@@ -255,6 +255,52 @@ error, and `serve --watch` politely defers its cycle until the other writer
 finishes. A crashed writer can't wedge the index — the lock self-heals by
 pid-liveness + staleness (a dead-pid or abandoned lock is reclaimed).
 
+### Export the index (`mdss export`)
+
+Export chunks and decoded embedding vectors to JSONL, CSV, or Parquet for downstream pipelines (LangChain, LlamaIndex, Qdrant, Pandas):
+
+```bash
+# Export all chunks with decoded float vectors as JSONL:
+mdss export --db ./notes --format jsonl > chunks.jsonl
+
+# Export metadata only without vectors (fast & compact):
+mdss export --db ./notes --format jsonl --no-vectors > chunks_meta.jsonl
+
+# Export as CSV (metadata only):
+mdss export --db ./notes --format csv > chunks.csv
+
+# Export directly to file:
+mdss export --db ./notes --format jsonl --output ./data/corpus.jsonl
+```
+
+#### JSONL output schema:
+```json
+{
+  "file": "runbooks/failover.md",
+  "title": "Database Failover",
+  "heading": "Step 2: Promote Replica",
+  "headingPath": ["Database Failover", "Step 2: Promote Replica"],
+  "text": "Run the promote script...",
+  "vec": [0.012, -0.045, 0.089],
+  "chunkHash": "a1b2c3...",
+  "startLine": 14,
+  "endLine": 28
+}
+```
+
+#### Downstream integration example (Python / LangChain / LlamaIndex):
+```python
+import json
+
+# Load into custom vector store / pipeline
+with open("chunks.jsonl") as f:
+    for line in f:
+        chunk = json.loads(line)
+        text = chunk["text"]
+        vector = chunk["vec"]
+        meta = {"file": chunk["file"], "heading": chunk["heading"]}
+```
+
 ### Diagnose problems (`mdss check` / `mdss doctor`)
 
 `mdss check` (alias: `mdss doctor`) is an **offline, read-only** diagnostic for
@@ -384,6 +430,7 @@ instead of being silently swallowed.
 
 | Flag | Meaning |
 |------|---------|
+| `--config <file>` | Path to config file (default: `.mdssrc.json`, `mdss.config.json`, `.mdssrc`). |
 | `--db <dir>` | Folder of `.md` files (or set `MDSS_DB`). Can be anywhere on disk. |
 | `--index-dir <dir>` | Where to store the index (default: `<db>/.mdss`). |
 | `--cache-dir <dir>` | Model cache dir. Default: `$XDG_CACHE_HOME/mdss` if set, else `~/.cache/mdss` on **all** platforms (so on Windows that's `C:\Users\<you>\.cache\mdss` — *not* `%LOCALAPPDATA%`; override with `MDSS_CACHE_DIR`). |
@@ -421,6 +468,30 @@ export MDSS_INDEX_DIR=~/.cache/team-wiki-index
 mdss index
 mdss search "incident runbook for db failover"
 ```
+
+### Configuration file (`.mdssrc` / `mdss.config.json`)
+
+Instead of repeating CLI options on every command, create a `.mdssrc.json` or `mdss.config.json` file.
+`mdss` discovers config files by searching:
+1. An explicit path passed via `--config <path>` or the `MDSS_CONFIG` environment variable.
+2. Current working directory up through ancestor directories (`.mdssrc.json`, `mdss.config.json`, `.mdssrc`).
+3. User global config at `~/.mdssrc.json` or `~/.mdssrc`.
+
+CLI flags always override configuration values.
+
+Example `.mdssrc.json`:
+
+```json
+{
+  "db": "./notes",
+  "model": "e5-base",
+  "indexDir": "./notes/.mdss",
+  "ignore": ["archive/**", "drafts/**"],
+  "k": 6
+}
+```
+
+Run `mdss check` to validate your configuration file schema and detect unknown keys.
 
 ## Models
 

@@ -139,6 +139,7 @@ export interface BuildIndexOptions {
   embedFn?: any;
   _lockHeld?: boolean;
   maxRetries?: number;
+  onProgress?: (done: number, total: number, chunksPerSec: number) => void;
 }
 
 export interface BuildIndexResult {
@@ -166,11 +167,12 @@ export async function buildIndex(opts: BuildIndexOptions): Promise<BuildIndexRes
     embedFn = embed,
     _lockHeld = false,
     maxRetries = 3,
+    onProgress,
   } = opts;
   if (_lockHeld)
-    return _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn, maxRetries });
+    return _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn, maxRetries, onProgress });
   return withIndexLock(indexDir, () =>
-    _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn, maxRetries })
+    _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn, maxRetries, onProgress })
   );
 }
 
@@ -184,7 +186,10 @@ async function _buildIndexInner({
   offline = false,
   embedFn = embed,
   maxRetries = 3,
-}: Required<Omit<BuildIndexOptions, '_lockHeld'>>): Promise<BuildIndexResult> {
+  onProgress,
+}: Required<Omit<BuildIndexOptions, '_lockHeld' | 'onProgress'>> & {
+  onProgress?: (done: number, total: number, chunksPerSec: number) => void;
+}): Promise<BuildIndexResult> {
   const model = resolveModel(modelName);
   const modelIdentity = `${model.id}@${model.revision || 'main'}`;
   const adapterFingerprint = embeddingAdapterFingerprint(model);
@@ -423,6 +428,7 @@ async function _buildIndexInner({
 
   if (toEmbed.length > 0) {
     log(`Embedding ${toEmbed.length} chunks from ${changedFiles} changed file(s) with ${model.id}...`);
+    const embedStartTime = Date.now();
     let completedBatches = 0;
     for (let i = 0; i < toEmbed.length; i += BATCH) {
       const slice = toEmbed.slice(i, i + BATCH);
@@ -452,7 +458,11 @@ async function _buildIndexInner({
       if (completedBatches % CHECKPOINT_BATCHES === 0) {
         atomicWrite(checkpointPath, JSON.stringify(checkpointSnapshot(false)));
       }
-      log(`  ${Math.min(i + BATCH, toEmbed.length)}/${toEmbed.length}`);
+      const done = Math.min(i + BATCH, toEmbed.length);
+      const elapsedSec = (Date.now() - embedStartTime) / 1000;
+      const chunksPerSec = elapsedSec > 0 ? done / elapsedSec : 0;
+      onProgress?.(done, toEmbed.length, chunksPerSec);
+      log(`  ${done}/${toEmbed.length}`);
     }
   }
 
