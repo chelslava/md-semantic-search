@@ -446,6 +446,8 @@ instead of being silently swallowed.
 | `--json` | Machine-readable output: `index` → build result JSON, `stats` → index stats JSON, `search` → hit list JSON (each hit includes `matches` — the query terms found in the chunk). |
 | `--semantic` | `search` only: pure vector ranking, skip lexical/RRF fusion (zero lexical tokenization). |
 | `--rerank` | Re-rank the candidate pool with a cross-encoder (`Xenova/bge-reranker-base`, ~280 MB model, downloaded on first use). Slower, sharper results — see *Reranking* below. |
+| `--ann` | Approximate nearest neighbor search via IVF clustering (search; auto-enables for large corpora). |
+| `--nprobe <n>` | Number of nearest centroid clusters to probe during ANN search (default 8). |
 | `--port <n>` | HTTP port for `serve` (default 8747, or `MDSS_PORT`). |
 | `--host <ip>` | Bind address for `serve` (default `127.0.0.1` — loopback only; use `0.0.0.0` to expose on the LAN, or `MDSS_HOST`). |
 | `--watch` | `serve`: re-index incrementally when files change. |

@@ -7,6 +7,7 @@ import { rerankScores } from './rerank.js';
 import { bm25Scores, matchingTerms, tokenize, fuzzyTitleAliasScores, LexicalIndex } from './lexical.js';
 import { collapseResults } from './collapse.js';
 import { DocumentMetadata } from './frontmatter.js';
+import { trainIVF, searchIVFCandidates, deserializeIVF, IVFIndex, ANN_THRESHOLD, DEFAULT_NPROBE } from './ivf.js';
 
 export { tokenize } from './lexical.js';
 
@@ -165,13 +166,14 @@ export interface RuntimeIndexState {
   expectedDim: number | undefined;
   model: ModelDescriptor;
   queryCache: QueryEmbeddingCache;
+  ivf?: IVFIndex;
 }
 
 const runtimeIndexStates = new WeakMap<IndexFile, RuntimeIndexState>();
 
 function snapshotRuntimeIndex(
   index: IndexFile,
-  validation: { schema: number; dim: number | undefined; model: ModelDescriptor }
+  validation: { schema: number; dim: number | undefined; model: ModelDescriptor; ivf?: IVFIndex }
 ): RuntimeIndexState {
   const dim = validation.dim || (index.chunks[0]?.vec?.length ?? 0);
   const count = index.chunks.length;
@@ -228,6 +230,7 @@ function snapshotRuntimeIndex(
     expectedDim: validation.dim,
     model: { ...validation.model },
     queryCache: new QueryEmbeddingCache(100),
+    ivf: validation.ivf,
   };
 }
 
@@ -338,7 +341,17 @@ export function loadIndex(indexDir: string): { index: IndexFile; model: ModelDes
   }
 
   warnIfStale(index);
-  runtimeIndexStates.set(index, snapshotRuntimeIndex(index, { schema: validated.schema, dim: expectedDim, model }));
+
+  const ivfPath = path.join(indexDir, 'ivf.json');
+  let ivf: IVFIndex | undefined;
+  if (fs.existsSync(ivfPath)) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(ivfPath, 'utf8'));
+      ivf = deserializeIVF(raw);
+    } catch {}
+  }
+
+  runtimeIndexStates.set(index, snapshotRuntimeIndex(index, { schema: validated.schema, dim: expectedDim, model, ivf }));
 
   return { index, model };
 }
@@ -368,6 +381,8 @@ export interface SearchOptions {
   maxPerFile?: number;
   maxPerDoc?: number;
   useQueryCache?: boolean;
+  ann?: boolean;
+  nprobe?: number;
 }
 
 export interface SearchResultHit {
@@ -490,9 +505,26 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
   }
   const queryTerms = [...new Set(tokenize(query))];
 
-  const semantic = candidates.map(({ chunk, idx }) => {
-    return { idx, score: cosine(qVec, chunk.vec) };
-  });
+  let semantic: Array<{ idx: number; score: number }>;
+  const useAnn = opts.ann ?? (runtime.ivf !== undefined && candidates.length >= ANN_THRESHOLD);
+  if (useAnn && candidates.length >= ANN_THRESHOLD) {
+    if (!runtime.ivf) {
+      const rawVecs = chunks.map((c) => c.vec);
+      runtime.ivf = trainIVF(rawVecs);
+    }
+    const qVecF32 = qVec instanceof Float32Array ? qVec : Float32Array.from(qVec);
+    const probedSet = new Set(searchIVFCandidates(qVecF32, runtime.ivf, opts.nprobe ?? DEFAULT_NPROBE));
+    semantic = candidates.map(({ chunk, idx }) => {
+      if (!probedSet.has(idx)) {
+        return { idx, score: -1 };
+      }
+      return { idx, score: cosine(qVec, chunk.vec) };
+    });
+  } else {
+    semantic = candidates.map(({ chunk, idx }) => {
+      return { idx, score: cosine(qVec, chunk.vec) };
+    });
+  }
   const cosByIdx = new Map(semantic.map((s) => [s.idx, s.score]));
 
   const pool = rerank ? rerankPool || Math.max(20, k * 3) : k;

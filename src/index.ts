@@ -47,4 +47,9 @@ export {
   MCP_TOOLS, handleMcpRequest, startMcpServer,
 } from './mcp.js';
 
+export {
+  trainIVF, searchIVFCandidates, serializeIVF, deserializeIVF,
+  ANN_THRESHOLD, DEFAULT_NPROBE,
+} from './ivf.js';
+
 export { runTui } from './tui.js';

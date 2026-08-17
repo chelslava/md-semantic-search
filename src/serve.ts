@@ -327,6 +327,8 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         custom: payload.custom,
         explain: !!payload.explain,
         maxPerFile: payload.maxPerFile || payload.maxPerDoc,
+        ann: payload.ann,
+        nprobe: payload.nprobe,
       });
       json(res, 200, { query, k, count: results.length, results });
     } catch (e: any) {

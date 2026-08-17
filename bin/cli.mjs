@@ -80,6 +80,8 @@ function parseArgs(argv) {
       const v = nextValue(argv, ++i, a);
       opts.tag = opts.tag ? (Array.isArray(opts.tag) ? [...opts.tag, v] : [opts.tag, v]) : v;
     }
+    else if (a === '--ann') opts.ann = true;
+    else if (a === '--nprobe') opts.nprobe = nextInt(argv, ++i, a);
     else if (a === '--project') opts.project = nextValue(argv, ++i, a);
     else if (a === '--type') opts.type = nextValue(argv, ++i, a);
     else if (a === '--status') opts.status = nextValue(argv, ++i, a);
@@ -111,7 +113,7 @@ const KNOWN_CONFIG_KEYS = new Set([
   'targetTokens', 'target-tokens', 'port', 'host', 'apiKey', 'api-key',
   'healthPublic', 'health-public', 'watch', 'watchInterval', 'watch-interval',
   'watchDelay', 'watch-delay', 'offline', 'rerank', 'semantic', 'tag', 'project', 'type', 'status', 'canonical',
-  'format', 'noVectors', 'no-vectors', 'output', 'workers'
+  'format', 'noVectors', 'no-vectors', 'output', 'workers', 'ann', 'nprobe'
 ]);
 
 function findConfigFile(explicitPath) {
@@ -250,6 +252,8 @@ Options:
   --json              Machine-readable output (index, stats, search).
   --semantic          Pure vector ranking, skip lexical/RRF fusion (search).
   --rerank            Re-rank candidates with a cross-encoder (search; ~280MB model).
+  --ann               Approximate nearest neighbor search via IVF (search).
+  --nprobe <n>        Number of centroids to probe for ANN (search, default: 8).
   --port <n>          HTTP port for serve (default: ${DEFAULT_PORT}).
   --host <ip>         Bind address for serve (default: ${DEFAULT_HOST} — loopback
                       only; use 0.0.0.0 to expose on the LAN, env MDSS_HOST).
@@ -314,6 +318,7 @@ async function cmdIndex(opts) {
       ignore: opts.ignore,
       offline: resolveOffline(opts),
       workers: opts.workers,
+      ann: opts.ann,
       log: s => {
         if (process.stderr.isTTY && !opts.json && /^\s+\d+\/\d+$/.test(s)) return;
         process.stderr.write(s + '\n');
@@ -884,6 +889,8 @@ async function cmdSearch(opts) {
     canonicalOnly: opts.canonical,
     explain: !!opts.explain,
     maxPerFile: opts.maxPerFile || opts.maxPerDoc,
+    ann: opts.ann,
+    nprobe: opts.nprobe,
   });
 
   if (opts.json) { process.stdout.write(JSON.stringify(results, null, 2) + '\n'); return; }

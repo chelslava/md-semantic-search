@@ -35,6 +35,7 @@ import {
   TermFrequencies,
 } from './lexical.js';
 import { embeddingAdapterFingerprint, legacyEmbeddingAdapterFingerprint } from './models.js';
+import { trainIVF, serializeIVF, ANN_THRESHOLD } from './ivf.js';
 
 export interface IndexChunk {
   file: string;
@@ -141,6 +142,7 @@ export interface BuildIndexOptions {
   maxRetries?: number;
   onProgress?: (done: number, total: number, chunksPerSec: number) => void;
   workers?: number;
+  ann?: boolean;
 }
 
 export interface BuildIndexResult {
@@ -170,11 +172,12 @@ export async function buildIndex(opts: BuildIndexOptions): Promise<BuildIndexRes
     maxRetries = 3,
     onProgress,
     workers = 1,
+    ann = false,
   } = opts;
   if (_lockHeld)
-    return _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn, maxRetries, onProgress, workers });
+    return _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn, maxRetries, onProgress, workers, ann });
   return withIndexLock(indexDir, () =>
-    _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn, maxRetries, onProgress, workers })
+    _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn, maxRetries, onProgress, workers, ann })
   );
 }
 
@@ -190,9 +193,11 @@ async function _buildIndexInner({
   maxRetries = 3,
   onProgress,
   workers = 1,
-}: Required<Omit<BuildIndexOptions, '_lockHeld' | 'onProgress' | 'workers'>> & {
+  ann = false,
+}: Required<Omit<BuildIndexOptions, '_lockHeld' | 'onProgress' | 'workers' | 'ann'>> & {
   onProgress?: (done: number, total: number, chunksPerSec: number) => void;
   workers?: number;
+  ann?: boolean;
 }): Promise<BuildIndexResult> {
   const model = resolveModel(modelName);
   const modelIdentity = `${model.id}@${model.revision || 'main'}`;
@@ -551,6 +556,18 @@ async function _buildIndexInner({
   atomicWrite(checkpointPath, JSON.stringify({ ...index, complete: true, hashes: newHashes }));
   atomicWrite(vectorsPath, JSON.stringify(index));
   atomicWrite(hashesPath, JSON.stringify(newHashes, null, 2));
+
+  const ivfPath = path.join(indexDir, 'ivf.json');
+  if (ann || chunks.length >= ANN_THRESHOLD) {
+    const rawVecs = chunks.map((c) => (c.vec instanceof Float32Array ? c.vec : Float32Array.from(c.vec as number[])));
+    const ivfIndex = trainIVF(rawVecs);
+    atomicWrite(ivfPath, JSON.stringify(serializeIVF(ivfIndex)));
+  } else if (fs.existsSync(ivfPath)) {
+    try {
+      fs.unlinkSync(ivfPath);
+    } catch {}
+  }
+
   fs.unlinkSync(checkpointPath);
 
   return {
