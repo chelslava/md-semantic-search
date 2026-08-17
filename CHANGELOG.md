@@ -4,9 +4,21 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-08-17
 
 ### Added
+- **Issue #81** — parallel batch embedding with concurrency workers (`--workers <n>`, `BuildIndexOptions.workers`). Batches chunks in slices of 32 and executes concurrently across worker promises while preserving atomic checkpointing and progress callbacks.
+- **Issue #80** — pure-TypeScript Spherical K-Means IVF approximate nearest-neighbor tier (`src/ivf.ts`). Prunes candidate chunks via centroid probes (`--ann`, `--nprobe`), achieving Recall@10 $\ge 0.95$ on 100k+ chunk corpora with base64 encoded centroid persistence (`ivf.json`).
+- **Issue #69** — official Obsidian plugin (`integrations/obsidian/`) providing a live semantic vector search sidebar panel, deep note heading jump (`note.md#Heading`), cosine score preview, and full settings tab.
+- **Issue #67** — dedicated documentation site (`docs/`, `scripts/build-docs.mjs`, `npm run docs:build`) with automated GitHub Pages deployment (`.github/workflows/docs.yml`).
+- **Issue #64** — interactive terminal UI search mode (`mdss -i`, `mdss --interactive`, `mdss tui`) with live search input, keyboard navigation, and split-screen passage preview.
+- **Issue #71** — full TypeScript codebase migration (`src/*.ts` + `tsconfig.build.json` targeting NodeNext ESM output to `dist/*.js` and `dist/*.d.ts`).
+- **Issue #72** — Obsidian wikilink extraction and backlink graph indexing (`extractLinks`, `buildRelationshipGraph`, `getRelatedNotes`).
+- **Issue #73** — property-based invariant test suite with `fast-check` for tokenizer, cosine metrics, and structural markdown chunking.
+- **Issue #63** — HTTP daemon security with Bearer token authentication (`--api-key`, `MDSS_API_KEY`) and optional unauthenticated `/health` probing (`--health-public`).
+- **Issue #62** — index export command (`mdss export`) to JSONL (with decoded vector floats), CSV, and Parquet.
+- **Issue #59** — configuration file auto-discovery (`.mdssrc`, `.mdssrc.json`, `mdss.config.json`) with directory hierarchy lookup and homedir fallback.
+- **Issue #58** — live progress reporting during indexing with percentage, ETA, and chunks/sec throughput indicator.
 - **Issue #56** — reproducible golden-set benchmark. A frozen synthetic RU/EN
   corpus (`bench/corpus/`, 16 files / 8 topics × 2 languages) plus graded
   relevance judgements (`bench/fixtures/dev-golden.json`, 60 queries across six

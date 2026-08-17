@@ -117,6 +117,7 @@ function markdownToHtml(md) {
 }
 
 function renderPage(item, contentHtml) {
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   const navHtml = NAV_ITEMS.map((n) => {
     const active = n.id === item.id ? ' active' : '';
     return `<a class="nav-link${active}" href="${n.out}">${n.title}</a>`;
@@ -255,7 +256,7 @@ function renderPage(item, contentHtml) {
 <body>
   <aside>
     <a href="index.html" class="brand">
-      md-semantic-search <span class="badge">v0.4.0</span>
+      md-semantic-search <span class="badge">v${pkg.version}</span>
     </a>
     <nav>
       ${navHtml}
