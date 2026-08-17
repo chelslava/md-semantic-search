@@ -23,6 +23,7 @@ const NAV_ITEMS = [
   { id: 'models', title: 'Models & Adapters', file: 'models.md', out: 'models.html' },
   { id: 'architecture', title: 'Architecture', file: 'architecture.md', out: 'architecture.html' },
   { id: 'benchmarks', title: 'Research & Benchmarks', file: 'benchmarks.md', out: 'benchmarks.html' },
+  { id: 'roadmap', title: 'Roadmap to v1.0', file: 'roadmap.md', out: 'roadmap.html' },
   { id: 'changelog', title: 'Changelog', file: 'changelog.md', out: 'changelog.html' },
 ];
 
