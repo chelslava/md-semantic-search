@@ -76,7 +76,7 @@ export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir:
         },
         serverInfo: {
           name: 'md-semantic-search',
-          version: '0.4.0',
+          version: '0.5.0',
         },
       },
     };

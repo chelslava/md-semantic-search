@@ -419,12 +419,52 @@ const r = await fetch('http://localhost:8747/search', {
 const { results } = await r.json();
 ```
 
-The API is unauthenticated — by default it binds to **loopback only**
+The API is unauthenticated by default (or secured via `--api-key`) — by default it binds to **loopback only**
 (`127.0.0.1`), so other machines on your LAN cannot reach it. Pass `--host
 0.0.0.0` (or `MDSS_HOST`) only if you intend to expose it on a network, and put
 a reverse proxy (or at least a firewall rule) in front of it. Request bodies
 are capped at 64 KB (oversized → `413`), and malformed JSON gets a clear `400`
 instead of being silently swallowed.
+
+### 4. MCP Server (Claude Desktop, Cursor, Copilot, Antigravity)
+
+`md-semantic-search` provides a zero-dependency **Model Context Protocol (MCP)** server over standard I/O (JSON-RPC 2.0). This allows AI agents and IDEs to query your local notes privately by meaning without uploading text to external clouds.
+
+```bash
+mdss mcp --db /path/to/your/markdown
+```
+
+#### Available MCP Tools:
+- **`search_markdown`**: Hybrid semantic vector + BM25 search with optional `path` glob and `tag` filters.
+- **`get_chunk`**: Retrieve a specific section by file and heading.
+- **`list_files`**: List indexed Markdown files with chunk counts.
+- **`index_status`**: Inspect index health, chunk counts, and model metadata.
+
+#### Claude Desktop Configuration:
+Add to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "md-semantic-search": {
+      "command": "npx",
+      "args": ["-y", "md-semantic-search", "mcp", "--db", "C:\\path\\to\\your\\notes"]
+    }
+  }
+}
+```
+
+#### Cursor Configuration (`.cursor/mcp.json`):
+```json
+{
+  "mcpServers": {
+    "md-semantic-search": {
+      "command": "npx",
+      "args": ["-y", "md-semantic-search", "mcp", "--db", "./notes"]
+    }
+  }
+}
+```
 
 ### Options
 
@@ -607,6 +647,7 @@ is an in-memory dot-product sweep.
 ## Integrations
 
 - **Obsidian**: An official plugin is available in [`integrations/obsidian`](./integrations/obsidian) providing a live semantic search panel directly in your vault connected to `mdss serve`.
+- **Model Context Protocol (MCP)**: Native stdio JSON-RPC 2.0 server (`mdss mcp`) integrating with Claude Desktop, Cursor, Copilot, Antigravity, and AI agents for local knowledge retrieval.
 
 ## License
 
