@@ -22,6 +22,13 @@ function fakeEmbed(texts, kind, model) {
   });
 }
 
+function safeRm(p) {
+  if (!p) return;
+  try {
+    fs.rmSync(p, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  } catch {}
+}
+
 function request(url, opts = {}, body = null) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
@@ -83,7 +90,7 @@ test('auth: serve without apiKey permits unauthenticated requests', async () => 
 
     await close();
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -126,7 +133,7 @@ test('auth: serve with apiKey enforces Bearer authentication', async () => {
 
     await close();
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -163,6 +170,6 @@ test('auth: healthPublic option permits /health unauthenticated while requiring 
 
     await close();
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });

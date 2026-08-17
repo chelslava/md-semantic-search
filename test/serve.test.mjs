@@ -425,7 +425,7 @@ test('serve: oversized /search body → 413, connection not half-open (issue #16
       await srv.close();
     }
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -450,6 +450,6 @@ test('serve: malformed JSON body → 400 with the parse error (issue #16)', asyn
       await srv.close();
     }
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });

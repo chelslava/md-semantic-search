@@ -140,6 +140,7 @@ export interface BuildIndexOptions {
   _lockHeld?: boolean;
   maxRetries?: number;
   onProgress?: (done: number, total: number, chunksPerSec: number) => void;
+  workers?: number;
 }
 
 export interface BuildIndexResult {
@@ -168,11 +169,12 @@ export async function buildIndex(opts: BuildIndexOptions): Promise<BuildIndexRes
     _lockHeld = false,
     maxRetries = 3,
     onProgress,
+    workers = 1,
   } = opts;
   if (_lockHeld)
-    return _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn, maxRetries, onProgress });
+    return _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn, maxRetries, onProgress, workers });
   return withIndexLock(indexDir, () =>
-    _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn, maxRetries, onProgress })
+    _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn, maxRetries, onProgress, workers })
   );
 }
 
@@ -187,8 +189,10 @@ async function _buildIndexInner({
   embedFn = embed,
   maxRetries = 3,
   onProgress,
-}: Required<Omit<BuildIndexOptions, '_lockHeld' | 'onProgress'>> & {
+  workers = 1,
+}: Required<Omit<BuildIndexOptions, '_lockHeld' | 'onProgress' | 'workers'>> & {
   onProgress?: (done: number, total: number, chunksPerSec: number) => void;
+  workers?: number;
 }): Promise<BuildIndexResult> {
   const model = resolveModel(modelName);
   const modelIdentity = `${model.id}@${model.revision || 'main'}`;
@@ -430,39 +434,95 @@ async function _buildIndexInner({
     log(`Embedding ${toEmbed.length} chunks from ${changedFiles} changed file(s) with ${model.id}...`);
     const embedStartTime = Date.now();
     let completedBatches = 0;
-    for (let i = 0; i < toEmbed.length; i += BATCH) {
-      const slice = toEmbed.slice(i, i + BATCH);
-      const vecs = await embedFn(slice.map(canonicalPassage), 'passage', model, cacheDir, offline, {
-        maxRetries,
-        log,
-      });
-      let batchDim = buildDim;
-      try {
-        if (!Array.isArray(vecs) || vecs.length !== slice.length) throw new Error('batch size');
-        if (vecs.length > 0 && batchDim === undefined) {
-          batchDim = validateNumericVector(vecs[0], undefined, 'embedding vector 0');
+    const concurrency = Math.max(1, Math.min(workers || 1, 16));
+
+    if (concurrency <= 1 || toEmbed.length <= BATCH) {
+      for (let i = 0; i < toEmbed.length; i += BATCH) {
+        const slice = toEmbed.slice(i, i + BATCH);
+        const vecs = await embedFn(slice.map(canonicalPassage), 'passage', model, cacheDir, offline, {
+          maxRetries,
+          log,
+        });
+        let batchDim = buildDim;
+        try {
+          if (!Array.isArray(vecs) || vecs.length !== slice.length) throw new Error('batch size');
+          if (vecs.length > 0 && batchDim === undefined) {
+            batchDim = validateNumericVector(vecs[0], undefined, 'embedding vector 0');
+          }
+          for (const vec of vecs) validateNumericVector(vec, batchDim, 'embedding vector');
+        } catch {
+          throw new Error(
+            `embedding returned invalid vectors` +
+              (batchDim === undefined ? '' : ` (expected ${batchDim} dims)`) +
+              ' — run `mdss index` to rebuild'
+          );
         }
-        for (const vec of vecs) validateNumericVector(vec, batchDim, 'embedding vector');
-      } catch {
-        throw new Error(
-          `embedding returned invalid vectors` +
-            (batchDim === undefined ? '' : ` (expected ${batchDim} dims)`) +
-            ' — run `mdss index` to rebuild'
-        );
+        buildDim = batchDim;
+        slice.forEach((c, j) => {
+          c.vec = vecs[j];
+        });
+        completedBatches++;
+        if (completedBatches % CHECKPOINT_BATCHES === 0) {
+          atomicWrite(checkpointPath, JSON.stringify(checkpointSnapshot(false)));
+        }
+        const done = Math.min(i + BATCH, toEmbed.length);
+        const elapsedSec = (Date.now() - embedStartTime) / 1000;
+        const chunksPerSec = elapsedSec > 0 ? done / elapsedSec : 0;
+        onProgress?.(done, toEmbed.length, chunksPerSec);
+        log(`  ${done}/${toEmbed.length}`);
       }
-      buildDim = batchDim;
-      slice.forEach((c, j) => {
-        c.vec = vecs[j];
-      });
-      completedBatches++;
-      if (completedBatches % CHECKPOINT_BATCHES === 0) {
-        atomicWrite(checkpointPath, JSON.stringify(checkpointSnapshot(false)));
+    } else {
+      const batches: Array<{ slice: any[] }> = [];
+      for (let i = 0; i < toEmbed.length; i += BATCH) {
+        batches.push({ slice: toEmbed.slice(i, i + BATCH) });
       }
-      const done = Math.min(i + BATCH, toEmbed.length);
-      const elapsedSec = (Date.now() - embedStartTime) / 1000;
-      const chunksPerSec = elapsedSec > 0 ? done / elapsedSec : 0;
-      onProgress?.(done, toEmbed.length, chunksPerSec);
-      log(`  ${done}/${toEmbed.length}`);
+
+      let currentBatchIdx = 0;
+      let embeddedCount = 0;
+
+      const runWorker = async () => {
+        while (currentBatchIdx < batches.length) {
+          const idx = currentBatchIdx++;
+          const { slice } = batches[idx];
+          const vecs = await embedFn(slice.map(canonicalPassage), 'passage', model, cacheDir, offline, {
+            maxRetries,
+            log,
+          });
+          let batchDim = buildDim;
+          try {
+            if (!Array.isArray(vecs) || vecs.length !== slice.length) throw new Error('batch size');
+            if (vecs.length > 0 && batchDim === undefined) {
+              batchDim = validateNumericVector(vecs[0], undefined, 'embedding vector 0');
+            }
+            for (const vec of vecs) validateNumericVector(vec, batchDim, 'embedding vector');
+          } catch {
+            throw new Error(
+              `embedding returned invalid vectors` +
+                (batchDim === undefined ? '' : ` (expected ${batchDim} dims)`) +
+                ' — run `mdss index` to rebuild'
+            );
+          }
+          buildDim = batchDim;
+          slice.forEach((c, j) => {
+            c.vec = vecs[j];
+          });
+          completedBatches++;
+          embeddedCount += slice.length;
+          if (completedBatches % CHECKPOINT_BATCHES === 0) {
+            atomicWrite(checkpointPath, JSON.stringify(checkpointSnapshot(false)));
+          }
+          const elapsedSec = (Date.now() - embedStartTime) / 1000;
+          const chunksPerSec = elapsedSec > 0 ? embeddedCount / elapsedSec : 0;
+          onProgress?.(embeddedCount, toEmbed.length, chunksPerSec);
+          log(`  ${embeddedCount}/${toEmbed.length}`);
+        }
+      };
+
+      const workerPromises: Promise<void>[] = [];
+      for (let w = 0; w < concurrency; w++) {
+        workerPromises.push(runWorker());
+      }
+      await Promise.all(workerPromises);
     }
   }
 

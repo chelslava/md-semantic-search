@@ -32,6 +32,13 @@ function fakeEmbed(texts, kind, model) {
   });
 }
 
+function safeRm(p) {
+  if (!p) return;
+  try {
+    fs.rmSync(p, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  } catch {}
+}
+
 async function makeIndex() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-search-'));
   const idx = path.join(dir, '.mdss');
@@ -154,7 +161,7 @@ test('search: returns results with expected shape, hybrid and semanticOnly', asy
     const semantic = await search({ ...opts, query: 'coffee guide beans roasted ground', semanticOnly: true });
     assert.equal(semantic[0].file, 'a.md', 'semantic-only ranks the identical chunk first');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -183,7 +190,7 @@ test('issue #18: two queries on one loaded index tokenize the corpus once', asyn
     assert.equal(_stats.corpusTokenizedChars, afterFirst,
       'second/third query reuse the cache — zero corpus re-tokenization');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -202,7 +209,7 @@ test('issue #18: --semantic performs zero lexical corpus tokenization', async ()
     assert.ok(r.length > 0 && r[0].cosine !== undefined, 'results still ranked by cosine');
     assert.ok(Array.isArray(r[0].matches) && r[0].matches.length >= 0, 'matches field present');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -225,7 +232,7 @@ test('issue #18: cache is per chunks array — a --path filter reuses token sets
     assert.equal(_stats.corpusTokenizedChars, before,
       'second filtered query: still zero');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -251,7 +258,7 @@ test('search: honors k and returns no matches gracefully', async () => {
     const miss = await search({ indexDir: idx, cacheDir: dir, query: 'zzqqxx', k: 3, embedFn: fakeEmbed });
     assert.equal(miss.length, 0);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -263,7 +270,7 @@ test('search: throws with clear message when index is missing', async () => {
       /No index at .*\.mdss.*Run `mdss index` first/,
     );
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -281,7 +288,7 @@ test('search: legacy index without model fields still works (validation fallback
     const results = await search({ indexDir: idx, cacheDir: dir, query: 'guide', k: 3, embedFn: fakeEmbed });
     assert.equal(results.length, 3, 'search proceeds on a legacy index');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -301,7 +308,7 @@ test('search: schema-v1 index without headingPath remains searchable with unchan
     ]);
     assert.equal('headingPath' in results[0], false);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -331,7 +338,7 @@ test('search: legacy decimal vectors.json loads and ranks identically (issue #4)
         `cosine delta at rank ${i} < 1e-4`);
     }
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -352,7 +359,7 @@ test('loadIndex/searchIndex: parse once, reuse across queries (issues #14+#2)', 
     const oneShot = await search({ indexDir: idx, cacheDir: dir, query: 'coffee', k: 3, embedFn: fakeEmbed });
     assert.deepEqual(q1.map(r => r.file), oneShot.map(r => r.file), 'loadIndex path == one-shot path');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -379,7 +386,7 @@ test('loadIndex: v0/v1/v2 retain the explicit legacy overlap lexical state', asy
         `transferred schema v${schemaVersion} uses overlap token sets without WeakMap state`);
     }
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -401,7 +408,7 @@ test('loadIndex: genuine v3 missing or corrupt lexical data fails with rebuild h
       assert.throws(() => loadIndex(idx), /schema v3 lexical index.*mdss index.*rebuild/i, fixture.name);
     }
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -462,7 +469,7 @@ test('loadIndex: schema-v3 envelope and chunks fail closed with actionable error
     fs.writeFileSync(vectorsPath, JSON.stringify(custom));
     assert.throws(() => loadIndex(idx), /nonempty schema v3 custom index requires explicit dim/i);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -488,7 +495,7 @@ test('searchIndex: rejects sparse stored and query vectors', async () => {
       /missing vector component.*mdss index/i,
     );
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -513,7 +520,7 @@ test('searchIndex: validates a transferred index once and only validates each ne
 
     assert.equal(headingPathReads, afterFirst, 'second query reuses cached runtime validation');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -531,7 +538,7 @@ test('searchIndex: mutations after load cannot change the owned runtime snapshot
     assert.ok(Number.isFinite(results[0].cosine));
     assert.ok(Number.isFinite(results[0].score));
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -548,7 +555,7 @@ test('searchIndex: mutations after the first query cannot change later searches'
 
     assert.deepEqual(second, first);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -578,7 +585,7 @@ test('searchIndex: mutations during embed await cannot affect the in-flight or l
     assert.deepEqual(later, inFlight);
     assert.ok(Number.isFinite(inFlight[0].cosine));
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -604,7 +611,7 @@ test('searchIndex: direct invalid objects reject before their first runtime snap
       /headingPath must contain nonempty strings.*mdss index/i,
     );
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -632,7 +639,7 @@ test('searchIndex: direct loaded model substitution cannot override canonical in
     assert.equal(receivedModel.revision, 'main');
     assert.equal(receivedModel.queryPrefix, 'query: ');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -647,7 +654,7 @@ test('loadIndex: raw registry model ids enforce known dimensions', async () => {
     fs.writeFileSync(vectorsPath, JSON.stringify(current));
     assert.throws(() => loadIndex(idx), /index\.dim 7 does not match known model dimension 768/i);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -663,7 +670,7 @@ test('searchIndex: direct schema-v3 missing lexical data never downgrades to ove
       /schema v3 lexical index.*mdss index.*rebuild/i,
     );
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -677,7 +684,7 @@ test('searchIndex: query vector dimension must match the trusted index dimension
       /query vector has 3 dims, expected 768.*mdss index/i,
     );
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -693,7 +700,7 @@ test('loadIndex: index.dim is positive, safe, and consistent with a known model'
     fs.writeFileSync(vectorsPath, JSON.stringify({ ...current, dim: 7 }));
     assert.throws(() => loadIndex(idx), /index\.dim 7 does not match known model dimension 768.*mdss index/i);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -712,7 +719,7 @@ test('loadIndex: decimal vectors reject non-finite and non-number entries', asyn
     writeIndex(idx, index);
     assert.throws(() => loadIndex(idx), /non-finite vector value.*mdss index/i);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -740,7 +747,7 @@ test('search: schema-v3 BM25 does not rank rare ZXQ-47 below legacy overlap', as
     assert.ok(v3Rank >= 0 && legacyRank >= 0);
     assert.ok(v3Rank <= legacyRank, `v3 rank ${v3Rank} must not be worse than legacy ${legacyRank}`);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -764,7 +771,7 @@ test('search: section-title plus shared body term ranks the contextual descendan
     assert.equal(results[0].file, 'b-context.md');
     assert.deepEqual(results[0].matches, ['deployment', 'recovery']);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -781,7 +788,7 @@ test('search: v3 filtering keeps canonical doc IDs for BM25, cosine, matches, an
     assert.deepEqual(stocks.matches, ['stocks']);
     assert.ok(results.every((result) => result.file !== 'b.md'));
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -800,7 +807,7 @@ test('search: genuine v3 hybrid, semantic, filtered, and matches paths tokenize 
     const hockey = semantic.find((result) => result.file === 'b.md');
     assert.deepEqual(hockey.matches, ['hockey'], 'v3 semantic-only matches use postings and query order');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -809,7 +816,7 @@ test('loadIndex: throws with clear message when index is missing', async () => {
   try {
     assert.throws(() => loadIndex(path.join(dir, '.mdss')), /No index at .*\.mdss.*Run `mdss index` first/);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -830,7 +837,7 @@ test('search: --path glob restricts results to matching files (issue #13)', asyn
     const none = await search({ ...opts, path: 'zz/**' });
     assert.equal(none.length, 0, 'non-matching glob → no results');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -847,7 +854,7 @@ test('search: --since filters by file mtime (issue #13)', async () => {
     assert.ok(res.every(r => r.file !== 'a.md'));
     assert.deepEqual(res.map(r => r.file).sort(), ['b.md', 'c.md']);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -859,7 +866,7 @@ test('search: invalid --since value throws a clear error (issue #13)', async () 
       /Invalid --since date/,
     );
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -875,7 +882,7 @@ test('search: results carry matches — query terms found in each chunk (issue #
     assert.ok(Array.isArray(b.matches) && b.matches.includes('hockey'), 'b.md matches include "hockey"');
     assert.ok(!a.matches.includes('hockey'), 'a.md does not match "hockey"');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -904,7 +911,7 @@ test('loadIndex: corrupt vectors.json gets a clear error naming the file (issue 
       'error names the file and the fix, no raw stack trace',
     );
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -930,7 +937,7 @@ test('loadIndex: wrong-dim vector is caught with the chunk identity (issue #40)'
       'search propagates the load error',
     );
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -953,7 +960,7 @@ test('loadIndex: decimal-array chunk with wrong dim is caught too (issue #40)', 
       'decimal-array dim mismatch rejected',
     );
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -970,7 +977,7 @@ test('loadIndex: newer schemaVersion → clear upgrade error (issue #39)', async
       'clear upgrade-required error, no silent misparse',
     );
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -989,7 +996,7 @@ test('buildIndex: writes schemaVersion and re-indexes a legacy v0 index (issue #
     // and it loads cleanly
     assert.ok(loadIndex(idx), 'rebuilt index loads');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -1006,7 +1013,7 @@ test('buildIndex: newer schemaVersion refuses to rebuild over a future index (is
       'refuses to clobber an index it cannot understand',
     );
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -1044,7 +1051,7 @@ test('buildIndex: corrupt vector in the old index is dropped and re-embedded (is
     const loaded = loadIndex(idx);
     assert.equal(loaded.index.chunks.length, written.chunks.length);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -1067,7 +1074,7 @@ test('search: stale index warns on stderr but still returns results (issue #20)'
     assert.match(stderr, /warning: index is .* older than the newest change in .*mdss-search-/);
     assert.match(stderr, /mdss index/);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -1087,6 +1094,6 @@ test('loadIndex: fresh index produces no stale warning (issue #20)', async () =>
     assert.ok(!chunks.some(c => /older than the newest change/.test(c)),
       'no stale warning on a fresh index');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });

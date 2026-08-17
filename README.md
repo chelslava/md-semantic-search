@@ -435,6 +435,10 @@ instead of being silently swallowed.
 | `--index-dir <dir>` | Where to store the index (default: `<db>/.mdss`). |
 | `--cache-dir <dir>` | Model cache dir. Default: `$XDG_CACHE_HOME/mdss` if set, else `~/.cache/mdss` on **all** platforms (so on Windows that's `C:\Users\<you>\.cache\mdss` — *not* `%LOCALAPPDATA%`; override with `MDSS_CACHE_DIR`). |
 | `--model <name\|id>` | Embedding model (default `e5-base`). See `mdss models`. |
+| `--workers <n>` | Number of parallel batch workers for embedding (default: 1). |
+| `--format <fmt>` | Export format: `jsonl` (default), `csv`, `parquet` (`export`). |
+| `--no-vectors` | Omit embeddings from export (`export`). |
+| `--output <file>` | Output file path (`export`, default: stdout). |
 | `--ignore <glob>` | Skip files/paths; repeatable. e.g. `--ignore "log.md" --ignore "**/archive/**"`. |
 | `--path <glob>` | Search only files matching glob; repeatable. e.g. `--path "docs/**"`. |
 | `--since <date>` | Search only files modified at/after date (`YYYY-MM-DD` or ISO 8601). |

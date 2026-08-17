@@ -54,6 +54,7 @@ function parseArgs(argv) {
     else if (a === '--list-tools') opts.listTools = true;
     else if (a === '--version') opts.version = true;
     else if (a === '-h' || a === '--help') opts.help = true;
+    else if (a === '--workers') opts.workers = nextInt(argv, ++i, a);
     else if (a === '--config') opts.config = nextValue(argv, ++i, a);
     else if (a === '--format') opts.format = nextValue(argv, ++i, a);
     else if (a === '--no-vectors' || a === '--no-vector') opts.noVectors = true;
@@ -110,7 +111,7 @@ const KNOWN_CONFIG_KEYS = new Set([
   'targetTokens', 'target-tokens', 'port', 'host', 'apiKey', 'api-key',
   'healthPublic', 'health-public', 'watch', 'watchInterval', 'watch-interval',
   'watchDelay', 'watch-delay', 'offline', 'rerank', 'semantic', 'tag', 'project', 'type', 'status', 'canonical',
-  'format', 'noVectors', 'no-vectors', 'output'
+  'format', 'noVectors', 'no-vectors', 'output', 'workers'
 ]);
 
 function findConfigFile(explicitPath) {
@@ -238,6 +239,7 @@ Options:
   --index-dir <dir>   Where to store the index (default: <db>/.mdss).
   --cache-dir <dir>   Model cache dir (default: ~/.cache/mdss, or MDSS_CACHE_DIR).
   --model <name|id>   Embedding model (default: ${DEFAULT_MODEL}). See \`mdss models\`.
+  --workers <n>       Number of parallel batch workers for indexing (default: 1).
   --format <fmt>      Export format: jsonl (default), csv, parquet (export).
   --no-vectors        Omit vector embeddings from export (export).
   --output <file>     Output file path (export, default: stdout).
@@ -311,6 +313,7 @@ async function cmdIndex(opts) {
       modelName: opts.model || DEFAULT_MODEL,
       ignore: opts.ignore,
       offline: resolveOffline(opts),
+      workers: opts.workers,
       log: s => {
         if (process.stderr.isTTY && !opts.json && /^\s+\d+\/\d+$/.test(s)) return;
         process.stderr.write(s + '\n');

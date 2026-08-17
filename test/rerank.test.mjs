@@ -22,6 +22,13 @@ function fakeEmbed(texts, kind, model) {
   });
 }
 
+function safeRm(p) {
+  if (!p) return;
+  try {
+    fs.rmSync(p, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  } catch {}
+}
+
 async function makeIndex() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-rerank-'));
   const idx = path.join(dir, '.mdss');
@@ -74,7 +81,7 @@ test('search rerank: DI rerankFn re-orders candidates and adds rerankScore (issu
     assert.equal(typeof calls[0].cacheDir, 'string');
     assert.equal(calls[0].offline, false, 'offline flag forwarded to the reranker');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -89,7 +96,7 @@ test('search rerank: rerankFn NOT called when rerank is off (lazy model, issue #
     assert.equal(called, false, 'reranker stays unloaded when rerank is disabled');
     assert.ok(res.every((r) => !('rerankScore' in r)));
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -112,7 +119,7 @@ test('search rerank: rerankPool caps the candidate pool, k still bounds results 
     assert.equal(res.length, 2, 'results bounded by the pool size');
     assert.ok(res.every((r) => typeof r.rerankScore === 'number'));
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -128,7 +135,7 @@ test('searchIndex rerank: works on a loaded index with rerankFn (issue #15)', as
     });
     assert.equal(res[0].file, 'c.md', 'rerank applies on the loadIndex path too');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -168,6 +175,6 @@ test('serve: POST /search with rerank:true uses the injected reranker (issue #15
       await svc.close();
     }
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
