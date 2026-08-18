@@ -52,4 +52,15 @@ export {
   ANN_THRESHOLD, DEFAULT_NPROBE,
 } from './ivf.js';
 
+export {
+  extractLinks, resolveLinks, buildRelationshipGraph, getRelatedNotes,
+  computePageRank, expandGraphNeighborhood,
+} from './wikilinks.js';
+
+export {
+  parseFilter, tokenizeFilter, evaluateFilter, FilterNode,
+} from './filter.js';
+
 export { runTui } from './tui.js';
+
+

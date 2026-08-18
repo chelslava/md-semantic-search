@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { SCHEMA_VERSION } from '../dist/core.js';
 import {
-  parseArgs, nextInt, nextValue,
+  parseArgs, nextInt, nextFloat, nextValue,
   resolveDb, resolveIndexDir, resolveCache, resolveOffline,
   die, HELP,
 } from '../bin/cli.mjs';
@@ -20,14 +20,17 @@ function tempDir(prefix) {
 
 // ---- unit tests for the pure argument/resolution functions (issue #29) ----
 
-test('parseArgs: flags, positionals, repeatable --ignore/--path, --k int', () => {
-  const o = parseArgs(['search', '--db', './docs', '--json', '--k', '8',
+test('parseArgs: flags, positionals, repeatable --ignore/--path, --k int, --graph-boost float, --filter string', () => {
+  const o = parseArgs(['search', '--db', './docs', '--json', '--k', '8', '--graph-boost', '0.75',
+    '--filter', 'tag:engineering AND status != archived',
     '--ignore', 'log.md', '--ignore', '**/archive/**', '--path', 'docs/**',
     'some query text']);
   assert.equal(o._.join(' '), 'search some query text');
   assert.equal(o.db, './docs');
   assert.equal(o.json, true);
   assert.equal(o.k, 8);
+  assert.equal(o.graphBoost, 0.75);
+  assert.equal(o.filter, 'tag:engineering AND status != archived');
   assert.deepEqual(o.ignore, ['log.md', '**/archive/**']);
   assert.deepEqual(o.path, ['docs/**']);
 });
@@ -39,8 +42,9 @@ test('parseArgs: boolean flags set true, help/version recognized', () => {
   assert.equal(o.help, true);
 });
 
-test('nextValue/nextInt: value extraction and validation', () => {
+test('nextValue/nextInt/nextFloat: value extraction and validation', () => {
   assert.equal(nextValue(['v'], 0, '--db'), 'v');
+  assert.equal(nextFloat(['0.5'], 0, '--graph-boost'), 0.5);
   // nextInt rejects non-integers (issue #8): die() writes to stderr then exits.
   // Mock process.exit to THROW so the test runner survives (die() itself calls
   // the real process.exit, which would kill the test process).

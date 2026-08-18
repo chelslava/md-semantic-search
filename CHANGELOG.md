@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-08-18
+
+### Added
+- **Issue #92** — Graph-Augmented Ranking via Obsidian Wikilinks & PageRank Prior.
+  - In-memory PageRank calculation (`computePageRank`) with handling of dangling nodes, cyclical references, and normalization over the vault wikilink graph (`[[note]]`).
+  - 2-hop contextual relevance expansion (`expandGraphNeighborhood`) with exponential distance decay.
+  - Multi-channel weighted RRF fusion with `--graph-boost <n>` CLI flag, HTTP daemon `POST /search`, and MCP tool parameter.
+  - Transparent relevance inspection: `SearchResultHit.explain` and hit fields expose `graphScore` and `pageRank`.
+- **Issue #93** — Contextual Chunking 2.0 with Document Metadata & Protected Blocks.
+  - Anthropic-style contextual injection: prepends document title, ancestor `headingPath` breadcrumbs, and frontmatter tags into `canonicalPassage` embedding inputs while preserving clean user snippet rendering.
+  - Protected Markdown block parser: ensures fenced code blocks (```` ```lang ````) and Markdown tables remain syntactically intact across chunk splits with preserved fences and table header rows.
+- **Issue #94** — Rich Frontmatter & Tag Filter Expression DSL.
+  - Zero-dependency boolean expression tokenizer, AST parser, and evaluator (`tokenizeFilter`, `parseFilter`, `evaluateFilter`).
+  - Supports logical operators (`AND`, `OR`, `NOT`, `!`), grouping parentheses `( ... )`, numeric/date comparisons (`=`, `!=`, `>`, `>=`, `<`, `<=`), and tag containment (`tag:engineering`, `tags contains core`).
+  - Exposes `--filter "<expr>"` in CLI `search`, `POST /search` daemon endpoint, and MCP `search_markdown` tool.
+
 ## [0.5.0] - 2026-08-17
 
 ### Added

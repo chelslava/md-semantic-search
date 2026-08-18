@@ -226,7 +226,7 @@ export function chunkMarkdownStructural(
     if (blockText.length > maxChunk) {
       flushGroup();
       const headingPath = headingStack.map(h => h.heading);
-      const subPieces = splitOversizedBlock(blockText, maxChunk);
+      const subPieces = splitOversizedBlock(blockText, maxChunk, block.type);
       let lineCursor = block.startLine;
       for (let idx = 0; idx < subPieces.length; idx++) {
         const piece = subPieces[idx];
@@ -261,8 +261,81 @@ export function chunkMarkdownStructural(
   return chunks.filter(c => c.text.replace(/\s/g, '').length >= 24);
 }
 
-function splitOversizedBlock(text: string, maxChunk: number): string[] {
+function splitLongLine(line: string, maxChunk: number): string[] {
+  const pieces: string[] = [];
+  let rest = line;
+  while (rest.length > maxChunk) {
+    let cut = rest.lastIndexOf(' ', maxChunk);
+    if (cut <= 0) cut = maxChunk;
+    pieces.push(rest.slice(0, cut).trim());
+    rest = rest.slice(cut).trim();
+  }
+  if (rest) pieces.push(rest);
+  return pieces;
+}
+
+export function splitOversizedBlock(
+  text: string,
+  maxChunk: number,
+  blockType?: MarkdownBlock['type']
+): string[] {
   const lines = text.split('\n');
+  if (lines.length <= 1) {
+    return splitLongLine(text, maxChunk);
+  }
+
+  // If code block with opening fence
+  if (blockType === 'code' && lines.length > 2 && /^(\s*)(`{3,}|~{3,})/.test(lines[0])) {
+    const openFence = lines[0];
+    const hasCloseFence = /^(\s*)(`{3,}|~{3,})/.test(lines[lines.length - 1]);
+    const closeFence = hasCloseFence ? lines[lines.length - 1] : '```';
+    const innerLines = lines.slice(1, hasCloseFence ? lines.length - 1 : lines.length);
+
+    const pieces: string[] = [];
+    let currentCode: string[] = [];
+    let currentLen = openFence.length + closeFence.length + 2;
+
+    for (const line of innerLines) {
+      if (currentLen + line.length + 1 > maxChunk && currentCode.length > 0) {
+        pieces.push([openFence, ...currentCode, closeFence].join('\n'));
+        currentCode = [];
+        currentLen = openFence.length + closeFence.length + 2;
+      }
+      currentCode.push(line);
+      currentLen += line.length + 1;
+    }
+    if (currentCode.length > 0) {
+      pieces.push([openFence, ...currentCode, closeFence].join('\n'));
+    }
+    if (pieces.length > 0) return pieces;
+  }
+
+  // If table with header + separator rows
+  if (blockType === 'table' && lines.length > 2 && /^\s*\|?\s*[-:]+[-|\s:]*$/.test(lines[1])) {
+    const headerRows = [lines[0], lines[1]];
+    const dataRows = lines.slice(2);
+    const headerLen = headerRows[0].length + headerRows[1].length + 2;
+
+    const pieces: string[] = [];
+    let currentRows: string[] = [];
+    let currentLen = headerLen;
+
+    for (const row of dataRows) {
+      if (currentLen + row.length + 1 > maxChunk && currentRows.length > 0) {
+        pieces.push([...headerRows, ...currentRows].join('\n'));
+        currentRows = [];
+        currentLen = headerLen;
+      }
+      currentRows.push(row);
+      currentLen += row.length + 1;
+    }
+    if (currentRows.length > 0) {
+      pieces.push([...headerRows, ...currentRows].join('\n'));
+    }
+    if (pieces.length > 0) return pieces;
+  }
+
+  // Standard paragraph/list splitting
   const pieces: string[] = [];
   let currentLines: string[] = [];
   let currentLen = 0;
@@ -279,15 +352,11 @@ function splitOversizedBlock(text: string, maxChunk: number): string[] {
         pieces.push(currentLines.join('\n').trim());
         currentLines = [];
       }
-      let rest = line;
-      while (rest.length > maxChunk) {
-        let cut = rest.lastIndexOf(' ', maxChunk);
-        if (cut <= 0) cut = maxChunk;
-        pieces.push(rest.slice(0, cut).trim());
-        rest = rest.slice(cut).trim();
+      const splitLines = splitLongLine(line, maxChunk);
+      for (const piece of splitLines) {
+        pieces.push(piece);
       }
-      if (rest) currentLines.push(rest);
-      currentLen = rest.length;
+      currentLen = 0;
       continue;
     }
 
@@ -301,3 +370,4 @@ function splitOversizedBlock(text: string, maxChunk: number): string[] {
 
   return pieces;
 }
+

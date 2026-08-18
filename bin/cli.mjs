@@ -86,6 +86,8 @@ function parseArgs(argv) {
     else if (a === '--type') opts.type = nextValue(argv, ++i, a);
     else if (a === '--status') opts.status = nextValue(argv, ++i, a);
     else if (a === '--canonical') opts.canonical = true;
+    else if (a === '--graph-boost') opts.graphBoost = nextFloat(argv, ++i, a);
+    else if (a === '--filter') opts.filter = nextValue(argv, ++i, a);
     else if (a.startsWith('-')) die(`unknown option: ${a}. Try \`mdss --help\`.`);
     else opts._.push(a);
   }
@@ -107,13 +109,21 @@ function nextInt(argv, i, flag) {
   return k;
 }
 
+/** Like nextValue but requires a non-negative float. */
+function nextFloat(argv, i, flag) {
+  const v = nextValue(argv, i, flag);
+  const f = Number.parseFloat(v);
+  if (!Number.isFinite(f) || f < 0) die(`${flag} must be a non-negative number, got "${v}"`);
+  return f;
+}
+
 const KNOWN_CONFIG_KEYS = new Set([
   'db', 'model', 'indexDir', 'index-dir', 'cacheDir', 'cache-dir',
   'ignore', 'path', 'k', 'maxPerFile', 'max-per-file', 'maxPerDoc', 'max-per-doc',
   'targetTokens', 'target-tokens', 'port', 'host', 'apiKey', 'api-key',
   'healthPublic', 'health-public', 'watch', 'watchInterval', 'watch-interval',
   'watchDelay', 'watch-delay', 'offline', 'rerank', 'semantic', 'tag', 'project', 'type', 'status', 'canonical',
-  'format', 'noVectors', 'no-vectors', 'output', 'workers', 'ann', 'nprobe'
+  'format', 'noVectors', 'no-vectors', 'output', 'workers', 'ann', 'nprobe', 'graphBoost', 'graph-boost', 'filter'
 ]);
 
 function findConfigFile(explicitPath) {
@@ -252,6 +262,8 @@ Options:
   --json              Machine-readable output (index, stats, search).
   --semantic          Pure vector ranking, skip lexical/RRF fusion (search).
   --rerank            Re-rank candidates with a cross-encoder (search; ~280MB model).
+  --graph-boost <n>   Boost weight for graph PageRank / Obsidian wikilinks (search, default: 0).
+  --filter <expr>     Rich boolean filter across frontmatter tags and properties (search).
   --ann               Approximate nearest neighbor search via IVF (search).
   --nprobe <n>        Number of centroids to probe for ANN (search, default: 8).
   --port <n>          HTTP port for serve (default: ${DEFAULT_PORT}).
@@ -891,6 +903,8 @@ async function cmdSearch(opts) {
     maxPerFile: opts.maxPerFile || opts.maxPerDoc,
     ann: opts.ann,
     nprobe: opts.nprobe,
+    graphBoost: opts.graphBoost,
+    filter: opts.filter,
   });
 
   if (opts.json) { process.stdout.write(JSON.stringify(results, null, 2) + '\n'); return; }
@@ -1052,7 +1066,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 // functions are unit-tested directly; die() is asserted via a mocked
 // process.exit so a bad flag cannot kill the test runner.
 export {
-  parseArgs, nextInt, nextValue,
+  parseArgs, nextInt, nextFloat, nextValue,
   resolveDb, resolveIndexDir, resolveCache, resolveOffline,
   findConfigFile, loadConfigFile, applyConfigDefaults, KNOWN_CONFIG_KEYS,
   checkHealth, cmdExport,

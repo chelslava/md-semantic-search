@@ -1097,3 +1097,96 @@ test('loadIndex: fresh index produces no stale warning (issue #20)', async () =>
     safeRm(dir);
   }
 });
+
+test('search: graphBoost prioritizes highly-linked notes and propagates context (issue #92)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-graph-'));
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'leaf1.md'), '# Leaf 1\n\nSee [[Central Architecture]] for core design.\n');
+    fs.writeFileSync(path.join(dir, 'leaf2.md'), '# Leaf 2\n\nSee [[Central Architecture]] and [[Subsystem]].\n');
+    fs.writeFileSync(path.join(dir, 'arch.md'), '# Central Architecture\n\nCore overview and architecture concepts.\n');
+    fs.writeFileSync(path.join(dir, 'subsystem.md'), '# Subsystem\n\nSubsystem implementation details.\n');
+    fs.writeFileSync(path.join(dir, 'isolated.md'), '# Other Overview\n\nCore overview and architecture concepts.\n');
+
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+
+    const loaded = loadIndex(idx);
+
+    // Without graph boost
+    const _normalHits = await searchIndex({
+      loaded,
+      cacheDir: dir,
+      query: 'overview architecture',
+      k: 5,
+      graphBoost: 0,
+      embedFn: fakeEmbed,
+    });
+    assert.ok(_normalHits.length > 0);
+
+    // With graph boost
+    const graphHits = await searchIndex({
+      loaded,
+      cacheDir: dir,
+      query: 'overview architecture',
+      k: 5,
+      graphBoost: 1.5,
+      explain: true,
+      embedFn: fakeEmbed,
+    });
+
+    assert.ok(graphHits.length > 0);
+    // Central Architecture (arch.md) has incoming links from leaf1 and leaf2, so its graph score and PageRank are higher
+    const archHit = graphHits.find((h) => h.file === 'arch.md');
+    const isolatedHit = graphHits.find((h) => h.file === 'isolated.md');
+    assert.ok(archHit, 'arch.md found in results');
+    assert.ok(archHit.graphScore !== undefined, 'graphScore is populated');
+    assert.ok(archHit.explain?.pageRank !== undefined, 'pageRank in explain is populated');
+    if (isolatedHit) {
+      assert.ok(archHit.score >= isolatedHit.score, 'central hub ranks equal or higher than isolated node');
+    }
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('search: rich filter expression restricts candidates by tags and metadata (issue #94)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-filter-'));
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(
+      path.join(dir, 'doc1.md'),
+      '---\ntitle: "Backend Guide"\ntags: [engineering, backend]\nstatus: active\n---\n# Backend Guide\n\nMicroservices architecture and database persistence layer.\n'
+    );
+    fs.writeFileSync(
+      path.join(dir, 'doc2.md'),
+      '---\ntitle: "Frontend Guide"\ntags: [engineering, frontend]\nstatus: draft\n---\n# Frontend Guide\n\nReact components and client state management.\n'
+    );
+    fs.writeFileSync(
+      path.join(dir, 'doc3.md'),
+      '---\ntitle: "Old Architecture"\ntags: [engineering, legacy]\nstatus: archived\n---\n# Old Architecture\n\nLegacy architecture and deprecated systems.\n'
+    );
+
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+
+    const loaded = loadIndex(idx);
+
+    // Filter: tag:engineering AND status != archived
+    const hits = await searchIndex({
+      loaded,
+      cacheDir: dir,
+      query: 'architecture guide',
+      k: 10,
+      filter: 'tag:engineering AND status != archived',
+      embedFn: fakeEmbed,
+    });
+
+    assert.equal(hits.length, 2);
+    assert.ok(hits.some((h) => h.file === 'doc1.md'));
+    assert.ok(hits.some((h) => h.file === 'doc2.md'));
+    assert.ok(!hits.some((h) => h.file === 'doc3.md'), 'archived doc is filtered out');
+  } finally {
+    safeRm(dir);
+  }
+});
+
+

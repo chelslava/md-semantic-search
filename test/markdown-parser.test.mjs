@@ -137,3 +137,58 @@ def fn():\r
   assert.ok(chunks.length > 0);
   assert.ok(chunks[0].text.includes('fn()') || chunks[0].text.includes('незакрытый') || chunks[0].text.includes('длинее'));
 });
+
+test('protected blocks: oversized fenced code block retains opening and closing fences (issue #93)', () => {
+  const codeLines = Array.from({ length: 40 }, (_, i) => `  const val${i} = "data_${i}_${'x'.repeat(20)}";`);
+  const md = `# Source File
+\`\`\`typescript
+${codeLines.join('\n')}
+\`\`\`
+`;
+
+  const chunks = chunkMarkdownStructural(md, 400);
+  assert.ok(chunks.length > 1, 'splits into multiple chunks');
+  for (const c of chunks) {
+    assert.ok(c.text.startsWith('```typescript'), 'each code chunk starts with opening fence');
+    assert.ok(c.text.endsWith('```'), 'each code chunk ends with closing fence');
+  }
+});
+
+test('protected blocks: oversized markdown table retains header and separator in all chunks (issue #93)', () => {
+  const tableRows = Array.from({ length: 30 }, (_, i) => `| item_${i} | desc_${i} | value_${i}_${'x'.repeat(15)} |`);
+  const md = `# Dataset Table
+| Item | Description | Extra Value |
+| :--- | :--- | :--- |
+${tableRows.join('\n')}
+`;
+
+  const chunks = chunkMarkdownStructural(md, 350);
+  assert.ok(chunks.length > 1, 'splits table into multiple chunks');
+  for (const c of chunks) {
+    assert.ok(c.text.includes('| Item | Description | Extra Value |'), 'table chunk retains header row');
+    assert.ok(c.text.includes('| :--- | :--- | :--- |'), 'table chunk retains separator row');
+  }
+});
+
+test('property-based: parser produces valid non-empty chunks without crashing (fast-check)', async () => {
+  const fc = await import('fast-check');
+  fc.default.assert(
+    fc.default.property(
+      fc.default.array(fc.default.string(), { minLength: 1, maxLength: 50 }),
+      (lines) => {
+        const text = lines.join('\n');
+        const blocks = parseMarkdownBlocks(text);
+        assert.ok(Array.isArray(blocks));
+        const chunks = chunkMarkdownStructural(text, 500);
+        assert.ok(Array.isArray(chunks));
+        for (const c of chunks) {
+          assert.ok(typeof c.heading === 'string');
+          assert.ok(typeof c.text === 'string');
+          assert.ok(Array.isArray(c.headingPath));
+        }
+      }
+    ),
+    { numRuns: 100 }
+  );
+});
+

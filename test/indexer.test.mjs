@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { buildIndex, chunkHash } from '../dist/indexer.js';
+import { buildIndex, chunkHash, canonicalPassage } from '../dist/indexer.js';
 import { searchIndex, loadIndex } from '../dist/search.js';
 import { resolveModel } from '../dist/models.js';
 import { decodeVec, SCHEMA_VERSION } from '../dist/core.js';
@@ -1361,3 +1361,35 @@ test('buildIndex: unreadable file is skipped with a warning, others still indexe
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('canonicalPassage: injects document title, serialized heading path, and tags (issue #93)', () => {
+  // 1. Without tags
+  const p1 = canonicalPassage({
+    title: 'Architecture Overview',
+    heading: 'Core Subsystem',
+    headingPath: ['Architecture Overview', 'Design', 'Core Subsystem'],
+    text: 'Implementation details of core subsystem.',
+  });
+  assert.equal(
+    p1,
+    'Architecture Overview\nDesign > Core Subsystem\nImplementation details of core subsystem.'
+  );
+
+  // 2. With tags
+  const p2 = canonicalPassage({
+    title: 'Architecture Overview',
+    heading: 'Core Subsystem',
+    headingPath: ['Architecture Overview', 'Design', 'Core Subsystem'],
+    text: 'Implementation details of core subsystem.',
+    meta: {
+      tags: ['engineering', 'backend'],
+      aliases: [],
+      custom: {},
+    },
+  });
+  assert.equal(
+    p2,
+    'Architecture Overview\nDesign > Core Subsystem\ntags: #engineering #backend\nImplementation details of core subsystem.'
+  );
+});
+

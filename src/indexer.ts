@@ -36,6 +36,7 @@ import {
 } from './lexical.js';
 import { embeddingAdapterFingerprint, legacyEmbeddingAdapterFingerprint } from './models.js';
 import { trainIVF, serializeIVF, ANN_THRESHOLD } from './ivf.js';
+import { DocumentMetadata } from './frontmatter.js';
 
 export interface IndexChunk {
   file: string;
@@ -45,6 +46,9 @@ export interface IndexChunk {
   text: string;
   vec?: number[] | Float32Array | string;
   chunkHash?: string;
+  startLine?: number;
+  endLine?: number;
+  meta?: DocumentMetadata;
 }
 
 export interface PersistedIndex {
@@ -60,11 +64,19 @@ export interface PersistedIndex {
   chunkCount?: number;
   hashes?: Record<string, string>;
   lexical?: LexicalIndex;
+  lexicalFormat?: string;
   chunks: IndexChunk[];
 }
 
 const md5 = (s: string) => crypto.createHash('md5').update(s).digest('hex');
-const sha256 = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
+const sha256 = (s: string): string => crypto.createHash('sha256').update(s).digest('hex');
+
+export const _stats = {
+  chunkHits: 0,
+  fileHits: 0,
+  embedCount: 0,
+};
+
 const BATCH = 32;
 const CHECKPOINT_BATCHES = 8;
 const INDEX_FORMAT = 'binary-v1';
@@ -107,16 +119,24 @@ function normalize(s?: string): string {
   return (s ?? '').replace(/\r\n?/g, '\n').trim();
 }
 
-export function canonicalPassage(chunk: { title: string; heading: string; headingPath?: string[]; text: string }): string {
+export function canonicalPassage(chunk: {
+  title: string;
+  heading: string;
+  headingPath?: string[];
+  text: string;
+  meta?: DocumentMetadata;
+}): string {
   const title = normalize(chunk.title);
   const headingPath = (chunk.headingPath ?? (normalize(chunk.heading) ? [chunk.heading] : [])).map(normalize);
   const serializedPath = (headingPath[0] === title ? headingPath.slice(1) : headingPath).join(' > ');
-  return [title, serializedPath, normalize(chunk.text)].join('\n');
+  const tagsStr = chunk.meta?.tags && chunk.meta.tags.length > 0 ? `tags: ${chunk.meta.tags.map(t => `#${t}`).join(' ')}` : '';
+  const parts = [title, serializedPath, tagsStr, normalize(chunk.text)].filter(Boolean);
+  return parts.join('\n');
 }
 
 export function chunkHash(
   model: { id: string; revision?: string; passagePrefix?: string; pooling?: string },
-  chunk: { title: string; heading: string; headingPath?: string[]; text: string }
+  chunk: { title: string; heading: string; headingPath?: string[]; text: string; meta?: DocumentMetadata }
 ): string {
   const pooling = model.pooling ?? 'mean';
   const input = [

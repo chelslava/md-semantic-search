@@ -242,3 +242,135 @@ export function getRelatedNotes(
 
   return results;
 }
+
+export interface PageRankOptions {
+  damping?: number;
+  maxIterations?: number;
+  tolerance?: number;
+}
+
+/**
+ * Computes in-memory PageRank centrality scores for all nodes in the RelationshipGraph.
+ * Handles dangling nodes (nodes with 0 out-degree) and normalizes scores.
+ */
+export function computePageRank(
+  graph: RelationshipGraph,
+  opts: PageRankOptions = {}
+): Map<string, number> {
+  const damping = opts.damping ?? 0.85;
+  const maxIterations = opts.maxIterations ?? 30;
+  const tolerance = opts.tolerance ?? 1e-6;
+
+  const nodes = new Set<string>();
+  for (const node of graph.outgoing.keys()) nodes.add(node);
+  for (const node of graph.backlinks.keys()) nodes.add(node);
+
+  const nodeList = Array.from(nodes);
+  const n = nodeList.length;
+  const rankMap = new Map<string, number>();
+  if (n === 0) return rankMap;
+  if (n === 1) {
+    rankMap.set(nodeList[0], 1.0);
+    return rankMap;
+  }
+
+  const outNeighbors = new Map<string, Set<string>>();
+  for (const node of nodeList) {
+    const edges = graph.outgoing.get(node) || [];
+    const targets = new Set<string>();
+    for (const e of edges) {
+      if (nodes.has(e.file) && e.file !== node) {
+        targets.add(e.file);
+      }
+    }
+    outNeighbors.set(node, targets);
+  }
+
+  const inNeighbors = new Map<string, Set<string>>();
+  for (const node of nodeList) {
+    inNeighbors.set(node, new Set<string>());
+  }
+  for (const [src, targets] of outNeighbors.entries()) {
+    for (const tgt of targets) {
+      inNeighbors.get(tgt)?.add(src);
+    }
+  }
+
+  let ranks = new Map<string, number>();
+  const initialRank = 1.0 / n;
+  for (const node of nodeList) {
+    ranks.set(node, initialRank);
+  }
+
+  for (let iter = 0; iter < maxIterations; iter++) {
+    const nextRanks = new Map<string, number>();
+
+    let danglingSum = 0;
+    for (const node of nodeList) {
+      const outDeg = outNeighbors.get(node)?.size || 0;
+      if (outDeg === 0) {
+        danglingSum += ranks.get(node) || 0;
+      }
+    }
+
+    let maxDiff = 0;
+    const baseRank = (1.0 - damping) / n + (damping * danglingSum) / n;
+
+    for (const node of nodeList) {
+      let inSum = 0;
+      const inNodes = inNeighbors.get(node) || new Set();
+      for (const inNode of inNodes) {
+        const outDeg = outNeighbors.get(inNode)?.size || 1;
+        inSum += (ranks.get(inNode) || 0) / outDeg;
+      }
+
+      const newRank = baseRank + damping * inSum;
+      nextRanks.set(node, newRank);
+
+      const diff = Math.abs(newRank - (ranks.get(node) || 0));
+      if (diff > maxDiff) maxDiff = diff;
+    }
+
+    ranks = nextRanks;
+    if (maxDiff < tolerance) break;
+  }
+
+  return ranks;
+}
+
+export interface GraphExpansionOptions {
+  maxDepth?: number;
+  decay?: number;
+  topSeeds?: number;
+}
+
+/**
+ * 2-hop neighborhood expansion: propagates relevance scores across graph links.
+ */
+export function expandGraphNeighborhood(
+  graph: RelationshipGraph,
+  seedFiles: Array<{ file: string; score: number }>,
+  opts: GraphExpansionOptions = {}
+): Map<string, number> {
+  const maxDepth = opts.maxDepth ?? 2;
+  const decay = opts.decay ?? 0.5;
+  const topSeeds = opts.topSeeds ?? 10;
+
+  const propagationScores = new Map<string, number>();
+  const sortedSeeds = [...seedFiles].sort((a, b) => b.score - a.score).slice(0, topSeeds);
+
+  for (const seed of sortedSeeds) {
+    if (seed.score <= 0) continue;
+    const related = getRelatedNotes(graph, seed.file, { direction: 'both', depth: maxDepth });
+    for (const rel of related) {
+      const weight = seed.score * Math.pow(decay, rel.distance);
+      const current = propagationScores.get(rel.file) || 0;
+      if (weight > current) {
+        propagationScores.set(rel.file, weight);
+      }
+    }
+  }
+
+  return propagationScores;
+}
+

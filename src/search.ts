@@ -8,6 +8,8 @@ import { bm25Scores, matchingTerms, tokenize, fuzzyTitleAliasScores, LexicalInde
 import { collapseResults } from './collapse.js';
 import { DocumentMetadata } from './frontmatter.js';
 import { trainIVF, searchIVFCandidates, deserializeIVF, IVFIndex, ANN_THRESHOLD, DEFAULT_NPROBE } from './ivf.js';
+import { buildRelationshipGraph, computePageRank, expandGraphNeighborhood, RelationshipGraph } from './wikilinks.js';
+import { evaluateFilter, FilterNode } from './filter.js';
 
 export { tokenize } from './lexical.js';
 
@@ -36,15 +38,22 @@ export function keywordScores(chunks: IndexChunk[], query: string): number[] {
   });
 }
 
-export function rrf(rankings: Array<Array<{ idx: number; score: number }>>, k = 60): Map<number, number> {
+export function rrf(
+  rankings: Array<Array<{ idx: number; score: number }>>,
+  k = 60,
+  weights?: number[]
+): Map<number, number> {
   const fused = new Map<number, number>();
-  for (const ranking of rankings) {
+  for (let rankingIdx = 0; rankingIdx < rankings.length; rankingIdx++) {
+    const ranking = rankings[rankingIdx];
+    const weight = weights ? (weights[rankingIdx] ?? 1) : 1;
+    if (weight <= 0) continue;
     const sorted = [...ranking].sort((a, b) => b.score - a.score);
     let scoreRank = 0;
     sorted.forEach((item, rank) => {
       if (item.score <= 0) return;
       if (rank > 0 && item.score < sorted[rank - 1].score) scoreRank = rank;
-      fused.set(item.idx, (fused.get(item.idx) || 0) + 1 / (k + scoreRank + 1));
+      fused.set(item.idx, (fused.get(item.idx) || 0) + weight / (k + scoreRank + 1));
     });
   }
   return fused;
@@ -167,6 +176,34 @@ export interface RuntimeIndexState {
   model: ModelDescriptor;
   queryCache: QueryEmbeddingCache;
   ivf?: IVFIndex;
+  graph?: RelationshipGraph;
+  pageRank?: Map<string, number>;
+}
+
+export function getRuntimeGraph(runtime: RuntimeIndexState): { graph: RelationshipGraph; pageRank: Map<string, number> } {
+  if (runtime.graph && runtime.pageRank) {
+    return { graph: runtime.graph, pageRank: runtime.pageRank };
+  }
+  const docsMap = new Map<string, { file: string; title?: string; meta?: DocumentMetadata; text?: string }>();
+  for (const chunk of runtime.chunks) {
+    const existing = docsMap.get(chunk.file);
+    if (!existing) {
+      docsMap.set(chunk.file, {
+        file: chunk.file,
+        title: chunk.title,
+        meta: chunk.meta,
+        text: chunk.text,
+      });
+    } else {
+      existing.text = (existing.text || '') + '\n' + chunk.text;
+    }
+  }
+  const docs = Array.from(docsMap.values());
+  const graph = buildRelationshipGraph(docs);
+  const pageRank = computePageRank(graph);
+  runtime.graph = graph;
+  runtime.pageRank = pageRank;
+  return { graph, pageRank };
 }
 
 const runtimeIndexStates = new WeakMap<IndexFile, RuntimeIndexState>();
@@ -383,6 +420,8 @@ export interface SearchOptions {
   useQueryCache?: boolean;
   ann?: boolean;
   nprobe?: number;
+  graphBoost?: number;
+  filter?: string | FilterNode;
 }
 
 export interface SearchResultHit {
@@ -394,10 +433,13 @@ export interface SearchResultHit {
   matches: string[];
   snippet: string;
   meta?: DocumentMetadata;
+  graphScore?: number;
   explain?: {
     cosine: number;
     rrfScore: number;
     bm25Weights: { title: number; aliases: number; headingPath: number; body: number };
+    graphScore?: number;
+    pageRank?: number;
   };
   rerankScore?: number;
 }
@@ -420,7 +462,10 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
     status,
     canonicalOnly,
     custom,
+    filter: filterExpr,
   } = opts;
+
+  const graphBoost = typeof opts.graphBoost === 'number' && Number.isFinite(opts.graphBoost) ? opts.graphBoost : 0;
 
   if (typeof query === 'string' && query.length > MAX_QUERY_LENGTH) {
     throw new Error(`query exceeds maximum length of ${MAX_QUERY_LENGTH} characters`);
@@ -445,7 +490,8 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
     type !== undefined ||
     status !== undefined ||
     canonicalOnly !== undefined ||
-    custom !== undefined;
+    custom !== undefined ||
+    filterExpr !== undefined;
 
   if (pathRes.length > 0 || sinceMs !== undefined || hasMetaFilter) {
     if (sinceMs !== undefined && !db) {
@@ -465,6 +511,9 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
           mtimeCache.set(chunk.file, m);
         }
         if (m < sinceMs) return false;
+      }
+      if (filterExpr !== undefined) {
+        if (!evaluateFilter(filterExpr, chunk.meta, { file: chunk.file, title: chunk.title })) return false;
       }
       if (tag !== undefined) {
         const reqTags = (Array.isArray(tag) ? tag : [tag]).map((t) => String(t).toLowerCase().replace(/^#/, ''));
@@ -529,12 +578,45 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
 
   const pool = rerank ? rerankPool || Math.max(20, k * 3) : k;
 
+  let graphRanking: Array<{ idx: number; score: number }> = [];
+  let graphMap: Map<number, number> | undefined;
+  if (graphBoost > 0) {
+    const { graph, pageRank } = getRuntimeGraph(runtime);
+    const seedFilesMap = new Map<string, number>();
+    for (const s of semantic) {
+      if (s.score > 0) {
+        const file = chunks[s.idx].file;
+        const curr = seedFilesMap.get(file) || 0;
+        if (s.score > curr) seedFilesMap.set(file, s.score);
+      }
+    }
+    const seedFiles = Array.from(seedFilesMap.entries()).map(([file, score]) => ({ file, score }));
+    const propagationScores = expandGraphNeighborhood(graph, seedFiles, { maxDepth: 2, decay: 0.5 });
+
+    graphMap = new Map<number, number>();
+    graphRanking = candidates.map(({ chunk, idx }) => {
+      const pr = pageRank.get(chunk.file) || 0;
+      const prop = propagationScores.get(chunk.file) || 0;
+      const totalGraph = pr + prop;
+      graphMap!.set(idx, totalGraph);
+      return { idx, score: totalGraph };
+    });
+  }
+
   let ranked: Array<{ idx: number; fscore: number; cos: number; rerank?: number }>;
   if (semanticOnly) {
-    ranked = [...semantic]
-      .sort((a, b) => b.score - a.score)
-      .slice(0, pool)
-      .map((s) => ({ idx: s.idx, fscore: s.score, cos: s.score }));
+    if (graphBoost > 0) {
+      const fused = rrf([semantic, graphRanking], 60, [1, graphBoost]);
+      ranked = [...fused.entries()]
+        .map(([idx, fscore]) => ({ idx, fscore, cos: cosByIdx.get(idx)! }))
+        .sort((a, b) => b.fscore - a.fscore)
+        .slice(0, pool);
+    } else {
+      ranked = [...semantic]
+        .sort((a, b) => b.score - a.score)
+        .slice(0, pool)
+        .map((s) => ({ idx: s.idx, fscore: s.score, cos: s.score }));
+    }
   } else {
     const kw =
       lexicalState.kind === 'persisted-bm25'
@@ -551,11 +633,19 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
       score,
     }));
 
-    const fused = rrf([semantic, kw, fuzzy]);
-    ranked = [...fused.entries()]
-      .map(([idx, fscore]) => ({ idx, fscore, cos: cosByIdx.get(idx)! }))
-      .sort((a, b) => b.fscore - a.fscore)
-      .slice(0, pool);
+    if (graphBoost > 0) {
+      const fused = rrf([semantic, kw, fuzzy, graphRanking], 60, [1, 1, 1, graphBoost]);
+      ranked = [...fused.entries()]
+        .map(([idx, fscore]) => ({ idx, fscore, cos: cosByIdx.get(idx)! }))
+        .sort((a, b) => b.fscore - a.fscore)
+        .slice(0, pool);
+    } else {
+      const fused = rrf([semantic, kw, fuzzy]);
+      ranked = [...fused.entries()]
+        .map(([idx, fscore]) => ({ idx, fscore, cos: cosByIdx.get(idx)! }))
+        .sort((a, b) => b.fscore - a.fscore)
+        .slice(0, pool);
+    }
   }
 
   if (rerank && ranked.length > 0) {
@@ -590,6 +680,8 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
       lexicalState.kind === 'persisted-bm25'
         ? matchingTerms(lexicalState.lexical, queryTerms, r.idx)
         : queryTerms.filter((term) => tokenSet(c as any).has(term));
+    const gScore = graphMap?.get(r.idx);
+    const prScore = runtime.pageRank?.get(c.file);
     return {
       file: c.file,
       title: c.title,
@@ -599,12 +691,15 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
       matches,
       snippet: c.text.replace(/\s+/g, ' ').slice(0, 220),
       ...(hasMetaFields(c.meta) ? { meta: c.meta } : {}),
+      ...(gScore !== undefined ? { graphScore: +gScore.toFixed(4) } : {}),
       ...(explain
         ? {
             explain: {
               cosine: +r.cos.toFixed(4),
               rrfScore: +r.fscore.toFixed(4),
               bm25Weights: { title: 3.0, aliases: 3.0, headingPath: 1.8, body: 1.0 },
+              ...(gScore !== undefined ? { graphScore: +gScore.toFixed(4) } : {}),
+              ...(prScore !== undefined ? { pageRank: +prScore.toFixed(4) } : {}),
             },
           }
         : {}),
