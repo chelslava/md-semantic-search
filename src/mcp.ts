@@ -9,6 +9,7 @@ import path from 'node:path';
 import { buildIndex } from './indexer.js';
 import { loadIndex, searchIndex } from './search.js';
 import { searchFederated } from './federation.js';
+import { askQuestion } from './rag.js';
 import { globToRegExp } from './core.js';
 
 export const MCP_TOOLS = [
@@ -59,6 +60,18 @@ export const MCP_TOOLS = [
       properties: {},
     },
   },
+  {
+    name: 'ask_knowledge_base',
+    description: 'Synthesize a grounded direct answer with citations from the local Markdown knowledge base',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Question to ask the knowledge base' },
+        k: { type: 'number', description: 'Number of candidate passages to retrieve (default: 5)' },
+      },
+      required: ['query'],
+    },
+  },
 ];
 
 export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir: string; offline: boolean; embedFn?: any }): Promise<any | null> {
@@ -80,7 +93,7 @@ export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir:
         },
         serverInfo: {
           name: 'md-semantic-search',
-          version: '0.8.0',
+          version: '0.9.0',
         },
       },
     };
@@ -163,6 +176,17 @@ export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir:
           built: state.loaded.index.built || null,
         };
         content = [{ type: 'text', text: JSON.stringify(info, null, 2) }];
+      } else if (name === 'ask_knowledge_base') {
+        const query = args.query;
+        const k = typeof args.k === 'number' ? args.k : 5;
+        const answerResult = await askQuestion({
+          loaded: state.loaded,
+          cacheDir: state.cacheDir,
+          query,
+          k,
+          embedFn: state.embedFn,
+        });
+        content = [{ type: 'text', text: JSON.stringify(answerResult, null, 2) }];
       } else {
         return {
           jsonrpc: '2.0',

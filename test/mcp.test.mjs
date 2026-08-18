@@ -45,10 +45,10 @@ async function makeIndex() {
 
 test('MCP_TOOLS: defines mandatory tools and valid schemas', () => {
   assert.equal(Array.isArray(MCP_TOOLS), true);
-  assert.equal(MCP_TOOLS.length, 4);
+  assert.equal(MCP_TOOLS.length, 5);
 
   const toolNames = MCP_TOOLS.map(t => t.name);
-  assert.deepEqual(toolNames.sort(), ['get_chunk', 'index_status', 'list_files', 'search_markdown']);
+  assert.deepEqual(toolNames.sort(), ['ask_knowledge_base', 'get_chunk', 'index_status', 'list_files', 'search_markdown']);
 
   for (const tool of MCP_TOOLS) {
     assert.equal(typeof tool.name, 'string');
@@ -70,13 +70,13 @@ test('handleMcpRequest: handles initialize and tools/list', async () => {
     // 2. tools/list
     const listRes = await handleMcpRequest({ jsonrpc: '2.0', id: 2, method: 'tools/list' }, state);
     assert.equal(listRes.id, 2);
-    assert.equal(listRes.result.tools.length, 4);
+    assert.equal(listRes.result.tools.length, 5);
   } finally {
     safeRm(dir);
   }
 });
 
-test('handleMcpRequest: handles tools/call index_status, list_files, get_chunk, search_markdown', async () => {
+test('handleMcpRequest: handles tools/call index_status, list_files, get_chunk, search_markdown, ask_knowledge_base', async () => {
   const { loaded, dir } = await makeIndex();
   try {
     const state = { loaded, cacheDir: dir, offline: true, embedFn: fakeEmbed };
@@ -111,6 +111,14 @@ test('handleMcpRequest: handles tools/call index_status, list_files, get_chunk, 
     const searchData = JSON.parse(searchRes.result.content[0].text);
     assert.equal(Array.isArray(searchData), true);
     assert.equal(searchData.length > 0, true);
+
+    // ask_knowledge_base
+    const askRes = await handleMcpRequest({
+      jsonrpc: '2.0', id: 14, method: 'tools/call', params: { name: 'ask_knowledge_base', arguments: { query: 'guide' } },
+    }, state);
+    const askData = JSON.parse(askRes.result.content[0].text);
+    assert.ok(askData.answer);
+    assert.ok(Array.isArray(askData.citations));
   } finally {
     safeRm(dir);
   }

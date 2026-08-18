@@ -2,6 +2,7 @@ import readline from 'node:readline';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { loadIndex, searchIndex, SearchResultHit } from './search.js';
+import { extractAnswerFallback } from './rag.js';
 import { ModelDescriptor } from './core.js';
 
 export interface TuiOptions {
@@ -15,6 +16,7 @@ export interface TuiOptions {
   path?: string | string[];
   rerank?: boolean;
   rerankPool?: number;
+  rag?: boolean;
   embedFn?: any;
   rerankFn?: any;
   debounceMs?: number;
@@ -74,6 +76,8 @@ export async function runTui(opts: TuiOptions): Promise<SearchResultHit | null> 
     }, opts.debounceMs ?? 300);
   };
 
+  let showRag = Boolean(opts.rag);
+
   const render = () => {
     const rows = process.stdout.rows || 24;
     const cols = process.stdout.columns || 80;
@@ -84,11 +88,12 @@ export async function runTui(opts: TuiOptions): Promise<SearchResultHit | null> 
 
     // Header
     const searchStatus = searching ? ' [searching...]' : '';
-    const headerStr = ` mdss interactive search | Query: ${query}${searchStatus}`;
+    const modeLabel = showRag ? 'RAG QA & Synthesis' : 'search';
+    const headerStr = ` mdss interactive ${modeLabel} | Query: ${query}${searchStatus}`;
     buf += `\x1b[7m${headerStr.padEnd(cols).slice(0, cols)}\x1b[0m\n`;
 
     // Calculate layout heights
-    const listHeight = Math.max(4, Math.floor((rows - 4) * 0.4));
+    const listHeight = Math.max(3, Math.floor((rows - 4) * 0.35));
     const previewHeight = Math.max(4, rows - 4 - listHeight);
 
     // Render list
@@ -111,25 +116,38 @@ export async function runTui(opts: TuiOptions): Promise<SearchResultHit | null> 
       }
     }
 
-    // Render Preview
-    buf += `\x1b[1m--- Passage Preview ---\x1b[0m\n`;
-    const selectedHit = results[selectedIndex];
-    if (selectedHit) {
-      const textLines = selectedHit.snippet.split('\n');
+    // Render Preview or RAG synthesis
+    if (showRag) {
+      buf += `\x1b[1m--- Grounded Answer Synthesis & Citations ---\x1b[0m\n`;
+      const answer = extractAnswerFallback(query, results);
+      const answerLines = answer.split('\n');
       for (let i = 0; i < previewHeight; i++) {
-        if (i < textLines.length) {
-          buf += `  ${textLines[i].slice(0, cols - 3)}\n`;
+        if (i < answerLines.length) {
+          buf += `  ${answerLines[i].slice(0, cols - 3)}\n`;
         } else {
           buf += '\n';
         }
       }
     } else {
-      buf += '  (no passage selected)\n';
-      for (let i = 1; i < previewHeight; i++) buf += '\n';
+      buf += `\x1b[1m--- Passage Preview ---\x1b[0m\n`;
+      const selectedHit = results[selectedIndex];
+      if (selectedHit) {
+        const textLines = selectedHit.snippet.split('\n');
+        for (let i = 0; i < previewHeight; i++) {
+          if (i < textLines.length) {
+            buf += `  ${textLines[i].slice(0, cols - 3)}\n`;
+          } else {
+            buf += '\n';
+          }
+        }
+      } else {
+        buf += '  (no passage selected)\n';
+        for (let i = 1; i < previewHeight; i++) buf += '\n';
+      }
     }
 
     // Footer
-    const footerStr = ' [Up/Down/j/k]: Navigate | [Enter]: Open in Editor | [Esc/q/Ctrl+C]: Quit';
+    const footerStr = ' [Tab]: Toggle RAG/Passage | [Up/Down]: Select | [Enter]: Open | [Esc]: Quit';
     buf += `\x1b[7m${footerStr.padEnd(cols).slice(0, cols)}\x1b[0m`;
 
     process.stdout.write(buf);
@@ -168,6 +186,12 @@ export async function runTui(opts: TuiOptions): Promise<SearchResultHit | null> 
         cleanupTui();
         process.removeListener('keypress', onKeypress);
         resolve(null);
+        return;
+      }
+
+      if (key.name === 'tab') {
+        showRag = !showRag;
+        render();
         return;
       }
 

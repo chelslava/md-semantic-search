@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-08-18
+
+### Added
+- **Issue #101** — Offline QA & Answer Synthesis CLI (`mdss ask`) with Local LLM.
+  - Dedicated RAG module (`src/rag.ts`) supporting local LLM bridges (Ollama / LocalAI / OpenAI endpoints) and an offline extractive answer synthesizer (`extractAnswerFallback`).
+  - Strict citation attribution (`[file#heading]`) for all synthesized answers.
+  - New `mdss ask "<question>"` CLI command and `ask_knowledge_base` MCP tool.
+- **Issue #102** — Interactive RAG Chat Mode in Terminal TUI (`mdss tui --rag`).
+  - Multi-turn interactive conversation pane in TUI with Tab toggle between raw passages and synthesized answer.
+- **Issue #103** — Automated Note Summarization & Semantic Keyword Tagging Pipeline.
+  - Statistical keyphrase extraction (`extractKeyphraseTags`) and extractive passage summarizer (`summarizePassage`, `analyzeNote`) in `src/summarize.ts`.
+  - Added `--auto-tag` and `--auto-summarize` CLI indexing flags.
+
 ## [0.8.0] - 2026-08-18
 
 ### Added

@@ -79,6 +79,15 @@ export {
   createFileWatcher, FileWatcher, WatcherOptions,
 } from './watcher.js';
 
-export { runTui } from './tui.js';
+export {
+  askQuestion, synthesizeAnswer, extractAnswerFallback,
+  AskOptions, SynthesisResult, Citation, DEFAULT_RAG_SYSTEM_PROMPT,
+} from './rag.js';
+
+export {
+  extractKeyphraseTags, summarizePassage, analyzeNote, NoteAnalysis,
+} from './summarize.js';
+
+export { runTui, TuiOptions } from './tui.js';
 
 

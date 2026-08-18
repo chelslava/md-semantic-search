@@ -91,6 +91,12 @@ function parseArgs(argv) {
     else if (a === '--graph-boost') opts.graphBoost = nextFloat(argv, ++i, a);
     else if (a === '--filter') opts.filter = nextValue(argv, ++i, a);
     else if (a === '--quantize') opts.quantize = nextValue(argv, ++i, a);
+    else if (a === '--rag') opts.rag = true;
+    else if (a === '--auto-tag') opts.autoTag = true;
+    else if (a === '--auto-summarize') opts.autoSummarize = true;
+    else if (a === '--llm-endpoint') opts.llmEndpoint = nextValue(argv, ++i, a);
+    else if (a === '--llm-model') opts.llmModel = nextValue(argv, ++i, a);
+    else if (a === '--system-prompt') opts.systemPrompt = nextValue(argv, ++i, a);
     else if (a.startsWith('-')) die(`unknown option: ${a}. Try \`mdss --help\`.`);
     else opts._.push(a);
   }
@@ -127,7 +133,8 @@ const KNOWN_CONFIG_KEYS = new Set([
   'healthPublic', 'health-public', 'watch', 'watchInterval', 'watch-interval',
   'watchDelay', 'watch-delay', 'offline', 'rerank', 'semantic', 'tag', 'project', 'type', 'status', 'canonical',
   'format', 'noVectors', 'no-vectors', 'output', 'workers', 'ann', 'nprobe', 'graphBoost', 'graph-boost', 'filter', 'quantize',
-  'vault', 'vaults'
+  'vault', 'vaults', 'rag', 'autoTag', 'auto-tag', 'autoSummarize', 'auto-summarize',
+  'llmEndpoint', 'llm-endpoint', 'llmModel', 'llm-model', 'systemPrompt', 'system-prompt'
 ]);
 
 function findConfigFile(explicitPath) {
@@ -880,7 +887,44 @@ async function cmdTui(opts) {
     offline: resolveOffline(opts),
     path: opts.path.length > 0 ? opts.path : undefined,
     rerank: !!opts.rerank,
+    rag: !!opts.rag,
   });
+}
+
+async function cmdAsk(opts) {
+  const query = opts._.join(' ').trim();
+  if (!query) die('missing question to ask. Usage: mdss ask [--db <dir>] "question"');
+
+  const db = resolveDb(opts);
+  const indexDir = resolveIndexDir(opts, db);
+  const cacheDir = resolveCache(opts);
+  const k = opts.k || 5;
+
+  const { askQuestion } = await import('../dist/rag.js');
+  const result = await askQuestion({
+    query,
+    indexDir,
+    cacheDir,
+    k,
+    llmEndpoint: opts.llmEndpoint,
+    llmModel: opts.llmModel,
+    systemPrompt: opts.systemPrompt,
+  });
+
+  if (opts.json) {
+    process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+    return;
+  }
+
+  process.stdout.write(`\n${result.answer}\n\n`);
+  if (result.citations && result.citations.length > 0) {
+    process.stdout.write('Sources:\n');
+    for (const c of result.citations) {
+      const heading = c.heading ? ` › ${c.heading}` : '';
+      process.stdout.write(`  - ${c.file}${heading} [score: ${c.score.toFixed(3)}]\n`);
+    }
+    process.stdout.write('\n');
+  }
 }
 
 async function cmdSearch(opts) {
@@ -1083,6 +1127,7 @@ async function main() {
     case 'doctor': return cmdCheck(opts);
     case 'export': return cmdExport(opts);
     case 'search': return cmdSearch(opts);
+    case 'ask': return cmdAsk(opts);
     case 'tui': return cmdTui(opts);
     case 'serve': return cmdServe(opts);
     case 'mcp': return cmdMcp(opts);

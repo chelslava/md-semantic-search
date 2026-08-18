@@ -38,8 +38,8 @@ test('parseArgs: flags, positionals, repeatable --ignore/--path/--vault, --k int
 });
 
 test('parseArgs: boolean flags set true, help/version recognized', () => {
-  const o = parseArgs(['--json', '--semantic', '--offline', '--watch', '--rerank', '--version', '--help']);
-  assert.equal(o.json && o.semantic && o.offline && o.watch && o.rerank, true);
+  const o = parseArgs(['--json', '--semantic', '--offline', '--watch', '--rerank', '--rag', '--auto-tag', '--auto-summarize', '--version', '--help']);
+  assert.equal(o.json && o.semantic && o.offline && o.watch && o.rerank && o.rag && o.autoTag && o.autoSummarize, true);
   assert.equal(o.version, true);
   assert.equal(o.help, true);
 });
