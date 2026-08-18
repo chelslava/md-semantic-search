@@ -20,9 +20,10 @@ function tempDir(prefix) {
 
 // ---- unit tests for the pure argument/resolution functions (issue #29) ----
 
-test('parseArgs: flags, positionals, repeatable --ignore/--path, --k int, --graph-boost float, --filter string', () => {
+test('parseArgs: flags, positionals, repeatable --ignore/--path/--vault, --k int, --graph-boost float, --filter string', () => {
   const o = parseArgs(['search', '--db', './docs', '--json', '--k', '8', '--graph-boost', '0.75',
     '--filter', 'tag:engineering AND status != archived',
+    '--vault', './vault1', '--vault', './vault2',
     '--ignore', 'log.md', '--ignore', '**/archive/**', '--path', 'docs/**',
     'some query text']);
   assert.equal(o._.join(' '), 'search some query text');
@@ -31,6 +32,7 @@ test('parseArgs: flags, positionals, repeatable --ignore/--path, --k int, --grap
   assert.equal(o.k, 8);
   assert.equal(o.graphBoost, 0.75);
   assert.equal(o.filter, 'tag:engineering AND status != archived');
+  assert.deepEqual(o.vaults, ['./vault1', './vault2']);
   assert.deepEqual(o.ignore, ['log.md', '**/archive/**']);
   assert.deepEqual(o.path, ['docs/**']);
 });

@@ -13,7 +13,7 @@ export function inspectIndexSchema(value: unknown, location: string): { index: R
 }
 
 export function validateNumericVector(value: unknown, expectedDim: number | undefined, where: string): number {
-  if (!Array.isArray(value) && !(value instanceof Float32Array)) {
+  if (!Array.isArray(value) && !(value instanceof Float32Array || value instanceof Int8Array)) {
     throw new Error(`${where}: missing vector${REBUILD}`);
   }
   const vec = value as ArrayLike<number>;

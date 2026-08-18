@@ -10,6 +10,8 @@ import { DocumentMetadata } from './frontmatter.js';
 import { trainIVF, searchIVFCandidates, deserializeIVF, IVFIndex, ANN_THRESHOLD, DEFAULT_NPROBE } from './ivf.js';
 import { buildRelationshipGraph, computePageRank, expandGraphNeighborhood, RelationshipGraph } from './wikilinks.js';
 import { evaluateFilter, FilterNode } from './filter.js';
+import { deserializeBinaryIndex } from './binary-format.js';
+import { dequantizeFromInt8 } from './quantization.js';
 
 export { tokenize } from './lexical.js';
 
@@ -164,7 +166,7 @@ export interface RuntimeChunk {
   startLine?: number;
   endLine?: number;
   meta?: DocumentMetadata;
-  vec: Float32Array;
+  vec: Float32Array | Int8Array;
 }
 
 export interface RuntimeIndexState {
@@ -210,23 +212,32 @@ const runtimeIndexStates = new WeakMap<IndexFile, RuntimeIndexState>();
 
 function snapshotRuntimeIndex(
   index: IndexFile,
-  validation: { schema: number; dim: number | undefined; model: ModelDescriptor; ivf?: IVFIndex }
+  validation: {
+    schema: number;
+    dim: number | undefined;
+    model: ModelDescriptor;
+    ivf?: IVFIndex;
+    rawVectorsBuffer?: Float32Array | Int8Array;
+  }
 ): RuntimeIndexState {
   const dim = validation.dim || (index.chunks[0]?.vec?.length ?? 0);
   const count = index.chunks.length;
-  const vectorsBuffer = dim > 0 ? new Float32Array(count * dim) : null;
+  const isZeroCopy = !!validation.rawVectorsBuffer;
+  const vectorsBuffer = validation.rawVectorsBuffer ?? (dim > 0 ? new Float32Array(count * dim) : null);
 
   const chunks: RuntimeChunk[] = index.chunks.map((chunk, i) => {
-    let vec: Float32Array;
+    let vec: Float32Array | Int8Array;
     if (vectorsBuffer && dim > 0) {
       const offset = i * dim;
-      if (chunk.vec instanceof Float32Array) {
-        vectorsBuffer.set(chunk.vec, offset);
-      } else {
-        const arr = chunk.vec as number[];
-        for (let j = 0; j < dim; j++) vectorsBuffer[offset + j] = arr[j];
+      if (!isZeroCopy) {
+        if (chunk.vec instanceof Float32Array || chunk.vec instanceof Int8Array) {
+          (vectorsBuffer as any).set(chunk.vec, offset);
+        } else {
+          const arr = chunk.vec as number[];
+          for (let j = 0; j < dim; j++) (vectorsBuffer as any)[offset + j] = arr[j];
+        }
       }
-      vec = vectorsBuffer.subarray(offset, offset + dim);
+      vec = (vectorsBuffer as any).subarray(offset, offset + dim);
     } else {
       vec = Float32Array.from(chunk.vec as number[]);
     }
@@ -317,7 +328,73 @@ function warnIfStale(index: IndexFile): void {
 }
 
 export function loadIndex(indexDir: string): { index: IndexFile; model: ModelDescriptor } {
+  const vectorsBinPath = path.join(indexDir, 'vectors.bin');
   const vectorsPath = path.join(indexDir, 'vectors.json');
+
+  let useBinary = false;
+  if (fs.existsSync(vectorsBinPath)) {
+    if (!fs.existsSync(vectorsPath)) {
+      useBinary = true;
+    } else {
+      try {
+        const binStat = fs.statSync(vectorsBinPath);
+        const jsonStat = fs.statSync(vectorsPath);
+        if (binStat.mtimeMs >= jsonStat.mtimeMs) {
+          useBinary = true;
+        }
+      } catch {
+        useBinary = false;
+      }
+    }
+  }
+
+  if (useBinary) {
+    try {
+      const binBuffer = fs.readFileSync(vectorsBinPath);
+      const shaBinPath = path.join(indexDir, 'vectors.bin.sha256');
+      if (fs.existsSync(shaBinPath)) {
+        const expectedHash = fs.readFileSync(shaBinPath, 'utf8').trim().split(/\s+/)[0];
+        const actualHash = crypto.createHash('sha256').update(binBuffer).digest('hex');
+        if (expectedHash && actualHash !== expectedHash) {
+          throw new Error('vectors.bin integrity check failed (SHA-256 mismatch) — run `mdss index` to rebuild.');
+        }
+      }
+      const deserialized = deserializeBinaryIndex(binBuffer);
+      const validated = validateIndexEnvelope(deserialized, vectorsBinPath, { encoding: 'loaded', validateVectors: true });
+      const index = validated.index as IndexFile;
+      const { model, dim: validatedDim } = validated;
+      const expectedDim = validatedDim ?? deserialized.dim;
+
+      warnIfStale(index);
+
+      const ivfPath = path.join(indexDir, 'ivf.json');
+      let ivf: IVFIndex | undefined;
+      if (fs.existsSync(ivfPath)) {
+        try {
+          const raw = JSON.parse(fs.readFileSync(ivfPath, 'utf8'));
+          ivf = deserializeIVF(raw);
+        } catch {}
+      }
+
+      runtimeIndexStates.set(
+        index,
+        snapshotRuntimeIndex(index, {
+          schema: validated.schema,
+          dim: expectedDim,
+          model,
+          ivf,
+          rawVectorsBuffer: deserialized.rawVectorsBuffer,
+        })
+      );
+
+      return { index, model };
+    } catch (e: any) {
+      if (e.message?.includes('integrity check failed')) throw e;
+      if (!fs.existsSync(vectorsPath)) throw e;
+      // If vectors.bin was corrupt or unreadable, fall through to vectors.json fallback
+    }
+  }
+
   if (!fs.existsSync(vectorsPath)) {
     throw new Error(`No index at ${vectorsPath}. Run \`mdss index\` first.`);
   }
@@ -395,8 +472,13 @@ export function loadIndex(indexDir: string): { index: IndexFile; model: ModelDes
 
 export const MAX_QUERY_LENGTH = 2048;
 
+export interface LoadedIndex {
+  index: IndexFile;
+  model: ModelDescriptor;
+}
+
 export interface SearchOptions {
-  loaded: { index: IndexFile; model: ModelDescriptor };
+  loaded: LoadedIndex;
   cacheDir: string;
   query: string;
   k?: number;
@@ -558,7 +640,7 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
   const useAnn = opts.ann ?? (runtime.ivf !== undefined && candidates.length >= ANN_THRESHOLD);
   if (useAnn && candidates.length >= ANN_THRESHOLD) {
     if (!runtime.ivf) {
-      const rawVecs = chunks.map((c) => c.vec);
+      const rawVecs = chunks.map((c) => (c.vec instanceof Float32Array ? c.vec : dequantizeFromInt8(c.vec)));
       runtime.ivf = trainIVF(rawVecs);
     }
     const qVecF32 = qVec instanceof Float32Array ? qVec : Float32Array.from(qVec);

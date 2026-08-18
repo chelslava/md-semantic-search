@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { buildIndex } from './indexer.js';
 import { loadIndex, searchIndex } from './search.js';
+import { searchFederated } from './federation.js';
 import { globToRegExp } from './core.js';
 
 export const MCP_TOOLS = [
@@ -20,6 +21,7 @@ export const MCP_TOOLS = [
         query: { type: 'string', description: 'Natural language search query' },
         k: { type: 'number', description: 'Number of top results to return (default: 6)' },
         path: { type: 'string', description: 'Optional path glob filter (e.g. "docs/**")' },
+        vaults: { type: 'array', items: { type: 'string' }, description: 'Optional list of vault directories for federated search' },
         tag: { type: 'array', items: { type: 'string' }, description: 'Optional frontmatter tag filters' },
         filter: { type: 'string', description: 'Optional rich boolean filter expression (e.g. "tag:engineering AND status != archived")' },
         graphBoost: { type: 'number', description: 'Optional boost weight for graph PageRank / wikilinks (0.0 to 1.0)' },
@@ -78,7 +80,7 @@ export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir:
         },
         serverInfo: {
           name: 'md-semantic-search',
-          version: '0.6.0',
+          version: '0.7.0',
         },
       },
     };
@@ -103,18 +105,34 @@ export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir:
       if (name === 'search_markdown') {
         const query = typeof args.query === 'string' ? args.query : '';
         const k = Number.isInteger(args.k) && args.k > 0 ? args.k : 6;
-        const results = await searchIndex({
-          loaded: state.loaded,
-          cacheDir: state.cacheDir,
-          query,
-          k,
-          path: args.path,
-          tag: args.tag,
-          filter: typeof args.filter === 'string' ? args.filter : undefined,
-          graphBoost: typeof args.graphBoost === 'number' ? args.graphBoost : undefined,
-          offline: state.offline,
-          embedFn: state.embedFn,
-        });
+        let results: any[];
+        if (Array.isArray(args.vaults) && args.vaults.length > 0) {
+          results = await searchFederated({
+            vaults: args.vaults,
+            cacheDir: state.cacheDir,
+            query,
+            k,
+            path: args.path,
+            tag: args.tag,
+            filter: typeof args.filter === 'string' ? args.filter : undefined,
+            graphBoost: typeof args.graphBoost === 'number' ? args.graphBoost : undefined,
+            offline: state.offline,
+            embedFn: state.embedFn,
+          });
+        } else {
+          results = await searchIndex({
+            loaded: state.loaded,
+            cacheDir: state.cacheDir,
+            query,
+            k,
+            path: args.path,
+            tag: args.tag,
+            filter: typeof args.filter === 'string' ? args.filter : undefined,
+            graphBoost: typeof args.graphBoost === 'number' ? args.graphBoost : undefined,
+            offline: state.offline,
+            embedFn: state.embedFn,
+          });
+        }
         content = [{ type: 'text', text: JSON.stringify(results, null, 2) }];
       } else if (name === 'get_chunk') {
         const file = args.file;

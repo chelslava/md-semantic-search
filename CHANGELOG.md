@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-08-18
+
+### Added
+- **Issue #95** — Zero-Copy Binary Index Storage (`vectors.bin`).
+  - Monolithic binary storage format with 64-byte aligned `MDSSBIN1` header (`src/binary-format.ts`).
+  - Direct zero-copy memory mapping via `Float32Array` / `Int8Array` buffer views without base64 decoding or per-chunk array allocations.
+  - Seamless backward-compatible fallback to `vectors.json`.
+- **Issue #96** — Int8 Scalar & Product Quantization Tier.
+  - 8-bit scalar quantization module (`src/quantization.ts`) mapping normalized float vectors $[-1.0, 1.0]$ to $[-128, 127]$ `Int8Array`.
+  - Fast vectorized asymmetric cosine calculation (`asymmetricCosineInt8` for Float32 query $\times$ Int8 chunk) with $<1\%$ nDCG ranking loss.
+  - 4x storage and RAM savings for vector sections (`--quantize int8` in CLI and `buildIndex`).
+- **Issue #97** — Multi-Vault & Multi-Repository Search Federation.
+  - Federated search module (`src/federation.ts`, `searchFederated`) querying multiple independent vault indexes in parallel.
+  - Cross-vault result fusion via calibrated Reciprocal Rank Fusion (RRF) with vault attribution (`vault`, `vaultPath`).
+  - Repeatable CLI flag `--vault <dir>` and MCP `search_markdown` tool `vaults` parameter.
+
 ## [0.6.0] - 2026-08-18
 
 ### Added

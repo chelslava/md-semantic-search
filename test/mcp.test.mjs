@@ -26,6 +26,13 @@ function fakeEmbed(texts, kind, model) {
   });
 }
 
+function safeRm(p) {
+  if (!p) return;
+  try {
+    fs.rmSync(p, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  } catch {}
+}
+
 async function makeIndex() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-mcp-'));
   const idx = path.join(dir, '.mdss');
@@ -65,7 +72,7 @@ test('handleMcpRequest: handles initialize and tools/list', async () => {
     assert.equal(listRes.id, 2);
     assert.equal(listRes.result.tools.length, 4);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 
@@ -105,7 +112,7 @@ test('handleMcpRequest: handles tools/call index_status, list_files, get_chunk, 
     assert.equal(Array.isArray(searchData), true);
     assert.equal(searchData.length > 0, true);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    safeRm(dir);
   }
 });
 

@@ -9,8 +9,9 @@ import os from 'node:os';
 import { resolveModel, ModelAdapter, Pooling, DType } from './models.js';
 import { chunkMarkdownStructural, PARSER_VERSION, StructuralChunk } from './markdown-parser.js';
 import { parseFrontmatter, DocumentMetadata } from './frontmatter.js';
+import { asymmetricCosineInt8 } from './quantization.js';
 
-export { PARSER_VERSION, parseFrontmatter, resolveModel, DocumentMetadata, ModelAdapter, Pooling, DType };
+export { PARSER_VERSION, parseFrontmatter, resolveModel, DocumentMetadata, ModelAdapter, Pooling, DType, asymmetricCosineInt8 };
 
 const _extractors = new Map<string, any>();
 
@@ -287,7 +288,17 @@ export async function embed(
   return out.tolist();
 }
 
-export function cosine(a: Float32Array | number[], b: Float32Array | number[], bOffset: number = 0): number {
+export function cosine(
+  a: Float32Array | number[],
+  b: Float32Array | Int8Array | number[],
+  bOffset: number = 0
+): number {
+  if (b instanceof Int8Array) {
+    const qF32 = a instanceof Float32Array ? a : Float32Array.from(a);
+    const chunkInt8 = bOffset === 0 && b.length === qF32.length ? b : b.subarray(bOffset, bOffset + qF32.length);
+    return asymmetricCosineInt8(qF32, chunkInt8);
+  }
+
   const len = a.length;
   let s0 = 0,
     s1 = 0,
@@ -300,19 +311,19 @@ export function cosine(a: Float32Array | number[], b: Float32Array | number[], b
   let i = 0;
   const limit = len - 7;
   while (i < limit) {
-    s0 += a[i] * b[bOffset + i];
-    s1 += a[i + 1] * b[bOffset + i + 1];
-    s2 += a[i + 2] * b[bOffset + i + 2];
-    s3 += a[i + 3] * b[bOffset + i + 3];
-    s4 += a[i + 4] * b[bOffset + i + 4];
-    s5 += a[i + 5] * b[bOffset + i + 5];
-    s6 += a[i + 6] * b[bOffset + i + 6];
-    s7 += a[i + 7] * b[bOffset + i + 7];
+    s0 += a[i] * (b as ArrayLike<number>)[bOffset + i];
+    s1 += a[i + 1] * (b as ArrayLike<number>)[bOffset + i + 1];
+    s2 += a[i + 2] * (b as ArrayLike<number>)[bOffset + i + 2];
+    s3 += a[i + 3] * (b as ArrayLike<number>)[bOffset + i + 3];
+    s4 += a[i + 4] * (b as ArrayLike<number>)[bOffset + i + 4];
+    s5 += a[i + 5] * (b as ArrayLike<number>)[bOffset + i + 5];
+    s6 += a[i + 6] * (b as ArrayLike<number>)[bOffset + i + 6];
+    s7 += a[i + 7] * (b as ArrayLike<number>)[bOffset + i + 7];
     i += 8;
   }
   let s = s0 + s1 + (s2 + s3) + (s4 + s5) + (s6 + s7);
   while (i < len) {
-    s += a[i] * b[bOffset + i];
+    s += a[i] * (b as ArrayLike<number>)[bOffset + i];
     i++;
   }
   return s;

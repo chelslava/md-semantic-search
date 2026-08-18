@@ -17,6 +17,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { buildIndex } from '../dist/indexer.js';
 import { search } from '../dist/search.js';
+import { searchFederated } from '../dist/federation.js';
 import { createServe, DEFAULT_PORT, DEFAULT_HOST } from '../dist/serve.js';
 import { MODELS, DEFAULT_MODEL, resolveModel } from '../dist/models.js';
 import { decodeVec, walkMarkdown, SCHEMA_VERSION, assertSafePath } from '../dist/core.js';
@@ -41,7 +42,7 @@ function defaultCacheDir() {
 }
 
 function parseArgs(argv) {
-  const opts = { _: [], ignore: [], path: [] };
+  const opts = { _: [], ignore: [], path: [], vaults: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') opts.json = true;
@@ -60,6 +61,7 @@ function parseArgs(argv) {
     else if (a === '--no-vectors' || a === '--no-vector') opts.noVectors = true;
     else if (a === '--output' || a === '-o') opts.output = nextValue(argv, ++i, a);
     else if (a === '--db') opts.db = nextValue(argv, ++i, a);
+    else if (a === '--vault') opts.vaults.push(nextValue(argv, ++i, a));
     else if (a === '--index-dir') opts.indexDir = nextValue(argv, ++i, a);
     else if (a === '--cache-dir') opts.cacheDir = nextValue(argv, ++i, a);
     else if (a === '--model') opts.model = nextValue(argv, ++i, a);
@@ -88,6 +90,7 @@ function parseArgs(argv) {
     else if (a === '--canonical') opts.canonical = true;
     else if (a === '--graph-boost') opts.graphBoost = nextFloat(argv, ++i, a);
     else if (a === '--filter') opts.filter = nextValue(argv, ++i, a);
+    else if (a === '--quantize') opts.quantize = nextValue(argv, ++i, a);
     else if (a.startsWith('-')) die(`unknown option: ${a}. Try \`mdss --help\`.`);
     else opts._.push(a);
   }
@@ -123,7 +126,8 @@ const KNOWN_CONFIG_KEYS = new Set([
   'targetTokens', 'target-tokens', 'port', 'host', 'apiKey', 'api-key',
   'healthPublic', 'health-public', 'watch', 'watchInterval', 'watch-interval',
   'watchDelay', 'watch-delay', 'offline', 'rerank', 'semantic', 'tag', 'project', 'type', 'status', 'canonical',
-  'format', 'noVectors', 'no-vectors', 'output', 'workers', 'ann', 'nprobe', 'graphBoost', 'graph-boost', 'filter'
+  'format', 'noVectors', 'no-vectors', 'output', 'workers', 'ann', 'nprobe', 'graphBoost', 'graph-boost', 'filter', 'quantize',
+  'vault', 'vaults'
 ]);
 
 function findConfigFile(explicitPath) {
@@ -331,6 +335,7 @@ async function cmdIndex(opts) {
       offline: resolveOffline(opts),
       workers: opts.workers,
       ann: opts.ann,
+      quantize: opts.quantize,
       log: s => {
         if (process.stderr.isTTY && !opts.json && /^\s+\d+\/\d+$/.test(s)) return;
         process.stderr.write(s + '\n');
@@ -880,32 +885,61 @@ async function cmdTui(opts) {
 
 async function cmdSearch(opts) {
   if (opts.interactive) return cmdTui(opts);
-  const db = resolveDb(opts);
-  const indexDir = resolveIndexDir(opts, db);
   const cacheDir = resolveCache(opts);
   const query = opts._.join(' ').trim();
   if (!query) die('Missing query text. e.g. mdss search --db ./docs "your question"');
 
-  const results = await search({
-    indexDir, cacheDir, query,
-    k: opts.k || 6,
-    semanticOnly: !!opts.semantic,
-    offline: resolveOffline(opts),
-    path: opts.path.length > 0 ? opts.path : undefined,
-    since: opts.since,
-    rerank: !!opts.rerank,
-    tag: opts.tag,
-    project: opts.project,
-    type: opts.type,
-    status: opts.status,
-    canonicalOnly: opts.canonical,
-    explain: !!opts.explain,
-    maxPerFile: opts.maxPerFile || opts.maxPerDoc,
-    ann: opts.ann,
-    nprobe: opts.nprobe,
-    graphBoost: opts.graphBoost,
-    filter: opts.filter,
-  });
+  let results;
+  const isFederated = Array.isArray(opts.vaults) && opts.vaults.length > 0;
+
+  if (isFederated) {
+    results = await searchFederated({
+      vaults: opts.vaults,
+      cacheDir,
+      query,
+      k: opts.k || 6,
+      semanticOnly: !!opts.semantic,
+      offline: resolveOffline(opts),
+      path: opts.path.length > 0 ? opts.path : undefined,
+      since: opts.since,
+      rerank: !!opts.rerank,
+      tag: opts.tag,
+      project: opts.project,
+      type: opts.type,
+      status: opts.status,
+      canonicalOnly: opts.canonical,
+      explain: !!opts.explain,
+      maxPerFile: opts.maxPerFile || opts.maxPerDoc,
+      ann: opts.ann,
+      nprobe: opts.nprobe,
+      graphBoost: opts.graphBoost,
+      filter: opts.filter,
+    });
+  } else {
+    const db = resolveDb(opts);
+    const indexDir = resolveIndexDir(opts, db);
+
+    results = await search({
+      indexDir, cacheDir, query,
+      k: opts.k || 6,
+      semanticOnly: !!opts.semantic,
+      offline: resolveOffline(opts),
+      path: opts.path.length > 0 ? opts.path : undefined,
+      since: opts.since,
+      rerank: !!opts.rerank,
+      tag: opts.tag,
+      project: opts.project,
+      type: opts.type,
+      status: opts.status,
+      canonicalOnly: opts.canonical,
+      explain: !!opts.explain,
+      maxPerFile: opts.maxPerFile || opts.maxPerDoc,
+      ann: opts.ann,
+      nprobe: opts.nprobe,
+      graphBoost: opts.graphBoost,
+      filter: opts.filter,
+    });
+  }
 
   if (opts.json) { process.stdout.write(JSON.stringify(results, null, 2) + '\n'); return; }
   if (results.length === 0) { process.stdout.write('No matches.\n'); return; }
@@ -915,13 +949,14 @@ async function cmdSearch(opts) {
   // Group by file (issue #13): each file becomes a header with its hits below.
   const byFile = new Map();
   for (const r of results) {
-    if (!byFile.has(r.file)) byFile.set(r.file, []);
-    byFile.get(r.file).push(r);
+    const fileKey = r.vault ? `[${r.vault}] ${r.file}` : r.file;
+    if (!byFile.has(fileKey)) byFile.set(fileKey, []);
+    byFile.get(fileKey).push(r);
   }
   const color = !!process.stdout.isTTY; // bold matched terms only on a real terminal
   let rank = 0;
-  for (const [file, hits] of byFile) {
-    process.stdout.write(`${file}\n`);
+  for (const [fileHeader, hits] of byFile) {
+    process.stdout.write(`${fileHeader}\n`);
     for (const r of hits) {
       rank++;
       let snippet = r.snippet;

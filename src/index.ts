@@ -61,6 +61,20 @@ export {
   parseFilter, tokenizeFilter, evaluateFilter, FilterNode,
 } from './filter.js';
 
+export {
+  serializeBinaryIndex, deserializeBinaryIndex, readBinaryHeader,
+  BINARY_MAGIC, BINARY_HEADER_SIZE,
+} from './binary-format.js';
+
+export {
+  quantizeToInt8, dequantizeFromInt8, asymmetricCosineInt8,
+  INT8_SCALE, INT8_INV_SCALE,
+} from './quantization.js';
+
+export {
+  searchFederated, FederatedSearchOptions, FederatedSearchResultHit, VaultConfig,
+} from './federation.js';
+
 export { runTui } from './tui.js';
 
 

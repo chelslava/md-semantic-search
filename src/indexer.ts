@@ -37,6 +37,7 @@ import {
 import { embeddingAdapterFingerprint, legacyEmbeddingAdapterFingerprint } from './models.js';
 import { trainIVF, serializeIVF, ANN_THRESHOLD } from './ivf.js';
 import { DocumentMetadata } from './frontmatter.js';
+import { serializeBinaryIndex } from './binary-format.js';
 
 export interface IndexChunk {
   file: string;
@@ -101,16 +102,17 @@ const loadJSON = <T>(p: string, fb: T, warn: (msg: string) => void = () => {}): 
   }
 };
 
-function atomicWrite(target: string, data: string): void {
+function atomicWrite(target: string, data: string | Buffer): void {
   const tmp = `${target}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, data);
   fs.renameSync(tmp, target);
 
-  if (path.basename(target) === 'vectors.json') {
+  const base = path.basename(target);
+  if (base === 'vectors.json' || base === 'vectors.bin') {
     const digest = crypto.createHash('sha256').update(data).digest('hex');
     const shaPath = `${target}.sha256`;
     const shaTmp = `${shaPath}.${process.pid}.tmp`;
-    fs.writeFileSync(shaTmp, `${digest}  vectors.json\n`);
+    fs.writeFileSync(shaTmp, `${digest}  ${base}\n`);
     fs.renameSync(shaTmp, shaPath);
   }
 }
@@ -163,6 +165,7 @@ export interface BuildIndexOptions {
   onProgress?: (done: number, total: number, chunksPerSec: number) => void;
   workers?: number;
   ann?: boolean;
+  quantize?: 'fp32' | 'int8';
 }
 
 export interface BuildIndexResult {
@@ -193,11 +196,12 @@ export async function buildIndex(opts: BuildIndexOptions): Promise<BuildIndexRes
     onProgress,
     workers = 1,
     ann = false,
+    quantize = 'fp32',
   } = opts;
   if (_lockHeld)
-    return _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn, maxRetries, onProgress, workers, ann });
+    return _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn, maxRetries, onProgress, workers, ann, quantize });
   return withIndexLock(indexDir, () =>
-    _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn, maxRetries, onProgress, workers, ann })
+    _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn, maxRetries, onProgress, workers, ann, quantize })
   );
 }
 
@@ -214,10 +218,12 @@ async function _buildIndexInner({
   onProgress,
   workers = 1,
   ann = false,
-}: Required<Omit<BuildIndexOptions, '_lockHeld' | 'onProgress' | 'workers' | 'ann'>> & {
+  quantize = 'fp32',
+}: Required<Omit<BuildIndexOptions, '_lockHeld' | 'onProgress' | 'workers' | 'ann' | 'quantize'>> & {
   onProgress?: (done: number, total: number, chunksPerSec: number) => void;
   workers?: number;
   ann?: boolean;
+  quantize?: 'fp32' | 'int8';
 }): Promise<BuildIndexResult> {
   const model = resolveModel(modelName);
   const modelIdentity = `${model.id}@${model.revision || 'main'}`;
@@ -576,6 +582,12 @@ async function _buildIndexInner({
   atomicWrite(checkpointPath, JSON.stringify({ ...index, complete: true, hashes: newHashes }));
   atomicWrite(vectorsPath, JSON.stringify(index));
   atomicWrite(hashesPath, JSON.stringify(newHashes, null, 2));
+
+  const vectorsBinPath = path.join(indexDir, 'vectors.bin');
+  if (dim !== undefined && dim > 0) {
+    const binBuffer = serializeBinaryIndex(index as any, dim, { quantize });
+    atomicWrite(vectorsBinPath, binBuffer);
+  }
 
   const ivfPath = path.join(indexDir, 'ivf.json');
   if (ann || chunks.length >= ANN_THRESHOLD) {
