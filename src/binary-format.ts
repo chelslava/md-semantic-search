@@ -173,12 +173,11 @@ export function deserializeBinaryIndex(
 ): PersistedIndex & { rawVectorsBuffer: Float32Array | Int8Array; quantized?: 'fp32' | 'int8' } {
   const header = readBinaryHeader(buffer);
   const { flags, dim, chunkCount, vectorsOffset, vectorsBytes, metadataOffset, metadataBytes } = header;
-
-  if (buffer.length < metadataOffset + metadataBytes) {
+  const isInt8 = (flags & BINARY_FLAG_INT8) !== 0;
+  const expectedVectorsBytes = chunkCount * dim * (isInt8 ? 1 : 4);
+  if (buffer.length < vectorsOffset + expectedVectorsBytes || buffer.length < metadataOffset + metadataBytes) {
     throw new Error('Corrupt binary index: unexpected truncated file');
   }
-
-  const isInt8 = (flags & BINARY_FLAG_INT8) !== 0;
   const byteOffset = buffer.byteOffset + vectorsOffset;
   let rawVectorsBuffer: Float32Array | Int8Array;
 

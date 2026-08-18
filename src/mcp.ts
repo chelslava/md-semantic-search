@@ -93,7 +93,7 @@ export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir:
         },
         serverInfo: {
           name: 'md-semantic-search',
-          version: '0.9.0',
+          version: '1.0.0',
         },
       },
     };

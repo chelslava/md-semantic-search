@@ -430,6 +430,12 @@ export function assertSafePath(targetPath: string, allowedRoots?: string[]): str
   if (typeof targetPath !== 'string' || !targetPath.trim()) {
     throw new Error('path must be a non-empty string');
   }
+  if (targetPath.includes('\0')) {
+    throw new Error('Forbidden path: null byte detected in path');
+  }
+  if (targetPath.startsWith('\\\\') || targetPath.startsWith('//')) {
+    throw new Error('Forbidden path: UNC network paths not allowed');
+  }
   const resolved = path.resolve(targetPath);
   let canonical = resolved;
   try {

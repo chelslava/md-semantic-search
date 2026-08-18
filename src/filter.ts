@@ -89,6 +89,9 @@ export function tokenizeFilter(expr: string): string[] {
     }
     if (word) {
       tokens.push(word);
+    } else if (i < expr.length) {
+      tokens.push(expr[i]);
+      i++;
     }
   }
   return tokens;
@@ -118,7 +121,11 @@ export function parseFilter(expr: string): FilterNode {
     let node = parseAnd();
     while (pos < tokens.length && peek()?.toUpperCase() === 'OR') {
       consume(); // OR
+      const beforePos = pos;
       const right = parseAnd();
+      if (pos === beforePos) {
+        throw new Error(`Invalid syntax in filter expression near token "${peek()}"`);
+      }
       node = { type: 'OR', left: node, right };
     }
     return node;
@@ -134,7 +141,11 @@ export function parseFilter(expr: string): FilterNode {
       if (peek()?.toUpperCase() === 'AND') {
         consume(); // AND
       }
+      const beforePos = pos;
       const right = parseNot();
+      if (pos === beforePos) {
+        throw new Error(`Invalid syntax in filter expression near token "${peek()}"`);
+      }
       node = { type: 'AND', left: node, right };
     }
     return node;

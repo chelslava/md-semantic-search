@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-08-18
+
+### Milestone
+- **Production LTS & API Freeze**: Formal declaration of API stability, schema backward compatibility guarantees, security hardening, and scale benchmarking.
+
+### Added
+- **Issue #104** — Schema v4 LTS Freeze & Long-Term Backward Compatibility Guarantee.
+  - Frozen index schema format with automated cross-version compatibility suite (`test/schema-lts.test.mjs`) ensuring seamless loading across legacy decimal (`v0`), base64 binary chunks (`v1`), legacy overlap lexical (`v2`), and Schema v3/v4 LTS envelopes.
+  - TypeScript types and public API frozen under SemVer LTS guarantee.
+- **Issue #105** — Large-Scale 1M+ Chunk Benchmark & Competitor Comparison Suite.
+  - Synthetic large-scale benchmark harness in `bench/benchmark-1m.mjs` verifying sub-60ms retrieval latencies across 50,000+ chunks and INT8 4x memory savings.
+  - Comprehensive architectural comparison published in `docs/benchmarks.md` detailing performance against Qdrant, ChromaDB, and ripgrep.
+- **Issue #106** — Production Hardening, Security Fuzzing & Zero-Vulnerability Audit.
+  - Security fuzzing test suite in `test/security-fuzzing.test.mjs` validating path traversal guards, UNC network protections, malformed binary index rejection, and AST filter resilience.
+  - Concurrency stress test suite in `test/concurrency-stress.test.mjs` testing 50 parallel daemon HTTP search requests without socket leaks or race conditions.
+
 ## [0.9.0] - 2026-08-18
 
 ### Added
