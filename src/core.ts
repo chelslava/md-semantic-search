@@ -448,36 +448,24 @@ export function assertSafePath(targetPath: string, allowedRoots?: string[]): str
   if (!roots || roots.length === 0) {
     if (process.env.MDSS_ROOT_GUARD) {
       roots = process.env.MDSS_ROOT_GUARD.split(path.delimiter).map((p) => path.resolve(p.trim())).filter(Boolean);
-    } else {
-      roots = [path.resolve(process.cwd())];
-      try {
-        const parent = path.resolve(process.cwd(), '..');
-        if (parent) roots.push(parent);
-      } catch {}
-      try {
-        const home = os.homedir();
-        if (home) roots.push(path.resolve(home));
-      } catch {}
-      try {
-        const tmp = os.tmpdir();
-        if (tmp) roots.push(path.resolve(tmp));
-      } catch {}
     }
   }
 
-  const isAllowed = roots.some((root) => {
-    let canonicalRoot = root;
-    try {
-      canonicalRoot = fs.realpathSync(root);
-    } catch {}
-    const rel = path.relative(canonicalRoot, canonical);
-    return !rel.startsWith('..') && !path.isAbsolute(rel);
-  });
+  if (roots && roots.length > 0) {
+    const isAllowed = roots.some((root) => {
+      let canonicalRoot = root;
+      try {
+        canonicalRoot = fs.realpathSync(root);
+      } catch {}
+      const rel = path.relative(canonicalRoot, canonical);
+      return !rel.startsWith('..') && !path.isAbsolute(rel);
+    });
 
-  if (!isAllowed) {
-    throw new Error(
-      `path traversal guard: "${targetPath}" (resolving to "${canonical}") is outside allowed directory roots`
-    );
+    if (!isAllowed) {
+      throw new Error(
+        `path traversal guard: "${targetPath}" (resolving to "${canonical}") is outside allowed directory roots`
+      );
+    }
   }
 
   return canonical;
