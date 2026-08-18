@@ -4,6 +4,21 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-08-18
+
+### Added
+- **Issue #98** — Official VS Code Extension (`integrations/vscode/`).
+  - Native extension manifest and bundle with `MDSS: Semantic Search Notes` QuickPick command.
+  - Interactive sidebar Webview panel (`mdss-search-view`) with live Markdown preview.
+  - Click-to-open heading and line navigation (`editor.revealRange`) directly in the active editor.
+- **Issue #99** — Desktop Launcher Extensions for Raycast and Alfred (`integrations/`).
+  - Raycast React extension (`integrations/raycast/`) with List/Detail view and copy/open actions against local `mdss serve` daemon.
+  - Alfred 4/5 Script Filter (`integrations/alfred/`) outputting structured JSON items with QuickLook support.
+- **Issue #100** — OS-Native File Watcher with Zero-Polling Kernel Events (`src/watcher.ts`).
+  - Kernel event listener (`ReadDirectoryChangesW`, `fsevents`, `inotify`) via recursive `fs.watch`.
+  - Zero idle background disk I/O on large multi-thousand-note repositories with burst debouncing and graceful interval polling fallback.
+  - Exported `createFileWatcher` and integrated into `mdss serve --watch`.
+
 ## [0.7.0] - 2026-08-18
 
 ### Added

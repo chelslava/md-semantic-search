@@ -1,0 +1,75 @@
+{
+  "name": "md-semantic-search-vscode",
+  "displayName": "Markdown Semantic Search (MDSS)",
+  "description": "Local, private semantic vector search over Markdown workspace notes for VS Code.",
+  "version": "0.1.0",
+  "publisher": "chelslava",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "markdown",
+    "semantic-search",
+    "vector-search",
+    "notes",
+    "obsidian",
+    "rag"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onCommand:mdss.search",
+    "onCommand:mdss.index",
+    "onView:mdss-search-view"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "mdss.search",
+        "title": "MDSS: Semantic Search Notes",
+        "category": "MDSS"
+      },
+      {
+        "command": "mdss.index",
+        "title": "MDSS: Rebuild Semantic Index",
+        "category": "MDSS"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "mdss-sidebar",
+          "title": "MDSS Semantic Search",
+          "icon": "$(search)"
+        }
+      ]
+    },
+    "views": {
+      "mdss-sidebar": [
+        {
+          "type": "webview",
+          "id": "mdss-search-view",
+          "title": "Semantic Search"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Markdown Semantic Search",
+      "properties": {
+        "mdss.daemonUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8747",
+          "description": "URL of the local MDSS search daemon"
+        },
+        "mdss.k": {
+          "type": "number",
+          "default": 10,
+          "description": "Default number of search results to return"
+        }
+      }
+    }
+  }
+}

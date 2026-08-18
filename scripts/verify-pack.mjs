@@ -152,7 +152,7 @@ try {
       'extractTitle', 'globToRegExp', 'encodeVec', 'decodeVec',
       'getReranker', 'rerankScores', 'normalizeAdapter',
       'embeddingAdapterFingerprint', 'quantizeToInt8', 'dequantizeFromInt8', 'asymmetricCosineInt8',
-      'searchFederated'];
+      'searchFederated', 'createFileWatcher'];
     const missingExports = expected.filter((name) => !(name in lib));
     if (missingExports.length > 0) {
       fail(`installed library exports missing: ${missingExports.join(', ')}`);

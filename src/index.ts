@@ -75,6 +75,10 @@ export {
   searchFederated, FederatedSearchOptions, FederatedSearchResultHit, VaultConfig,
 } from './federation.js';
 
+export {
+  createFileWatcher, FileWatcher, WatcherOptions,
+} from './watcher.js';
+
 export { runTui } from './tui.js';
 
 

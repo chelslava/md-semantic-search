@@ -10,6 +10,7 @@ import path from 'node:path';
 import { buildIndex } from './indexer.js';
 import { loadIndex, searchIndex } from './search.js';
 import { walkMarkdown, assertSafePath, ModelDescriptor } from './core.js';
+import { createFileWatcher, FileWatcher } from './watcher.js';
 
 const DEFAULT_PORT = 8747;
 const DEFAULT_HOST = '127.0.0.1';
@@ -190,9 +191,11 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     return out;
   };
 
+  let lastFingerprint = '';
+
   const watchLoop = async () => {
     let indexedHashes = readIndexedHashes();
-    let lastFingerprint = treeContentFingerprint(scanTree());
+    lastFingerprint = treeContentFingerprint(scanTree());
     let lastChangeAt = 0;
     let pending = false;
     while (!stopped) {
@@ -228,14 +231,25 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     }
   };
 
+  let nativeWatcher: FileWatcher | null = null;
+
   if (watch) {
     if (!db) throw new Error('serve --watch requires --db');
+    nativeWatcher = createFileWatcher(db, () => {
+      // Prompt watchLoop settle trigger on native event
+      lastFingerprint = '';
+    }, {
+      debounceMs: watchDelay,
+      ignore,
+      log,
+    });
     watchLoop();
   }
 
   const close = async (): Promise<void> => {
     stopped = true;
     if (timer) clearTimeout(timer);
+    if (nativeWatcher) nativeWatcher.close();
     await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
   };
 
