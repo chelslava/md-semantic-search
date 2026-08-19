@@ -32,7 +32,19 @@ jobs:
 
       - name: Run tests (Node 18)
         if: matrix.node == 18
-        run: npm run build && node --test --test-force-exit
+        run: |
+          npm run build
+          # --test-force-exit is Node 20+ only. On Node 18 undici's keep-alive
+          # pool prevents natural process exit after tests finish. We run
+          # node --test as a background job, wait for it, capture its exit
+          # code, then kill the whole process group to drain open handles.
+          node --test &
+          NODE_PID=$!
+          wait $NODE_PID
+          STATUS=$?
+          # Kill any remaining children (undici pool, fs.watch handles, etc.)
+          pkill -P $$ 2>/dev/null || true
+          exit $STATUS
 
       - name: Run tests and collect coverage (Node 20+)
         if: matrix.node != 18
