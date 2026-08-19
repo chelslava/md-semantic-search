@@ -10,8 +10,8 @@ on:
       - 'v*'
 
 permissions:
-  contents: read
-  id-token: write # enables npm provenance attestation
+  contents: write   # needed to upload release assets
+  id-token: write   # enables npm provenance attestation
 
 jobs:
   publish:
@@ -42,3 +42,48 @@ jobs:
         run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  vscode-extension:
+    # Build the .vsix and attach it to the GitHub Release.
+    # Requires the release to already exist (created by the tag push or a
+    # preceding workflow). The gh CLI uploads the asset with --clobber so
+    # re-runs are safe.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install vsce
+        run: npm install -g @vscode/vsce
+
+      - name: Verify VS Code extension version matches tag
+        shell: bash
+        working-directory: integrations/vscode
+        run: |
+          EXT=$(node -p "require('./package.json').version")
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$EXT" != "$TAG" ]; then
+            echo "::error::integrations/vscode/package.json version $EXT does not match tag v$TAG"
+            exit 1
+          fi
+          echo "Building VS Code extension v$EXT"
+
+      - name: Build VS Code extension
+        working-directory: integrations/vscode
+        run: |
+          npm install
+          vsce package --no-dependencies --out "md-semantic-search-vscode-${GITHUB_REF_NAME#v}.vsix"
+
+      - name: Upload .vsix to GitHub Release
+        shell: bash
+        working-directory: integrations/vscode
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VSIX="md-semantic-search-vscode-${GITHUB_REF_NAME#v}.vsix"
+          gh release upload "${GITHUB_REF_NAME}" "$VSIX" \
+            --clobber \
+            --repo "$GITHUB_REPOSITORY"
