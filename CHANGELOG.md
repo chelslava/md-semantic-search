@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-08-19
+
+### Fixed
+- **Node 18 serve hang** — `server.close()` on Node 18 does not drain keep-alive
+  TCP connections, causing the `close()` method of `createServe()` to block
+  indefinitely when any client socket remained open after a request. Fixed by
+  calling `server.closeAllConnections()` (available since Node 18.2.0) before
+  `server.close()`, which forcibly terminates all idle sockets and lets the
+  shutdown promise resolve immediately. The affected test now completes in ~36 ms
+  instead of hanging for the full GitHub Actions 6-hour timeout.
+- **CI test job timeout** — added `timeout-minutes: 10` to the `test` matrix job
+  in `.github/workflows/ci.yml` as a second-layer guard against future hangs.
+
 ## [1.0.0] - 2026-08-18
 
 ### Milestone
