@@ -250,6 +250,11 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     stopped = true;
     if (timer) clearTimeout(timer);
     if (nativeWatcher) nativeWatcher.close();
+    // closeAllConnections() forcibly closes keep-alive sockets so server.close()
+    // doesn't hang indefinitely waiting for them — critical on Node 18 where the
+    // HTTP server does NOT auto-drain idle connections before calling back.
+    // The method was back-ported to Node 18.2.0 and is always present in CI.
+    server.closeAllConnections?.();
     await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
   };
 
