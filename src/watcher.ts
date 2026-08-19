@@ -88,6 +88,12 @@ export function createFileWatcher(
       log(`Native watcher error (${err.message}), continuing.`);
     });
 
+    // unref() lets the event loop exit even if the watcher is still active.
+    // Without this, on Node 18/Linux the inotify handle keeps the process
+    // alive indefinitely after all tests finish (or after close() is called
+    // but the handle hasn't been fully released by the kernel yet).
+    fsWatcher.unref();
+
     return {
       isNative: true,
       close: () => {
