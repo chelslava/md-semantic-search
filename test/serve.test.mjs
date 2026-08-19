@@ -50,7 +50,9 @@ async function startServe(opts) {
 async function post(url, body) {
   const res = await fetch(`${url}/search`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    // 'connection: close' stops undici holding the keep-alive pool socket open
+    // after the test server is closed. On Node 18 this would block process exit.
+    headers: { 'content-type': 'application/json', 'connection': 'close' },
     body: JSON.stringify(body),
   });
   return { status: res.status, data: await res.json() };
@@ -146,12 +148,12 @@ test('serve: /health reports index + model; unknown route → 404 (issue #12)', 
 
     const srv = await startServe({ indexDir: idx, cacheDir: dir, embedFn: fakeEmbed });
     try {
-      const h = await fetch(`${srv.url}/health`).then(r => r.json());
+      const h = await fetch(`${srv.url}/health`, { headers: { 'connection': 'close' } }).then(r => r.json());
       assert.equal(h.ok, true);
       assert.equal(h.chunks, 1);
       assert.equal(h.model, 'Xenova/multilingual-e5-base');
 
-      const miss = await fetch(`${srv.url}/nope`);
+      const miss = await fetch(`${srv.url}/nope`, { headers: { 'connection': 'close' } });
       assert.equal(miss.status, 404);
     } finally {
       await srv.close();
@@ -390,7 +392,7 @@ test('serve: oversized /search body → 413, connection not half-open (issue #16
       const big = 'x'.repeat(MAX_BODY_BYTES * 2);
       const res = await fetch(`${srv.url}/search`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', 'connection': 'close' },
         body: big,
       });
       assert.equal(res.status, 413, 'streamed oversized body rejected');
