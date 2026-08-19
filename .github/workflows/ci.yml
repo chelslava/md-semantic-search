@@ -32,7 +32,7 @@ jobs:
 
       - name: Run tests (Node 18)
         if: matrix.node == 18
-        run: npm test
+        run: npm run build && node --test --test-force-exit
 
       - name: Run tests and collect coverage (Node 20+)
         if: matrix.node != 18
