@@ -9,7 +9,7 @@ import { search, searchIndex, loadIndex, tokenize, keywordScores, rrf, _stats } 
 import { decodeVec, SCHEMA_VERSION } from '../dist/core.js';
 
 function writeIndex(idx, data) {
-  const json = typeof data === 'string' ? data : JSON.stringify(data);
+  const json = JSON.stringify(data);
   const vectorsPath = path.join(idx, 'vectors.json');
   fs.writeFileSync(vectorsPath, json);
   const shaPath = path.join(idx, 'vectors.json.sha256');
@@ -407,7 +407,7 @@ test('loadIndex: genuine v3 missing or corrupt lexical data fails with rebuild h
       const value = structuredClone(current);
       if (fixture.lexical === undefined) delete value.lexical;
       else value.lexical = fixture.lexical;
-      fs.writeFileSync(vectorsPath, JSON.stringify(value));
+      writeIndex(idx, value);
       assert.throws(() => loadIndex(idx), /schema v3 lexical index.*mdss index.*rebuild/i, fixture.name);
     }
   } finally {
@@ -421,16 +421,16 @@ test('loadIndex: malformed roots, chunks, and schemaVersion fail before migratio
   try {
     const current = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
     for (const root of [null, [], 'index']) {
-      fs.writeFileSync(vectorsPath, JSON.stringify(root));
+      writeIndex(idx, root);
       assert.throws(() => loadIndex(idx), /root must be an object.*mdss index/i);
     }
-    fs.writeFileSync(vectorsPath, JSON.stringify({ ...current, chunks: null }));
+    writeIndex(idx, { ...current, chunks: null });
     assert.throws(() => loadIndex(idx), /chunks must be an array.*mdss index/i);
-    fs.writeFileSync(vectorsPath, JSON.stringify({ schemaVersion: SCHEMA_VERSION + 1, chunks: null }));
+    writeIndex(idx, { schemaVersion: SCHEMA_VERSION + 1, chunks: null });
     assert.throws(() => loadIndex(idx), /uses schema v4.*upgrade md-semantic-search/i,
       'future schema authority is checked before malformed chunks');
     for (const schemaVersion of ['3', 3.5, -1, Number.MAX_SAFE_INTEGER + 1]) {
-      fs.writeFileSync(vectorsPath, JSON.stringify({ ...current, schemaVersion }));
+      writeIndex(idx, { ...current, schemaVersion });
       assert.throws(() => loadIndex(idx), /schemaVersion must be a non-negative safe integer.*mdss index/i);
     }
   } finally {
@@ -461,7 +461,7 @@ test('loadIndex: schema-v3 envelope and chunks fail closed with actionable error
       ['decimal current vector', { ...current, chunks: [{ ...first, vec: [1, 0] }, ...current.chunks.slice(1)] }, /chunk 0 vec must be canonical base64/i],
     ];
     for (const [name, value, expected] of cases) {
-      fs.writeFileSync(vectorsPath, JSON.stringify(value));
+      writeIndex(idx, value);
       assert.throws(() => loadIndex(idx), expected, name);
     }
 
@@ -469,7 +469,7 @@ test('loadIndex: schema-v3 envelope and chunks fail closed with actionable error
     custom.model = 'Xenova/reviewer-custom-model@main';
     delete custom.modelAlias;
     delete custom.dim;
-    fs.writeFileSync(vectorsPath, JSON.stringify(custom));
+    writeIndex(idx, custom);
     assert.throws(() => loadIndex(idx), /nonempty schema v3 custom index requires explicit dim/i);
   } finally {
     safeRm(dir);
@@ -697,10 +697,10 @@ test('loadIndex: index.dim is positive, safe, and consistent with a known model'
   try {
     const current = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
     for (const dim of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
-      fs.writeFileSync(vectorsPath, JSON.stringify({ ...current, dim }));
+      writeIndex(idx, { ...current, dim });
       assert.throws(() => loadIndex(idx), /index\.dim must be a positive safe integer.*mdss index/i);
     }
-    fs.writeFileSync(vectorsPath, JSON.stringify({ ...current, dim: 7 }));
+    writeIndex(idx, { ...current, dim: 7 });
     assert.throws(() => loadIndex(idx), /index\.dim 7 does not match known model dimension 768.*mdss index/i);
   } finally {
     safeRm(dir);
@@ -990,7 +990,7 @@ test('buildIndex: writes schemaVersion and re-indexes a legacy v0 index (issue #
     // simulate a pre-schemaVersion index: drop the field, keep binary-v1 shape
     const index = JSON.parse(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'));
     delete index.schemaVersion;
-    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
+    writeIndex(idx, index);
 
     const r = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
     assert.equal(r.files, 3, 'legacy index re-indexed');
@@ -1008,7 +1008,7 @@ test('buildIndex: newer schemaVersion refuses to rebuild over a future index (is
   try {
     const index = JSON.parse(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'));
     index.schemaVersion = SCHEMA_VERSION + 1;
-    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
+    writeIndex(idx, index);
 
     await assert.rejects(
       buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed }),
@@ -1031,7 +1031,7 @@ test('buildIndex: corrupt vector in the old index is dropped and re-embedded (is
     })();
     const index = JSON.parse(fs.readFileSync(path.join(idx, 'vectors.json'), 'utf8'));
     index.chunks.find(c => c.file === 'a.md').vec = nanB64;
-    fs.writeFileSync(path.join(idx, 'vectors.json'), JSON.stringify(index));
+    writeIndex(idx, index);
 
     const stderrChunks = [];
     const orig = process.stderr.write;
