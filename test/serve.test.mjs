@@ -442,7 +442,7 @@ test('serve: malformed JSON body → 400 with the parse error (issue #16)', asyn
     try {
       const res = await fetch(`${srv.url}/search`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', 'connection': 'close' },
         body: '{"query": "coffee", broken json',
       });
       assert.equal(res.status, 400);

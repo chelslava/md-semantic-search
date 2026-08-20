@@ -138,7 +138,7 @@ test('nightly: real transformers index, search, serve, rerank, and offline failu
       assert.equal(address.address, '127.0.0.1');
       const response = await fetch(`http://127.0.0.1:${address.port}/search`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', 'connection': 'close' },
         body: JSON.stringify({ query: rerankQuery, k: 2, rerank: true }),
         signal: AbortSignal.timeout(2 * 60_000),
       });
@@ -286,7 +286,7 @@ test('nightly: Qwen3 online index populates cache for fresh offline semantic sea
       assert.ok(address && typeof address === 'object');
       const response = await fetch(`http://127.0.0.1:${address.port}/search`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', 'connection': 'close' },
         body: JSON.stringify({
           query: 'How should an exposed API token be replaced?',
           k: 2,

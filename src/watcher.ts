@@ -68,6 +68,7 @@ export function createFileWatcher(
         log(`watcher onChange error: ${err.message}`);
       }
     }, debounceMs);
+    debounceTimer.unref?.();
   };
 
   // Attempt recursive native fs.watch first
@@ -92,7 +93,7 @@ export function createFileWatcher(
     // Without this, on Node 18/Linux the inotify handle keeps the process
     // alive indefinitely after all tests finish (or after close() is called
     // but the handle hasn't been fully released by the kernel yet).
-    fsWatcher.unref();
+    fsWatcher.unref?.();
 
     return {
       isNative: true,
@@ -142,6 +143,7 @@ export function createFileWatcher(
         scheduleChange();
       }
     }, fallbackIntervalMs);
+    pollInterval.unref?.();
 
     return {
       isNative: false,

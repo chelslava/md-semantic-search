@@ -158,7 +158,7 @@ test('serve: POST /search with rerank:true uses the injected reranker (issue #15
     try {
       const off = await fetch(`${url}/search`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', 'connection': 'close' },
         body: JSON.stringify({ query: 'guide', k: 3 }),
       }).then((r) => r.json());
       assert.equal(off.results[0].file, 'a.md', 'without rerank the shortest chunk wins');
@@ -166,7 +166,7 @@ test('serve: POST /search with rerank:true uses the injected reranker (issue #15
 
       const on = await fetch(`${url}/search`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', 'connection': 'close' },
         body: JSON.stringify({ query: 'guide', k: 3, rerank: true }),
       }).then((r) => r.json());
       assert.equal(on.results[0].file, 'c.md', 'rerank:true promotes the longest chunk');

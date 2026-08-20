@@ -92,14 +92,20 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     healthPublic,
   };
 
+  const sockets = new Set<import('node:net').Socket>();
   const server = http.createServer((req, res) => {
     handleRequest(req, res, state).catch((e) => {
       json(res, 500, { error: e.message });
     });
   });
+  server.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+  });
 
   let stopped = false;
   let timer: NodeJS.Timeout | null = null;
+  let resolveTimer: (() => void) | null = null;
 
   const reload = async () => {
     if (!db) return false;
@@ -199,8 +205,14 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     let lastChangeAt = 0;
     let pending = false;
     while (!stopped) {
-      await new Promise((r) => {
-        timer = setTimeout(r, watchInterval);
+      await new Promise<void>((r) => {
+        resolveTimer = r;
+        timer = setTimeout(() => {
+          timer = null;
+          resolveTimer = null;
+          r();
+        }, watchInterval);
+        timer.unref?.();
       });
       if (stopped) return;
       const tree = scanTree();
@@ -248,13 +260,22 @@ export async function createServe(opts: CreateServeOptions): Promise<{
 
   const close = async (): Promise<void> => {
     stopped = true;
-    if (timer) clearTimeout(timer);
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (resolveTimer) {
+      resolveTimer();
+      resolveTimer = null;
+    }
     if (nativeWatcher) nativeWatcher.close();
-    // closeAllConnections() forcibly closes keep-alive sockets so server.close()
-    // doesn't hang indefinitely waiting for them — critical on Node 18 where the
-    // HTTP server does NOT auto-drain idle connections before calling back.
-    // The method was back-ported to Node 18.2.0 and is always present in CI.
     server.closeAllConnections?.();
+    for (const socket of sockets) {
+      try {
+        socket.destroy();
+      } catch {}
+    }
+    sockets.clear();
     await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
   };
 

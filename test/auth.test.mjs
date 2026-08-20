@@ -38,7 +38,8 @@ function request(url, opts = {}, body = null) {
         port: u.port,
         path: u.pathname + u.search,
         method: opts.method || 'GET',
-        headers: opts.headers || {},
+        agent: false,
+        headers: { connection: 'close', ...(opts.headers || {}) },
       },
       (res) => {
         let resBody = '';
