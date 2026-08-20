@@ -436,6 +436,9 @@ export function assertSafePath(targetPath: string, allowedRoots?: string[]): str
   if (targetPath.startsWith('\\\\') || targetPath.startsWith('//')) {
     throw new Error('Forbidden path: UNC network paths not allowed');
   }
+  if (/^[a-zA-Z]:[\\/]/.test(targetPath) && process.platform !== 'win32') {
+    throw new Error('Forbidden path: Windows drive paths not allowed on non-Windows systems');
+  }
   const resolved = path.resolve(targetPath);
   let canonical = resolved;
   try {

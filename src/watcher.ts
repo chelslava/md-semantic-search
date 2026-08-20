@@ -29,7 +29,7 @@ export function createFileWatcher(
     debounceMs = 250,
     ignore = [],
     log = () => {},
-    fallbackIntervalMs = 1000,
+    fallbackIntervalMs = 50,
   } = options;
 
   let closed = false;

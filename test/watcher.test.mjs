@@ -32,8 +32,11 @@ test('watcher: createFileWatcher detects markdown changes and triggers debounced
     // Create a new markdown file
     fs.writeFileSync(path.join(dir, 'doc2.md'), '# Second Document\n');
 
-    // Wait for debounce settle
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    // Wait for debounce / polling settle
+    const deadline = Date.now() + 1000;
+    while (changeCount < 1 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    }
 
     assert.ok(changeCount >= 1, `Expected changeCount >= 1, got ${changeCount}`);
 

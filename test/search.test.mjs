@@ -15,6 +15,9 @@ function writeIndex(idx, data) {
   const shaPath = path.join(idx, 'vectors.json.sha256');
   const digest = crypto.createHash('sha256').update(json).digest('hex');
   fs.writeFileSync(shaPath, `${digest}  vectors.json\n`);
+  try {
+    fs.unlinkSync(path.join(idx, 'vectors.bin'));
+  } catch {}
 }
 
 function fakeEmbed(texts, kind, model) {
