@@ -654,7 +654,7 @@ test('loadIndex: raw registry model ids enforce known dimensions', async () => {
     delete current.modelAlias;
     current.model = 'Xenova/multilingual-e5-base@review47';
     current.dim = 7;
-    fs.writeFileSync(vectorsPath, JSON.stringify(current));
+    writeIndex(idx, current);
     assert.throws(() => loadIndex(idx), /index\.dim 7 does not match known model dimension 768/i);
   } finally {
     safeRm(dir);

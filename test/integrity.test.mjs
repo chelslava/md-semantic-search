@@ -55,6 +55,9 @@ test('integrity: loadIndex detects corrupted byte in vectors.json via SHA-256 ma
     // Corrupt one character in vectors.json (while keeping it valid JSON or invalid)
     const corruptedContent = originalContent.replace('Coffee', 'Tea');
     fs.writeFileSync(vectorsPath, corruptedContent);
+    try {
+      fs.unlinkSync(path.join(idx, 'vectors.bin'));
+    } catch {}
 
     // loadIndex must throw SHA-256 mismatch error
     assert.throws(

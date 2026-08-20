@@ -112,12 +112,12 @@ export function createFileWatcher(
     let lastMtime = 0;
     const getDirMtime = (dir: string): number => {
       try {
-        const stat = fs.statSync(dir);
-        let max = stat.mtimeMs;
+        let max = 0;
         const entries = fs.readdirSync(dir, { withFileTypes: true });
         for (const entry of entries) {
           if (entry.name.startsWith('.') || entry.name === '.mdss') continue;
           const full = path.join(dir, entry.name);
+          if (shouldIgnore(entry.name)) continue;
           if (entry.isDirectory()) {
             const sub = getDirMtime(full);
             if (sub > max) max = sub;
