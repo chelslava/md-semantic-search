@@ -12,6 +12,14 @@ import { searchFederated } from './federation.js';
 import { askQuestion } from './rag.js';
 import { globToRegExp } from './core.js';
 
+/**
+ * Package version reported via MCP initialize → serverInfo.
+ * Single source of truth: package.json (resolved relative to dist/mcp.js).
+ */
+const MCP_VERSION: string = JSON.parse(
+  fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+).version;
+
 export const MCP_TOOLS = [
   {
     name: 'search_markdown',
@@ -74,8 +82,7 @@ export const MCP_TOOLS = [
   },
 ];
 
-export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir: string; offline: boolean; embedFn?: any }): Promise<any | null> {
-  if (!req || typeof req !== 'object') return null;
+export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir: string; offline: boolean; embedFn?: any }): Promise<any | null> {  if (!req || typeof req !== 'object') return null;
   const { id, method, params } = req;
 
   if (id === undefined || id === null) {
@@ -93,7 +100,7 @@ export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir:
         },
         serverInfo: {
           name: 'md-semantic-search',
-          version: '1.0.0',
+          version: MCP_VERSION,
         },
       },
     };
