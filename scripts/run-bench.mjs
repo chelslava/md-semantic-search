@@ -31,7 +31,21 @@ import { buildIndex, loadIndex, searchIndex } from '../dist/index.js';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Run only when executed directly, never when imported. Compare REAL paths:
+// through an npm-link junction (Windows) Node resolves this module to its real
+// path while process.argv[1] keeps the link path, so a plain resolve() compare
+// silently skips main().
+function isDirectRun() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return fs.realpathSync(entry) === fileURLToPath(import.meta.url);
+  } catch {
+    return path.resolve(entry) === fileURLToPath(import.meta.url);
+  }
+}
+
+if (isDirectRun()) {
   main().catch((err) => {
     console.error(err.stack || String(err));
     process.exit(1);

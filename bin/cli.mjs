@@ -1136,9 +1136,29 @@ async function main() {
   }
 }
 
-// Run only when executed directly (`node bin/cli.mjs`, `mdss`), never when
-// imported by tests or library consumers (issue #29).
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+/**
+ * True only when this module is the process entry script (`node bin/cli.mjs`,
+ * global `mdss`), never when imported by tests or library consumers (issue #29).
+ *
+ * The comparison goes through fs.realpathSync on BOTH sides of the identity:
+ * on Windows a global install is an NTFS junction, so Node resolves this module
+ * to its real path (D:\Repo\...\bin\cli.mjs) while process.argv[1] keeps the
+ * junction path (C:\...\npm\node_modules\md-semantic-search\bin\cli.mjs). A
+ * plain string comparison then never matches and the CLI silently does nothing.
+ */
+function isDirectRun() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return fs.realpathSync(entry) === fileURLToPath(import.meta.url);
+  } catch {
+    // argv[1] vanished between spawn and here (or is not a real file) —
+    // fall back to lexical resolution so behavior matches the old guard.
+    return pathToFileURL(path.resolve(entry)).href === import.meta.url;
+  }
+}
+
+if (isDirectRun()) {
   main().catch(e => die(e.message));
 }
 
