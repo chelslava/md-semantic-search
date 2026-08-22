@@ -2,7 +2,7 @@
   "name": "md-semantic-search-vscode",
   "displayName": "Markdown Semantic Search (MDSS)",
   "description": "Local, private semantic vector search over Markdown workspace notes for VS Code.",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publisher": "chelslava",
   "license": "MIT",
   "repository": {

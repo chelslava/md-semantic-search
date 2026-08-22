@@ -4,6 +4,18 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-08-22
+
+### Fixed
+- **Silent CLI under Windows npm-link junctions** — the entry-point guard
+  `import.meta.url === pathToFileURL(process.argv[1])` never matched when Node
+  resolved the entry script through an NTFS junction (i.e. a global `mdss` /
+  `md-semantic-search` shim created by `npm link`), so every command exited 0
+  with no output instead of running. The guard now compares real paths via
+  `fs.realpathSync` with a lexical fallback, which also covers pnpm and other
+  symlinked installs; plain (copied-file) installations behave exactly as
+  before. Applied to `bin/cli.mjs` and `scripts/run-bench.mjs`.
+
 ## [1.0.1] - 2026-08-19
 
 ### Fixed
