@@ -615,6 +615,13 @@ mdss index
 mdss search "incident runbook for db failover"
 ```
 
+**Supported layouts** (hardened by the issue #118 suite): deep trees beyond
+Windows MAX_PATH (>260 chars) work; unicode and spaces in names work;
+`--index-dir` may live on a different drive than `--db`; NTFS junction loops
+terminate the walker (bounded by path length); `\\?\` extended-length roots are
+accepted for `--db`/`--index-dir`; remote UNC shares (`\\server\share`) are
+**rejected** by design (local-only security boundary).
+
 ### Configuration file (`.mdssrc` / `mdss.config.json`)
 
 Instead of repeating CLI options on every command, create a `.mdssrc.json` or `mdss.config.json` file.
