@@ -22,6 +22,7 @@ import { createServe, DEFAULT_PORT, DEFAULT_HOST, isLoopbackHost, validateBindSe
 import { MODELS, DEFAULT_MODEL, resolveModel } from '../dist/models.js';
 import { decodeVec, walkMarkdown, SCHEMA_VERSION, assertSafePath, setDownloadProgressListener } from '../dist/core.js';
 import { DownloadProgressAggregator } from '../dist/download-progress.js';
+import { generateCompletion, COMPLETION_SHELLS } from '../dist/completions.js';
 import { inspectIndexSchema, validateCurrentChunk, validateIndexEnvelope, validateNumericVector } from '../dist/index-format.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -110,6 +111,18 @@ function parseArgs(argv) {
     else if (a === '--llm-endpoint') opts.llmEndpoint = nextValue(argv, ++i, a);
     else if (a === '--llm-model') opts.llmModel = nextValue(argv, ++i, a);
     else if (a === '--system-prompt') opts.systemPrompt = nextValue(argv, ++i, a);
+    else if (a === '--open') {
+      // `--open` opens the top hit; `--open N` opens the Nth hit (issue #110).
+      const next = argv[i + 1];
+      if (next !== undefined && /^\d+$/.test(next)) {
+        opts.openRank = Number.parseInt(next, 10);
+        i++;
+      } else {
+        opts.open = true;
+      }
+    }
+    else if (a === '--fix') opts.fix = true;
+    else if (a === '--dry-run') opts.dryRun = true;
     else if (a.startsWith('-')) die(`unknown option: ${a}. Try \`mdss --help\`.`);
     else opts._.push(a);
   }
@@ -167,7 +180,8 @@ const KNOWN_CONFIG_KEYS = new Set([
   'watchDelay', 'watch-delay', 'offline', 'rerank', 'semantic', 'tag', 'project', 'type', 'status', 'canonical',
   'format', 'noVectors', 'no-vectors', 'output', 'workers', 'ann', 'nprobe', 'graphBoost', 'graph-boost', 'filter', 'quantize',
   'vault', 'vaults', 'rag', 'autoTag', 'auto-tag', 'autoSummarize', 'auto-summarize',
-  'llmEndpoint', 'llm-endpoint', 'llmModel', 'llm-model', 'systemPrompt', 'system-prompt'
+  'llmEndpoint', 'llm-endpoint', 'llmModel', 'llm-model', 'systemPrompt', 'system-prompt',
+  'completions', 'open', 'dry-run', 'fix', 'yes'
 ]);
 
 function findConfigFile(explicitPath) {
@@ -288,6 +302,7 @@ Usage:
   mdss serve  --db <dir> [--port <n>] [--host <ip>] [--watch]  Daemon: warm model + index
   mdss mcp    --db <dir> [--list-tools]       Start MCP server over stdio for LLM agents / IDEs
   mdss models                                  List available models
+  mdss completions <bash|zsh|fish|powershell>  Print a self-contained shell completion script
 
 Options:
   --config <file>     Path to config file (default: .mdssrc.json / mdss.config.json).
@@ -336,6 +351,13 @@ Options:
   --watch-delay <ms>     serve --watch: quiet-period debounce before a burst of
                          saves triggers ONE re-index (default 1000; issue #42).
   --offline           Never download the model; require a cached one (env MDSS_OFFLINE=1).
+  --open [N]          search: open the top (or Nth) hit in your editor at its
+                      startLine — MDSS_EDITOR/VISUAL/EDITOR, then VS Code
+                      --goto, then the GUI opener (issue #110). With --json on
+                      a non-TTY prints what WOULD be opened instead of launching.
+  --fix               check: apply safe auto-repairs (stale lock, broken
+                      vectors.bin sidecar, stale ivf.json); never touches notes.
+  --dry-run           check --fix: print planned repairs without mutating.
   --version           Print the version and exit.
   -h, --help          Show this help.
 
@@ -1242,6 +1264,14 @@ function installDownloadProgress(opts) {
   return () => setDownloadProgressListener(null);
 }
 
+async function cmdCompletions(opts) {
+  const shell = (opts._.shift() || '').toLowerCase();
+  if (!COMPLETION_SHELLS.includes(shell)) {
+    die(`unknown shell "${shell || '(none)'}" for completions — use one of: ${COMPLETION_SHELLS.join('|')}`);
+  }
+  process.stdout.write(generateCompletion(shell));
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const opts = parseArgs(argv);
@@ -1274,6 +1304,7 @@ async function main() {
       case 'serve': return await cmdServe(opts);
       case 'mcp': return await cmdMcp(opts);
       case 'models': return await cmdModels();
+      case 'completions': return await cmdCompletions(opts);
       default: die(`unknown command: ${cmd}. Try \`mdss --help\`.`);
     }
   } finally {

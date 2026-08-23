@@ -566,6 +566,32 @@ Add to your `claude_desktop_config.json`:
 | `--offline` | Never download the model — require a cached one (or `MDSS_OFFLINE=1`). |
 | `--version` | Print the installed version. |
 
+### Shell completions
+
+`mdss completions <bash|zsh|fish|powershell>` prints a self-contained completion
+script covering every subcommand and flag, with directory completion for
+`--db` / `--index-dir` / `--cache-dir` / `--vault` and file completion for
+`--output` / `--config` / `--api-key-file`:
+
+```bash
+# bash — current session only:
+eval "$(mdss completions bash)"
+# bash — persistent:
+mdss completions bash > ~/.local/share/bash-completions/completions/mdss
+
+# zsh:
+mkdir -p ~/.zfunc && mdss completions zsh > ~/.zfunc/_mdss   # fpath before compinit
+
+# fish:
+mdss completions fish > ~/.config/fish/completions/mdss.fish
+
+# PowerShell — paste into your $PROFILE:
+mdss completions powershell >> $PROFILE
+```
+
+A unit test guards against flag drift: the generated tables must match the
+flags `parseArgs` actually accepts.
+
 ### The base can live outside the project
 
 The index does not need write access to your notes if they're read-only — just

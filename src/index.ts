@@ -89,5 +89,9 @@ export {
 } from './summarize.js';
 
 export { runTui, TuiOptions } from './tui.js';
+export {
+  generateCompletion, FLAGS, COMMANDS, COMPLETION_SHELLS,
+} from './completions.js';
+export type { FlagSpec, CompletionShell } from './completions.js';
 
 
