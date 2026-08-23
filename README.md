@@ -438,6 +438,17 @@ against a loopback allowlist (`403` otherwise) so DNS-rebinding pages cannot rea
 and CORS stays fully off unless you pass `--cors-origin`. `/health` exposes the live counters
 (`in_flight`, `queued`, `rejected_total`).
 
+### Web UI (built-in, `--ui`)
+
+By default `mdss serve` also serves a **zero-dependency web UI at `/`** — a keyboard-first search page
+with live debounced results, term highlighting, score bars, tag/type/status filters, dark/light theme
+(follows the system until you toggle it) and an API-key prompt when Bearer auth is enabled (the key is kept
+in `sessionStorage`, same-origin only). It ships as plain HTML/CSS/JS split into three assets so a strict
+CSP applies (`default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self';
+frame-ancestors 'none'`) — no inline code, no external calls. Use `--no-ui` to restore pure JSON at `/`;
+the JSON contract (`/search`, `/health`, `/help`) never changes. A Playwright smoke test runs weekly via
+the opt-in `ui-smoke` workflow.
+
 ### Securing remote deployments
 
 `mdss serve` is designed to be private-first: loopback bind by default, refuse-to-start for unauthenticated
@@ -565,6 +576,7 @@ Add to your `claude_desktop_config.json`:
 | `--max-concurrency <n>` | `serve`: max concurrent in-flight searches; queue cap 2× → `503` when full; `0` disables (default = CPU count, `MDSS_MAX_CONCURRENCY`; issue #119). |
 | `--watch` | `serve`: re-index incrementally when files change. |
 | `--watch-debug` | `serve --watch`: verbose trace of polls, FS-error classifications and retries (issue #116). |
+| `--no-ui` | `serve`: disable the built-in web UI at `/` — restores JSON API help there (issue #111). |
 | `--watch-interval <ms>` | `serve --watch`: poll every N ms (default 3000). |
 | `--watch-delay <ms>` | `serve --watch`: quiet-period debounce before a burst of saves triggers ONE re-index (default 1000; issue #42). |
 | `--offline` | Never download the model — require a cached one (or `MDSS_OFFLINE=1`). |

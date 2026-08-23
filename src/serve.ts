@@ -12,6 +12,7 @@ import { buildIndex } from './indexer.js';
 import { loadIndex, searchIndex } from './search.js';
 import { walkMarkdown, assertSafePath, ModelDescriptor } from './core.js';
 import { createFileWatcher, FileWatcher, classifyFsError, readWithRetry } from './watcher.js';
+import { WEBUI_HTML, WEBUI_JS, WEBUI_CSS } from './webui.js';
 
 const DEFAULT_PORT = 8747;
 const DEFAULT_HOST = '127.0.0.1';
@@ -38,6 +39,8 @@ export interface ServeState {
   reindexCount?: number;
   apiKey?: string;
   healthPublic?: boolean;
+  /** issue #111: serve the built-in web UI at `/` (default on). */
+  ui?: boolean;
   /** Extra Host-header values accepted beyond the loopback defaults (issue #120). */
   allowedHosts?: string[];
   /** Exact origins reflected as `Access-Control-Allow-Origin`; absent → CORS off (issue #120). */
@@ -69,6 +72,7 @@ export interface CreateServeOptions {
     hash?: (absPath: string) => string;
     stat?: (absPath: string) => { mtimeMs: number };
   };
+  ui?: boolean;
   embedFn?: any;
   rerankFn?: any;
   log?: (msg: string) => void;
@@ -254,6 +258,7 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     maxConcurrency = DEFAULT_MAX_CONCURRENCY,
     watchDebug = false,
     _testFs,
+    ui = true,
     embedFn,
     rerankFn,
     log = () => {},
@@ -279,6 +284,7 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     watching: watch,
     apiKey,
     healthPublic,
+    ui: ui !== false,
     allowedHosts,
     corsOrigins,
     limiter: new ServeLimiter(rateLimit, DEFAULT_RATE_BURST, maxConcurrency),
@@ -811,6 +817,20 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     return;
   }
 
+  if (req.method === 'GET' && url.pathname === '/' && state.ui) {
+    // Built-in web UI (issue #111): strict CSP, split assets, no inline code.
+    sendAsset(res, 'text/html; charset=utf-8', WEBUI_HTML);
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/ui.js' && state.ui) {
+    sendAsset(res, 'text/javascript; charset=utf-8', WEBUI_JS);
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/ui.css' && state.ui) {
+    sendAsset(res, 'text/css; charset=utf-8', WEBUI_CSS);
+    return;
+  }
+
   if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/help')) {
     json(res, 200, {
       name: 'mdss serve',
@@ -833,6 +853,20 @@ function json(res: http.ServerResponse, status: number, data: object): void {
     'cache-control': 'no-store',
   });
   res.end(JSON.stringify(data));
+}
+
+/** Serve a web-UI asset with the same security headers + a strict CSP (issue #111). */
+function sendAsset(res: http.ServerResponse, contentType: string, body: string): void {
+  res.writeHead(200, {
+    'content-type': contentType,
+    'x-content-type-options': 'nosniff',
+    'cache-control': 'no-store',
+    // no inline script/style anywhere in the UI -> nothing needs unsafe-*
+    'content-security-policy':
+      "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+    'referrer-policy': 'no-referrer',
+  });
+  res.end(body);
 }
 
 export { DEFAULT_PORT, DEFAULT_HOST, MAX_BODY_BYTES, WATCH_INTERVAL_MS };

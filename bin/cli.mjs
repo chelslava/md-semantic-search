@@ -126,6 +126,7 @@ function parseArgs(argv) {
     }
     else if (a === '--fix') opts.fix = true;
     else if (a === '--dry-run') opts.dryRun = true;
+    else if (a === '--no-ui') opts.noUi = true;
     else if (a.startsWith('-')) die(`unknown option: ${a}. Try \`mdss --help\`.`);
     else opts._.push(a);
   }
@@ -185,7 +186,7 @@ const KNOWN_CONFIG_KEYS = new Set([
   'format', 'noVectors', 'no-vectors', 'output', 'workers', 'ann', 'nprobe', 'graphBoost', 'graph-boost', 'filter', 'quantize',
   'vault', 'vaults', 'rag', 'autoTag', 'auto-tag', 'autoSummarize', 'auto-summarize',
   'llmEndpoint', 'llm-endpoint', 'llmModel', 'llm-model', 'systemPrompt', 'system-prompt',
-  'completions', 'open', 'dry-run', 'fix', 'yes'
+  'completions', 'open', 'dry-run', 'fix', 'yes', 'no-ui', 'noUi'
 ]);
 
 function findConfigFile(explicitPath) {
@@ -351,6 +352,8 @@ Options:
                       2× → 503 when full; 0 disables (default = CPU count,
                       env MDSS_MAX_CONCURRENCY; issue #119).
   --watch             serve: re-index incrementally on file changes (mtime poll).
+  --no-ui             serve: disable the built-in web UI at the root path
+                      (issue #111) - the JSON API help is served there instead.
   --watch-debug       serve --watch: verbose trace of polls, FS-error
                       classifications and retries (issue #116).
   --watch-interval <ms>  serve --watch: poll every N ms (default 3000).
@@ -1241,6 +1244,8 @@ async function cmdServe(opts) {
     watchDebug: !!opts.watchDebug,
     apiKey,
     healthPublic: !!opts.healthPublic || process.env.MDSS_HEALTH_PUBLIC === 'true',
+    // Web UI on by default at `/` (issue #111); --no-ui restores pure JSON.
+    ui: !opts.noUi,
     // DNS-rebinding allowlist (issue #120): loopback names are always allowed;
     // the configured bind host is added so `--host mybox.local` still answers.
     allowedHosts: [
