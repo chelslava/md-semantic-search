@@ -24,6 +24,7 @@ import { decodeVec, walkMarkdown, SCHEMA_VERSION, assertSafePath, setDownloadPro
 import { DownloadProgressAggregator } from '../dist/download-progress.js';
 import { generateCompletion, COMPLETION_SHELLS } from '../dist/completions.js';
 import { openHit, resolveOpenCommand } from '../dist/open.js';
+import { planRepairs, applyRepairs } from '../dist/repair.js';
 import { inspectIndexSchema, validateCurrentChunk, validateIndexEnvelope, validateNumericVector } from '../dist/index-format.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -851,7 +852,7 @@ const modelId = index.model ?? null;
  * embedding model or touching the network. Exit code 0 when healthy, 1 with a
  * summary when not; `--json` for scripting.
  */
-function cmdCheck(opts) {
+async function cmdCheck(opts) {
   const db = resolveDb(opts);
   const indexDir = resolveIndexDir(opts, db);
   const cacheDir = resolveCache(opts);
@@ -860,6 +861,46 @@ function cmdCheck(opts) {
     requireOffline: resolveOffline(opts),
     config: opts._config,
   });
+
+  // --fix (issue #117): plan safe repairs, optionally apply them. Never
+  // touches source Markdown; --dry-run prints the plan without mutating.
+  if (opts.fix) {
+    const plan = planRepairs(indexDir, { db: fs.existsSync(db) ? db : null });
+    const result = await applyRepairs(indexDir, plan, {
+      dryRun: !!opts.dryRun,
+      db: fs.existsSync(db) ? db : null,
+      cacheDir,
+      modelName: opts.model || undefined,
+      log: (s) => process.stderr.write(s + '\n'),
+    });
+    report.fix = {
+      dryRun: !!opts.dryRun,
+      planned: plan.actions,
+      performed: result.performed,
+      skipped: plan.skipped,
+      failed: result.failed,
+    };
+
+    if (opts.json) {
+      process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+      process.exitCode = result.failed.length > 0 ? 1 : 0;
+      return;
+    }
+
+    let out = '';
+    for (const a of (opts.dryRun ? plan.actions : result.performed)) {
+      out += `  ${opts.dryRun ? 'would' : 'fixed'} ${a.action}: ${a.detail}\n`;
+    }
+    for (const s of plan.skipped) out += `  skip  ${s.action}: ${s.detail}\n`;
+    for (const f of result.failed) out += `  FAIL  ${f.action}: ${f.error}\n`;
+    if (plan.actions.length === 0 && plan.skipped.length === 0) out += '  ok    nothing to repair\n';
+    process.stdout.write(out);
+    process.exitCode = result.failed.length > 0 ? 1 : 0;
+    if (!opts.dryRun && result.performed.length > 0) {
+      process.stdout.write('check: repairs applied — run `mdss check` to verify (issue #117)\n');
+    }
+    return;
+  }
 
   if (opts.json) {
     process.stdout.write(JSON.stringify(report, null, 2) + '\n');

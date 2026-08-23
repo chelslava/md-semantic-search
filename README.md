@@ -547,6 +547,8 @@ Add to your `claude_desktop_config.json`:
 | `--json` | Machine-readable output: `index` → build result JSON, `stats` → index stats JSON, `search` → hit list JSON (each hit includes `matches` — the query terms found in the chunk). |
 | `--semantic` | `search` only: pure vector ranking, skip lexical/RRF fusion (zero lexical tokenization). |
 | `--open [N]` | `search`: open the top (or Nth) hit in your editor at its `startLine` — `$MDSS_EDITOR`/`$VISUAL`/`$EDITOR`, VS Code `--goto`, or the GUI opener. With `--json` on a non-TTY prints the intent instead of launching (issue #110). |
+| `--fix` | `check`: apply safe auto-repairs — stale `.mdss.lock`, SHA-mismatched `vectors.bin` sidecar, corrupt `ivf.json`; rebuilds a corrupt index / recomputes `.hashes.json` when `--db` is available. Never touches source notes (issue #117). |
+| `--dry-run` | `check --fix`: print the planned repairs without mutating anything. |
 | `--rerank` | Re-rank the candidate pool with a cross-encoder (`Xenova/bge-reranker-base`, ~280 MB model, downloaded on first use). Slower, sharper results — see *Reranking* below. |
 | `--graph-boost <n>` | Weight for Obsidian wikilink graph ranking and PageRank prior (search; default 0). Incorporates document centrality and 2-hop contextual propagation. |
 | `--filter <expr>` | Rich boolean filter across frontmatter tags and properties (e.g. `tag:engineering AND status != archived`). |
