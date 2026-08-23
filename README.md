@@ -564,6 +564,7 @@ Add to your `claude_desktop_config.json`:
 | `--rate-limit <n>` | `serve`: max `/search` requests per minute per client, burst 10 → `429 + Retry-After` above it; `0` disables (default 60, `MDSS_RATE_LIMIT`; issue #119). |
 | `--max-concurrency <n>` | `serve`: max concurrent in-flight searches; queue cap 2× → `503` when full; `0` disables (default = CPU count, `MDSS_MAX_CONCURRENCY`; issue #119). |
 | `--watch` | `serve`: re-index incrementally when files change. |
+| `--watch-debug` | `serve --watch`: verbose trace of polls, FS-error classifications and retries (issue #116). |
 | `--watch-interval <ms>` | `serve --watch`: poll every N ms (default 3000). |
 | `--watch-delay <ms>` | `serve --watch`: quiet-period debounce before a burst of saves triggers ONE re-index (default 1000; issue #42). |
 | `--offline` | Never download the model — require a cached one (or `MDSS_OFFLINE=1`). |

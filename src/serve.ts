@@ -11,7 +11,7 @@ import path from 'node:path';
 import { buildIndex } from './indexer.js';
 import { loadIndex, searchIndex } from './search.js';
 import { walkMarkdown, assertSafePath, ModelDescriptor } from './core.js';
-import { createFileWatcher, FileWatcher } from './watcher.js';
+import { createFileWatcher, FileWatcher, classifyFsError, readWithRetry } from './watcher.js';
 
 const DEFAULT_PORT = 8747;
 const DEFAULT_HOST = '127.0.0.1';
@@ -62,6 +62,13 @@ export interface CreateServeOptions {
   corsOrigins?: string[];
   rateLimit?: number;
   maxConcurrency?: number;
+  /** issue #116: verbose watch-loop trace (polls, retries, classifications). */
+  watchDebug?: boolean;
+  /** issue #116 test seam: override hashing/stat so fault-injection needs no real locks. */
+  _testFs?: {
+    hash?: (absPath: string) => string;
+    stat?: (absPath: string) => { mtimeMs: number };
+  };
   embedFn?: any;
   rerankFn?: any;
   log?: (msg: string) => void;
@@ -245,6 +252,8 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     corsOrigins,
     rateLimit = DEFAULT_RATE_LIMIT_PER_MIN,
     maxConcurrency = DEFAULT_MAX_CONCURRENCY,
+    watchDebug = false,
+    _testFs,
     embedFn,
     rerankFn,
     log = () => {},
@@ -308,28 +317,79 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     return true;
   };
 
-  const fileMd5 = (f: string) => crypto.createHash('md5').update(fs.readFileSync(f)).digest('hex');
+  const fileMd5 = (f: string): string =>
+    _testFs?.hash ? _testFs.hash(f) : crypto.createHash('md5').update(fs.readFileSync(f)).digest('hex');
+  const statFile = (f: string): { mtimeMs: number } =>
+    _testFs?.stat ? _testFs.stat(f) : { mtimeMs: fs.statSync(f).mtimeMs };
   const relOf = (f: string) => path.relative(db!, f).split(path.sep).join('/');
-
-  const md5Cache = new Map<string, { mtime: number; md5: string }>();
-  const hashAt = (f: string, m: number) => {
-    const hit = md5Cache.get(f);
-    if (hit && hit.mtime === m) return hit.md5;
-    const md5 = fileMd5(f);
-    md5Cache.set(f, { mtime: m, md5 });
-    return md5;
+  const dbg = (msg: string) => {
+    if (watchDebug) log(`watch-debug: ${msg}`);
   };
 
-  const treeContentFingerprint = (tree: Map<string, { m: number; rel: string }>) => {
+  const md5Cache = new Map<string, { mtime: number; md5: string }>();
+  // issue #116: files whose hash currently fails (AV/sync contention) — they
+  // are EXCLUDED from fingerprints instead of becoming stable 'unreadable'
+  // ones, so a transiently locked file can never mask a real change.
+  const unreadable = new Map<string, { cls: 'transient' | 'permanent'; code: string; firstAt: number }>();
+  let lastWarnAt = 0;
+  const WARN_COOLDOWN_MS = 30_000;
+
+  /**
+   * Hash a file with bounded retry for TRANSIENT failures (issue #116).
+   * Returns null when the file must be excluded this cycle: vanished (deleted),
+   * or still unreadable after retries (changed-pending, warned rate-limited).
+   */
+  const hashWithRetry = async (f: string, m: number): Promise<string | null> => {
+    const hit = md5Cache.get(f);
+    if (hit && hit.mtime === m) {
+      unreadable.delete(f);
+      return hit.md5;
+    }
+    const r = await readWithRetry(() => fileMd5(f), {
+      attempts: 3,
+      baseDelayMs: 200,
+      onRetry: (attempt, err) => dbg(`retry ${attempt} ${path.basename(f)}: ${(err as any)?.code ?? (err as any)?.message}`),
+    });
+    if (r.ok) {
+      md5Cache.set(f, { mtime: m, md5: r.value });
+      unreadable.delete(f);
+      dbg(`hashed ${path.basename(f)}`);
+      return r.value;
+    }
+    const cls = classifyFsError(r.err);
+    if (cls === 'vanished') {
+      md5Cache.delete(f);
+      return null; // deleted mid-cycle — handled via liveRels diff
+    }
+    const prev = unreadable.get(f);
+    unreadable.set(f, {
+      cls: cls as 'transient' | 'permanent',
+      code: (r.err as any)?.code || String((r.err as any)?.message || 'error'),
+      firstAt: prev?.firstAt ?? Date.now(),
+    });
+    return null;
+  };
+
+  /**
+   * One probe pass: hash every tree file (with retry). Returns per-file hashes
+   * where null = vanished-or-unreadable this cycle (excluded from comparison).
+   */
+  const probeTree = async (tree: Map<string, { m: number; rel: string }>) => {
+    const hashes = new Map<string, string | null>();
+    for (const [f, { m }] of tree) {
+      hashes.set(f, await hashWithRetry(f, m));
+    }
+    return hashes;
+  };
+
+  const fingerprintOf = (
+    tree: Map<string, { m: number; rel: string }>,
+    fileHashes: Map<string, string | null>,
+  ): string => {
     const parts: string[] = [];
-    for (const [f, { m, rel }] of tree) {
-      let md5: string;
-      try {
-        md5 = hashAt(f, m);
-      } catch {
-        md5 = 'unreadable';
-      }
-      parts.push(`${rel}:${md5}`);
+    for (const [f, { rel }] of tree) {
+      const h = fileHashes.get(f);
+      if (h !== null && h !== undefined) parts.push(`${rel}:${h}`);
     }
     return parts.sort().join('|');
   };
@@ -342,36 +402,38 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     }
   };
 
-  const scanTree = (): Map<string, { m: number; rel: string }> => {
+  /** issue #116: stat failures are classified — only ENOENT vanishes silently. */
+  const scanTree = (): { tree: Map<string, { m: number; rel: string }>; problems: Map<string, 'transient' | 'permanent'> } => {
     const tree = new Map<string, { m: number; rel: string }>();
-    if (!db) return tree;
+    const problems = new Map<string, 'transient' | 'permanent'>();
+    if (!db) return { tree, problems };
     for (const f of walkMarkdown(db, ignore)) {
       try {
-        tree.set(f, { m: fs.statSync(f).mtimeMs, rel: relOf(f) });
-      } catch {
-        /* vanished */
+        tree.set(f, { m: statFile(f).mtimeMs, rel: relOf(f) });
+      } catch (e) {
+        const cls = classifyFsError(e);
+        if (cls !== 'vanished') problems.set(f, cls as 'transient' | 'permanent');
+        /* vanished files drop out via the liveRels diff */
       }
     }
-    return tree;
+    return { tree, problems };
   };
 
-  const contentChangedPaths = (tree: Map<string, { m: number; rel: string }>, indexedHashes: Record<string, string>) => {
+  const contentChangedPaths = (
+    tree: Map<string, { m: number; rel: string }>,
+    fileHashes: Map<string, string | null>,
+    indexedHashes: Record<string, string>,
+  ) => {
     const out: string[] = [];
     const liveRels = new Set<string>();
-    for (const [f, { m, rel }] of tree) {
+    for (const [f, { rel }] of tree) {
       liveRels.add(rel);
       if (!(rel in indexedHashes)) {
-        out.push(rel);
+        out.push(rel); // new file
         continue;
       }
-      const cached = md5Cache.get(f);
-      if (cached && cached.mtime === m && cached.md5 === indexedHashes[rel]) continue;
-      let fresh: string;
-      try {
-        fresh = hashAt(f, m);
-      } catch {
-        continue;
-      }
+      const fresh = fileHashes.get(f);
+      if (fresh === null || fresh === undefined) continue; // unreadable → changed-pending
       if (fresh !== indexedHashes[rel]) out.push(rel);
     }
     for (const rel of Object.keys(indexedHashes)) {
@@ -382,9 +444,24 @@ export async function createServe(opts: CreateServeOptions): Promise<{
 
   let lastFingerprint = '';
 
+  /** issue #116: one combined warning per cooldown, ≤5 files named + "+k more". */
+  const warnUnreadableRateLimited = (now: number): void => {
+    if (unreadable.size === 0 || now - lastWarnAt < WARN_COOLDOWN_MS) return;
+    lastWarnAt = now;
+    const names = [...unreadable.keys()].map((f) => path.basename(f));
+    const head = names.slice(0, 5).join(', ');
+    const more = names.length > 5 ? ` …+${names.length - 5} more` : '';
+    const codes = [...new Set([...unreadable.values()].map((u) => u.code))].join('/');
+    log(`watch: ${unreadable.size} file(s) unreadable (${codes}) — will retry: ${head}${more}`);
+  };
+
   const watchLoop = async () => {
     let indexedHashes = readIndexedHashes();
-    lastFingerprint = treeContentFingerprint(scanTree());
+    {
+      const { tree } = scanTree();
+      const hashes = await probeTree(tree);
+      lastFingerprint = fingerprintOf(tree, hashes);
+    }
     let lastChangeAt = 0;
     let pending = false;
     while (!stopped) {
@@ -398,9 +475,16 @@ export async function createServe(opts: CreateServeOptions): Promise<{
         timer.unref?.();
       });
       if (stopped) return;
-      const tree = scanTree();
-      const fingerprint = treeContentFingerprint(tree);
-      const changed = contentChangedPaths(tree, indexedHashes);
+      const t0 = Date.now();
+      const { tree, problems } = scanTree();
+      for (const [f, cls] of problems) {
+        if (!unreadable.has(f)) unreadable.set(f, { cls, code: `stat:${cls}`, firstAt: t0 });
+      }
+      dbg(`poll: ${tree.size} file(s), ${unreadable.size} pending-unreadable`);
+      const fileHashes = await probeTree(tree);
+      warnUnreadableRateLimited(Date.now());
+      const fingerprint = fingerprintOf(tree, fileHashes);
+      const changed = contentChangedPaths(tree, fileHashes, indexedHashes);
       if (fingerprint !== lastFingerprint) {
         if (!pending) log(`watch: change in ${changed.length} file(s) — waiting ${watchDelay} ms for the tree to settle…`);
         pending = true;
@@ -410,18 +494,28 @@ export async function createServe(opts: CreateServeOptions): Promise<{
         pending = false;
         await reload().catch((e) => log(`re-index failed: ${e.message}`));
         indexedHashes = readIndexedHashes();
-        for (const [f, { m, rel }] of scanTree()) {
-          if (!md5Cache.has(f) && rel in indexedHashes) {
-            md5Cache.set(f, { mtime: m, md5: indexedHashes[rel] });
+        {
+          const fresh = scanTree();
+          const freshHashes = await probeTree(fresh.tree);
+          // seed the md5 cache from the authoritative post-build state so the
+          // next fingerprint is IO-free for unchanged files
+          for (const [f, { m, rel }] of fresh.tree) {
+            const h = freshHashes.get(f);
+            if (h !== null && h !== undefined && !md5Cache.has(f)) md5Cache.set(f, { mtime: m, md5: h });
           }
+          lastFingerprint = fingerprintOf(fresh.tree, freshHashes);
         }
-        lastFingerprint = treeContentFingerprint(scanTree());
       } else if (!pending && changed.length > 0 && fingerprint === lastFingerprint) {
         pending = true;
         lastChangeAt = Date.now();
         log(`watch: tree differs from index (no motion) — settling then re-index…`);
       } else if (pending && changed.length === 0 && Date.now() - lastChangeAt < watchDelay) {
         pending = false;
+      } else if (pending && changed.length === 0) {
+        // settled but nothing actually differs (e.g. a locked file became
+        // readable again with unchanged content) — resync the baseline
+        pending = false;
+        lastFingerprint = fingerprint;
       }
     }
   };

@@ -53,6 +53,7 @@ function parseArgs(argv) {
     else if (a === '--semantic') opts.semantic = true;
     else if (a === '--offline') opts.offline = true;
     else if (a === '--watch') opts.watch = true;
+    else if (a === '--watch-debug') opts.watchDebug = true;
     else if (a === '--rerank') opts.rerank = true;
     else if (a === '--explain') opts.explain = true;
     else if (a === '--interactive' || a === '-i') opts.interactive = true;
@@ -180,6 +181,7 @@ const KNOWN_CONFIG_KEYS = new Set([
   'rateLimit', 'rate-limit', 'maxConcurrency', 'max-concurrency',
   'healthPublic', 'health-public', 'watch', 'watchInterval', 'watch-interval',
   'watchDelay', 'watch-delay', 'offline', 'rerank', 'semantic', 'tag', 'project', 'type', 'status', 'canonical',
+  'watchDebug', 'watch-debug',
   'format', 'noVectors', 'no-vectors', 'output', 'workers', 'ann', 'nprobe', 'graphBoost', 'graph-boost', 'filter', 'quantize',
   'vault', 'vaults', 'rag', 'autoTag', 'auto-tag', 'autoSummarize', 'auto-summarize',
   'llmEndpoint', 'llm-endpoint', 'llmModel', 'llm-model', 'systemPrompt', 'system-prompt',
@@ -349,6 +351,8 @@ Options:
                       2× → 503 when full; 0 disables (default = CPU count,
                       env MDSS_MAX_CONCURRENCY; issue #119).
   --watch             serve: re-index incrementally on file changes (mtime poll).
+  --watch-debug       serve --watch: verbose trace of polls, FS-error
+                      classifications and retries (issue #116).
   --watch-interval <ms>  serve --watch: poll every N ms (default 3000).
   --watch-delay <ms>     serve --watch: quiet-period debounce before a burst of
                          saves triggers ONE re-index (default 1000; issue #42).
@@ -1234,6 +1238,7 @@ async function cmdServe(opts) {
     watch: !!opts.watch,
     watchInterval: opts.watchInterval,
     watchDelay: opts.watchDelay,
+    watchDebug: !!opts.watchDebug,
     apiKey,
     healthPublic: !!opts.healthPublic || process.env.MDSS_HEALTH_PUBLIC === 'true',
     // DNS-rebinding allowlist (issue #120): loopback names are always allowed;

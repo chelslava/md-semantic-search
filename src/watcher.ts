@@ -20,6 +20,52 @@ export interface FileWatcher {
   isNative: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// FS error classification + bounded retry (issue #116): Windows AV / OneDrive
+// / atomic-save editors produce EBUSY/EPERM bursts that previously became
+// silent 'unreadable' fingerprints and missed updates.
+// ---------------------------------------------------------------------------
+
+const TRANSIENT_CODES = new Set(['EBUSY', 'EPERM', 'EACCES', 'EMFILE', 'ENFILE', 'EAGAIN']);
+
+export type FsErrorClass = 'transient' | 'vanished' | 'permanent';
+
+/** Bucket a filesystem failure so callers can retry, skip, or warn. */
+export function classifyFsError(err: unknown): FsErrorClass {
+  const e = err as { code?: string; message?: string } | null | undefined;
+  if (!e) return 'permanent';
+  if (e.code === 'ENOENT') return 'vanished';
+  if (e.code && TRANSIENT_CODES.has(e.code)) return 'transient';
+  if (/temporarily unavailable|being written|locked by another process/i.test(String(e.message || ''))) {
+    return 'transient';
+  }
+  return 'permanent';
+}
+
+/** Retry `fn` while its failures classify as transient; capped exponential backoff. */
+export async function readWithRetry<T>(
+  fn: () => T,
+  opts: { attempts?: number; baseDelayMs?: number; onRetry?: (attempt: number, err: unknown) => void } = {}
+): Promise<{ ok: true; value: T } | { ok: false; err: unknown; cls: FsErrorClass }> {
+  const attempts = opts.attempts ?? 3;
+  const baseDelayMs = opts.baseDelayMs ?? 200;
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return { ok: true, value: fn() };
+    } catch (err) {
+      lastErr = err;
+      const cls = classifyFsError(err);
+      if (cls !== 'transient' || attempt === attempts) {
+        return { ok: false, err, cls };
+      }
+      opts.onRetry?.(attempt, err);
+      await new Promise((r) => setTimeout(r, baseDelayMs * attempt)); // 200ms, 400ms — capped
+    }
+  }
+  return { ok: false, err: lastErr, cls: classifyFsError(lastErr) };
+}
+
 export function createFileWatcher(
   dbPath: string,
   onChange: () => void | Promise<void>,
