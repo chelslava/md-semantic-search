@@ -128,6 +128,10 @@ function parseArgs(argv) {
     else if (a === '--dry-run') opts.dryRun = true;
     else if (a === '--no-ui') opts.noUi = true;
     else if (a === '--no-query-cache') opts.noQueryCache = true;
+    else if (a === '--recency') {
+      opts.recency = nextFloat(argv, ++i, a);
+      if (!(opts.recency > 0)) die(`--recency must be a positive half-life in days, got "${opts.recency}"`);
+    }
     else if (a.startsWith('-')) die(`unknown option: ${a}. Try \`mdss --help\`.`);
     else opts._.push(a);
   }
@@ -365,6 +369,9 @@ Options:
   --no-query-cache    search: skip the persistent query-embedding cache
                       (<cacheDir>/query-cache.json, issue #114); in-memory
                       caching stays on.
+  --recency <days>    search: time-decay half-life — fresher passages get
+                      0.5^(age/halfLife) boost post-fusion (frontmatter
+                      created/updated, then file mtime; issue #127).
   --open [N]          search: open the top (or Nth) hit in your editor at its
                       startLine — MDSS_EDITOR/VISUAL/EDITOR, then VS Code
                       --goto, then the GUI opener (issue #110). With --json on
@@ -1072,6 +1079,7 @@ async function cmdSearch(opts) {
       semanticOnly: !!opts.semantic,
       offline: resolveOffline(opts),
       queryDiskCache: !opts.noQueryCache,
+      recency: opts.recency,
       path: opts.path.length > 0 ? opts.path : undefined,
       since: opts.since,
       rerank: !!opts.rerank,
@@ -1097,6 +1105,7 @@ async function cmdSearch(opts) {
       semanticOnly: !!opts.semantic,
       offline: resolveOffline(opts),
       queryDiskCache: !opts.noQueryCache,
+      recency: opts.recency,
       path: opts.path.length > 0 ? opts.path : undefined,
       since: opts.since,
       rerank: !!opts.rerank,
@@ -1454,4 +1463,5 @@ export {
   checkHealth, cmdExport,
   die, main, HELP, VERSION,
 };
+
 

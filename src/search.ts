@@ -209,6 +209,39 @@ export function getRuntimeGraph(runtime: RuntimeIndexState): { graph: Relationsh
   return { graph, pageRank };
 }
 
+/**
+ * Issue #127 pure helpers — exported for deterministic unit tests.
+ */
+/** Frontmatter `created` → `updated` → file mtime; null when nothing parses. */
+export function resolvePassageAgeMs(
+  meta: { created?: unknown; updated?: unknown } | undefined,
+  absFile?: string,
+): number | null {
+  for (const v of [meta?.created, meta?.updated]) {
+    if (typeof v === 'string') {
+      const t = Date.parse(v);
+      if (Number.isFinite(t)) return t;
+    } else if (typeof v === 'number' && Number.isFinite(v)) {
+      return v;
+    }
+  }
+  if (absFile) {
+    try {
+      return fs.statSync(absFile).mtimeMs;
+    } catch {
+      /* file gone — treat as unknown age */
+    }
+  }
+  return null;
+}
+
+/** Multiplicative recency boost: 0.5^(ageDays / halfLifeDays); 1 when off/unknown/future. */
+export function recencyBoost(ageMs: number | null, halfLifeDays: number, now: number = Date.now()): number {
+  if (ageMs === null || !(halfLifeDays > 0)) return 1;
+  const ageDays = Math.max(0, (now - ageMs) / 86_400_000);
+  return Math.pow(0.5, ageDays / halfLifeDays);
+}
+
 const runtimeIndexStates = new WeakMap<IndexFile, RuntimeIndexState>();
 
 function snapshotRuntimeIndex(
@@ -503,6 +536,8 @@ export interface SearchOptions {
   useQueryCache?: boolean;
   /** issue #114: persist query embeddings to <cacheDir>/query-cache.json (default on). */
   queryDiskCache?: boolean;
+  /** issue #127: time-decay half-life in days; boost = 0.5^(ageDays/halfLife). Omitted = off. */
+  recency?: number;
   ann?: boolean;
   nprobe?: number;
   graphBoost?: number;
@@ -698,7 +733,7 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
     });
   }
 
-  let ranked: Array<{ idx: number; fscore: number; cos: number; rerank?: number }>;
+  let ranked: Array<{ idx: number; fscore: number; cos: number; rerank?: number; rawFscore?: number; recencyFactor?: number; recencyAgeDays?: number | null }>;
   if (semanticOnly) {
     if (graphBoost > 0) {
       const fused = rrf([semantic, graphRanking], 60, [1, graphBoost]);
@@ -741,6 +776,28 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
         .sort((a, b) => b.fscore - a.fscore)
         .slice(0, pool);
     }
+  }
+
+  // Issue #127: time-decay recency boost — multiply the fused score by
+  // 0.5^(ageDays / halfLifeDays), post-RRF and pre-collapse. Age source
+  // priority: frontmatter `created` → `updated` → file mtime. Missing dates
+  // get factor 1 (evergreen content stays reachable via lexical strength).
+  const recencyHalfLife = Number(opts.recency) > 0 ? Number(opts.recency) : 0;
+  if (recencyHalfLife > 0) {
+    const now = Date.now();
+    const ageCache = new Map<string, number | null>();
+    for (const r of ranked) {
+      const c = chunks[r.idx];
+      const abs = runtime.db && !path.isAbsolute(c.file) ? path.join(runtime.db, c.file) : c.file;
+      const ageKey = `${c.file}|${c.meta?.updated ?? ''}|${c.meta?.created ?? ''}`;
+      if (!ageCache.has(ageKey)) ageCache.set(ageKey, resolvePassageAgeMs(c.meta, abs));
+      const ageMs = ageCache.get(ageKey) ?? null;
+      r.recencyFactor = recencyBoost(ageMs, recencyHalfLife, now);
+      r.recencyAgeDays = ageMs === null ? null : Math.max(0, (now - ageMs) / 86_400_000);
+      r.rawFscore = r.fscore;
+      r.fscore = r.fscore * r.recencyFactor;
+    }
+    ranked.sort((a, b) => b.fscore - a.fscore);
   }
 
   if (rerank && ranked.length > 0) {
@@ -791,10 +848,19 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
         ? {
             explain: {
               cosine: +r.cos.toFixed(4),
-              rrfScore: +r.fscore.toFixed(4),
+              rrfScore: +(r.rawFscore ?? r.fscore).toFixed(4),
               bm25Weights: { title: 3.0, aliases: 3.0, headingPath: 1.8, body: 1.0 },
               ...(gScore !== undefined ? { graphScore: +gScore.toFixed(4) } : {}),
               ...(prScore !== undefined ? { pageRank: +prScore.toFixed(4) } : {}),
+              ...(r.recencyFactor !== undefined
+                ? {
+                    recencyFactor: +r.recencyFactor.toFixed(4),
+                    recencyAgeDays:
+                      r.recencyAgeDays === null || r.recencyAgeDays === undefined
+                        ? null
+                        : +r.recencyAgeDays.toFixed(2),
+                  }
+                : {}),
             },
           }
         : {}),
