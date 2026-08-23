@@ -20,7 +20,8 @@ import { search } from '../dist/search.js';
 import { searchFederated } from '../dist/federation.js';
 import { createServe, DEFAULT_PORT, DEFAULT_HOST, isLoopbackHost, validateBindSecurity, loadApiKeyFile } from '../dist/serve.js';
 import { MODELS, DEFAULT_MODEL, resolveModel } from '../dist/models.js';
-import { decodeVec, walkMarkdown, SCHEMA_VERSION, assertSafePath } from '../dist/core.js';
+import { decodeVec, walkMarkdown, SCHEMA_VERSION, assertSafePath, setDownloadProgressListener } from '../dist/core.js';
+import { DownloadProgressAggregator } from '../dist/download-progress.js';
 import { inspectIndexSchema, validateCurrentChunk, validateIndexEnvelope, validateNumericVector } from '../dist/index-format.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -1187,6 +1188,60 @@ async function cmdMcp(opts) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// First-run model download progress (issue #108): the embedding model (~280 MB)
+// and the reranker (~280 MB) stream in silently otherwise, which reads as a
+// hang on slow links. TTY → one aggregated bar; --json → throttled JSON events
+// on STDERR so stdout stays machine-readable; warm cache emits nothing at all.
+// ---------------------------------------------------------------------------
+
+const DOWNLOAD_COMMANDS = new Set(['index', 'search', 'ask', 'serve']);
+
+function formatMb(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB';
+  return bytes >= 1024 * 1024 * 1024
+    ? `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+    : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderDownloadBar(snap) {
+  const barWidth = 10;
+  const filled = snap.percent === null ? 0 : Math.min(barWidth, Math.max(0, Math.round((snap.percent / 100) * barWidth)));
+  const bar = '[' + '#'.repeat(filled) + '-'.repeat(barWidth - filled) + ']';
+  const pct = snap.percent === null ? '…' : `${Math.floor(snap.percent)}%`;
+  const size = `${formatMb(snap.loadedBytes)}${snap.totalBytes > 0 ? `/${formatMb(snap.totalBytes)}` : ''}`;
+  const speed = snap.mbps !== null ? `${snap.mbps.toFixed(1)} MB/s` : '—';
+  const eta = snap.etaSec !== null && Number.isFinite(snap.etaSec) ? formatDuration(snap.etaSec) : '—';
+  process.stderr.write(`\r${bar} ${pct} │ ${size} │ ${speed} │ ETA ${eta}`);
+  if (snap.complete) process.stderr.write('\n');
+}
+
+/** Install the progress listener; returns a detach fn for the caller's finally. */
+function installDownloadProgress(opts) {
+  const agg = new DownloadProgressAggregator();
+  setDownloadProgressListener((e) => {
+    agg.update(e);
+    // JSON consumers poll slower than eyes; throttle accordingly.
+    if (!agg.shouldRender(Date.now(), opts.json ? 1000 : 400)) return;
+    const snap = agg.snapshot();
+    if (!opts.json && process.stderr.isTTY) {
+      renderDownloadBar(snap);
+    } else if (opts.json) {
+      process.stderr.write(JSON.stringify({
+        type: snap.complete ? 'download-complete' : 'download-progress',
+        percent: snap.percent === null ? null : Math.round(snap.percent * 10) / 10,
+        loadedBytes: snap.loadedBytes,
+        totalBytes: snap.totalBytes > 0 ? snap.totalBytes : null,
+        mbps: snap.mbps === null ? null : Math.round(snap.mbps * 100) / 100,
+        etaSec: snap.etaSec === null || !Number.isFinite(snap.etaSec) ? null : Math.round(snap.etaSec),
+        doneFiles: snap.doneFiles,
+        activeFiles: snap.activeFiles,
+      }) + '\n');
+    }
+  });
+  return () => setDownloadProgressListener(null);
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const opts = parseArgs(argv);
@@ -1202,19 +1257,27 @@ async function main() {
 
   if (opts.version) { process.stdout.write(`${VERSION}\n`); return; }
   if (opts.help || !cmd) { process.stdout.write(HELP); return; }
-  switch (cmd) {
-    case 'index': return cmdIndex(opts);
-    case 'stats': return cmdStats(opts);
-    case 'check':
-    case 'doctor': return cmdCheck(opts);
-    case 'export': return cmdExport(opts);
-    case 'search': return cmdSearch(opts);
-    case 'ask': return cmdAsk(opts);
-    case 'tui': return cmdTui(opts);
-    case 'serve': return cmdServe(opts);
-    case 'mcp': return cmdMcp(opts);
-    case 'models': return cmdModels();
-    default: die(`unknown command: ${cmd}. Try \`mdss --help\`.`);
+  // Model downloads stream through this listener only for commands that may
+  // load a model in-process (issue #108). `mcp` is excluded — its stderr is an
+  // IDE log; `tui` draws its own full-screen UI.
+  const detachProgress = DOWNLOAD_COMMANDS.has(cmd) ? installDownloadProgress(opts) : null;
+  try {
+    switch (cmd) {
+      case 'index': return await cmdIndex(opts);
+      case 'stats': return await cmdStats(opts);
+      case 'check':
+      case 'doctor': return await cmdCheck(opts);
+      case 'export': return await cmdExport(opts);
+      case 'search': return await cmdSearch(opts);
+      case 'ask': return await cmdAsk(opts);
+      case 'tui': return await cmdTui(opts);
+      case 'serve': return await cmdServe(opts);
+      case 'mcp': return await cmdMcp(opts);
+      case 'models': return await cmdModels();
+      default: die(`unknown command: ${cmd}. Try \`mdss --help\`.`);
+    }
+  } finally {
+    detachProgress?.();
   }
 }
 

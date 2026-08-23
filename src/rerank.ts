@@ -1,7 +1,7 @@
 /**
  * Cross-encoder re-ranking (issue #15).
  */
-import { resolveSessionOptions, retryWithBackoff } from './core.js';
+import { resolveSessionOptions, retryWithBackoff, emitDownloadEvent } from './core.js';
 
 const _rerankers = new Map<string, { tokenizer: any; model: any }>();
 
@@ -21,9 +21,10 @@ export async function getReranker(
     const { AutoModelForSequenceClassification, AutoTokenizer, env } = await import('@huggingface/transformers');
     if (cacheDir) env.cacheDir = cacheDir;
     env.allowRemoteModels = !offline;
-    const tokenizer = await AutoTokenizer.from_pretrained(RERANK_MODEL);
+    const tokenizer = await AutoTokenizer.from_pretrained(RERANK_MODEL, { progress_callback: emitDownloadEvent });
     const loadOpts: Record<string, unknown> = {
       dtype: 'q8',
+      progress_callback: emitDownloadEvent,
       ...(sessionOptions ? { session_options: sessionOptions } : {}),
     };
     const model = await AutoModelForSequenceClassification.from_pretrained(RERANK_MODEL, loadOpts);

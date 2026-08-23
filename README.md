@@ -177,7 +177,14 @@ indexes and existing library consumers; schema-v3 search uses persisted BM25.
 mdss index --db /path/to/your/markdown
 ```
 
-First run downloads the model (~280 MB). The index is written to `<db>/.mdss/`
+First run downloads the model (~280 MB) — and the download itself is
+**visible**: an aggregated bar on stderr shows percent across every file of the
+model directory, live MB/s and ETA (the same bar reappears when `--rerank`
+first pulls the cross-encoder). Under `--json` the bar is replaced by throttled
+`{"type":"download-progress", …}` / `{"type":"download-complete", …}` events
+**on stderr**, so stdout stays machine-readable. A warm cache produces no
+download output at all, and `--offline` behaves exactly as before. The index
+is written to `<db>/.mdss/`
 by default (override with `--index-dir`). Re-run after editing your notes — it's
 incremental at two levels: unchanged files are skipped via their md5, and inside
 a changed file only the sections whose text actually changed are re-embedded

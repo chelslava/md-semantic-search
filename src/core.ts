@@ -18,6 +18,31 @@ const _extractors = new Map<string, any>();
 export const LOCK_FILENAME = '.mdss.lock';
 const LOCK_STALE_MS = 10 * 60 * 1000;
 
+// ---------------------------------------------------------------------------
+// Model-download progress hook (issue #108): transformers.js fires per-file
+// events while a model streams in; loaders below forward them to ONE process-
+// wide listener so the CLI can render a single aggregated bar.
+// ---------------------------------------------------------------------------
+
+export type DownloadProgressListener = (e: import('./download-progress.js').DownloadProgressEvent) => void;
+
+let downloadListener: DownloadProgressListener | null = null;
+
+/** Observe model-file download events from every pipeline load (issue #108). Pass null to detach. */
+export function setDownloadProgressListener(cb: DownloadProgressListener | null): void {
+  downloadListener = typeof cb === 'function' ? cb : null;
+}
+
+/** Low-level emit used by the loaders; exported so tests/tools can simulate events. */
+export function emitDownloadEvent(e: import('./download-progress.js').DownloadProgressEvent): void {
+  if (!downloadListener) return;
+  try {
+    downloadListener(e);
+  } catch {
+    // a broken UI listener must never abort an in-flight model download
+  }
+}
+
 export function pidAlive(pid: number | null): boolean {
   if (!Number.isInteger(pid) || pid === null || pid <= 0) return false;
   try {
@@ -240,6 +265,7 @@ export async function getExtractor(
     const pipeOpts: any = {
       revision,
       dtype: model.dtype || 'q8',
+      progress_callback: emitDownloadEvent,
       ...(sessionOptions ? { session_options: sessionOptions } : {}),
     };
     const ext = await pipeline('feature-extraction', source, pipeOpts);
