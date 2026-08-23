@@ -80,7 +80,6 @@ test('check --fix: SHA-mismatched vectors.bin removed on apply; loadIndex falls 
   const { db, idx } = await seed();
   try {
     const binPath = path.join(idx, 'vectors.bin');
-    const shaPath = `${binPath}.sha256`;
     if (!fs.existsSync(binPath)) return; // build variant without binary sidecar — nothing to corrupt
     // flip a byte inside the bin so its hash no longer matches the sidecar
     const buf = fs.readFileSync(binPath);
