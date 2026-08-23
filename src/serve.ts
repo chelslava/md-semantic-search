@@ -13,6 +13,7 @@ import { loadIndex, searchIndex } from './search.js';
 import { walkMarkdown, assertSafePath, ModelDescriptor } from './core.js';
 import { createFileWatcher, FileWatcher, classifyFsError, readWithRetry } from './watcher.js';
 import { WEBUI_HTML, WEBUI_JS, WEBUI_CSS } from './webui.js';
+import { handleMcpRequest } from './mcp.js';
 
 const DEFAULT_PORT = 8747;
 const DEFAULT_HOST = '127.0.0.1';
@@ -41,6 +42,9 @@ export interface ServeState {
   healthPublic?: boolean;
   /** issue #111: serve the built-in web UI at `/` (default on). */
   ui?: boolean;
+  /** issue #123: mount the Streamable HTTP MCP transport at /mcp (default off). */
+  mcp?: boolean;
+  mcpSessionId?: string;
   /** Extra Host-header values accepted beyond the loopback defaults (issue #120). */
   allowedHosts?: string[];
   /** Exact origins reflected as `Access-Control-Allow-Origin`; absent → CORS off (issue #120). */
@@ -73,6 +77,8 @@ export interface CreateServeOptions {
     stat?: (absPath: string) => { mtimeMs: number };
   };
   ui?: boolean;
+  /** issue #123: mount Streamable HTTP MCP at /mcp (default off; stdio stays default). */
+  mcp?: boolean;
   embedFn?: any;
   rerankFn?: any;
   log?: (msg: string) => void;
@@ -258,6 +264,7 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     maxConcurrency = DEFAULT_MAX_CONCURRENCY,
     watchDebug = false,
     _testFs,
+    mcp = false,
     ui = true,
     embedFn,
     rerankFn,
@@ -285,6 +292,7 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     apiKey,
     healthPublic,
     ui: ui !== false,
+    mcp,
     allowedHosts,
     corsOrigins,
     limiter: new ServeLimiter(rateLimit, DEFAULT_RATE_BURST, maxConcurrency),
@@ -708,6 +716,13 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     }
   }
 
+  // Streamable HTTP MCP transport (issue #123): same auth/host/rate-limit
+  // gates as /search, reusing handleMcpRequest untouched as the tool brain.
+  if (state.mcp && url.pathname === '/mcp') {
+    await handleMcpHttp(req, res, state);
+    return;
+  }
+
   if (req.method === 'POST' && url.pathname === '/search') {
     // Fairness gate 1 (issue #119): per-client token bucket → 429 + Retry-After.
     const limited = state.limiter?.gate(req.socket.remoteAddress || 'unknown');
@@ -788,6 +803,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         nprobe: payload.nprobe,
         graphBoost: payload.graphBoost,
         filter: payload.filter,
+        recency: typeof payload.recency === 'number' && payload.recency > 0 ? payload.recency : undefined,
       });
       json(res, 200, { query, k, count: results.length, results });
     } catch (e: any) {
@@ -845,6 +861,124 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   json(res, 404, { error: `not found: ${req.method} ${url.pathname}` });
 }
 
+/**
+ * Streamable HTTP transport for MCP (issue #123): POST carries JSON-RPC
+ * (single message or batch), notifications answer 202, GET opens the SSE
+ * server-channel, DELETE terminates a session. Responses are plain JSON —
+ * the spec allows JSON instead of SSE when nothing is streamed. Session id is
+ * minted on first contact and echoed back on every reply.
+ */
+async function handleMcpHttp(req: http.IncomingMessage, res: http.ServerResponse, state: ServeState): Promise<void> {
+  if (req.method === 'DELETE') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  if (req.method === 'GET') {
+    // Server-initiated channel: we have nothing to push today, so keep the
+    // stream alive with comments until the client goes away.
+    res.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-store',
+      'connection': 'keep-alive',
+    });
+    res.write(':ok\n\n');
+    const hb = setInterval(() => {
+      try {
+        res.write(':hb\n\n');
+      } catch {
+        /* closed */
+      }
+    }, 15_000);
+    hb.unref?.();
+    req.on('close', () => clearInterval(hb));
+    return;
+  }
+
+  if (req.method !== 'POST') {
+    json(res, 405, { error: 'method not allowed' });
+    return;
+  }
+
+  // Same fairness gate as /search — tools/call can trigger embedding work.
+  const limited = state.limiter?.gate(req.socket.remoteAddress || 'unknown');
+  if (limited) {
+    res.setHeader('retry-after', String(limited.retryAfterSec));
+    json(res, 429, { error: 'rate limit exceeded - slow down', retryAfterSec: limited.retryAfterSec });
+    return;
+  }
+  const release = state.limiter ? await state.limiter.acquireSlot() : null;
+  if (!release) {
+    res.setHeader('retry-after', '1');
+    json(res, 503, { error: 'server busy' });
+    return;
+  }
+
+  try {
+    let body = '';
+    for await (const chunk of req) {
+      body += chunk;
+      if (body.length > MAX_BODY_BYTES) {
+        json(res, 413, { error: `payload too large (limit ${MAX_BODY_BYTES} bytes)` });
+        return;
+      }
+    }
+    let messages: any;
+    try {
+      messages = JSON.parse(body || '{}');
+    } catch (e: any) {
+      json(res, 400, { error: `invalid JSON: ${e.message}` });
+      return;
+    }
+    const batch = Array.isArray(messages);
+    const items = batch ? messages : [messages];
+
+    const responses: any[] = [];
+    for (const msg of items) {
+      if (!msg || typeof msg !== 'object') continue;
+      const isNotification = msg.id === undefined || msg.id === null;
+      const result = isNotification ? null : await handleMcpRequest(msg, {
+        loaded: state.loaded,
+        cacheDir: state.cacheDir,
+        offline: state.offline,
+        embedFn: state.embedFn,
+      });
+      if (result) responses.push(result);
+      else if (!isNotification && msg.method === undefined) continue;
+    }
+
+    // session id: mint on first contact, echo afterwards
+    const requested = req.headers['mcp-session-id'];
+    if (typeof requested === 'string' && requested) state.mcpSessionId = requested;
+    if (!state.mcpSessionId) state.mcpSessionId = crypto.randomUUID();
+    res.setHeader('mcp-session-id', state.mcpSessionId);
+
+    // protocol negotiation: honour a supported requested version, else latest
+    for (const resp of responses) {
+      if (resp?.result?.protocolVersion && msg0(items)?.params?.protocolVersion) {
+        const wanted = String(msg0(items).params.protocolVersion);
+        const SUPPORTED = ['2025-03-26', '2024-11-05'];
+        resp.result.protocolVersion = SUPPORTED.includes(wanted) ? wanted : SUPPORTED[0];
+      }
+    }
+
+    if (responses.length === 0) {
+      res.writeHead(202);
+      res.end();
+      return;
+    }
+    json(res, 200, batch ? responses : responses[0]);
+  } finally {
+    release();
+  }
+}
+
+/** First object of a (possibly single-message) payload — for init negotiation. */
+function msg0(items: any[]): any | null {
+  return items.length > 0 ? items[0] : null;
+}
+
 function json(res: http.ServerResponse, status: number, data: object): void {
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
@@ -870,3 +1004,4 @@ function sendAsset(res: http.ServerResponse, contentType: string, body: string):
 }
 
 export { DEFAULT_PORT, DEFAULT_HOST, MAX_BODY_BYTES, WATCH_INTERVAL_MS };
+

@@ -506,6 +506,13 @@ network binds, DNS-rebinding protection, and rate limiting built in. To serve a 
 mdss mcp --db /path/to/your/markdown
 ```
 
+**Streamable HTTP transport (issue #123):** a long-running daemon can expose
+the same tools over HTTP — `mdss serve --db ./notes --mcp` mounts `/mcp`
+(POST JSON-RPC, SSE channel on GET, `Mcp-Session-Id` sessions, protocol
+`2025-03-26`). It sits behind the exact same auth, Host-allowlist and
+rate-limit gates as `/search`, so remote agents inherit the hardening. stdio
+via `mdss mcp` remains the default transport.
+
 #### Available MCP Tools:
 - **`search_markdown`**: Hybrid semantic vector + BM25 search with optional `path` glob and `tag` filters.
 - **`get_chunk`**: Retrieve a specific section by file and heading.

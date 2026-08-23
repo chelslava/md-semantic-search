@@ -129,6 +129,7 @@ function parseArgs(argv) {
     else if (a === '--dry-run') opts.dryRun = true;
     else if (a === '--no-ui') opts.noUi = true;
     else if (a === '--no-query-cache') opts.noQueryCache = true;
+    else if (a === '--mcp') opts.mcp = true;
     else if (a === '--recency') {
       opts.recency = nextFloat(argv, ++i, a);
       if (!(opts.recency > 0)) die(`--recency must be a positive half-life in days, got "${opts.recency}"`);
@@ -198,6 +199,7 @@ const KNOWN_CONFIG_KEYS = new Set([
   'llmEndpoint', 'llm-endpoint', 'llmModel', 'llm-model', 'systemPrompt', 'system-prompt',
   'completions', 'open', 'dry-run', 'fix', 'yes', 'no-ui', 'noUi',
   'noQueryCache', 'no-query-cache',
+  'mcp',
   'embedder', 'embedder-model', 'embedder-base-url', 'embedder-key-file',
   'embedderModel', 'embedderBaseUrl', 'embedderKeyFile'
 ]);
@@ -367,6 +369,9 @@ Options:
   --watch             serve: re-index incrementally on file changes (mtime poll).
   --no-ui             serve: disable the built-in web UI at the root path
                       (issue #111) - the JSON API help is served there instead.
+  --mcp               serve: also mount Streamable HTTP MCP at /mcp
+                      (issue #123) - same auth/host/rate-limit gates as
+                      /search; stdio via the mcp command remains default.
   --watch-debug       serve --watch: verbose trace of polls, FS-error
                       classifications and retries (issue #116).
   --watch-interval <ms>  serve --watch: poll every N ms (default 3000).
@@ -1318,6 +1323,7 @@ async function cmdServe(opts) {
     healthPublic: !!opts.healthPublic || process.env.MDSS_HEALTH_PUBLIC === 'true',
     // Web UI on by default at `/` (issue #111); --no-ui restores pure JSON.
     ui: !opts.noUi,
+    mcp: !!opts.mcp,
     // DNS-rebinding allowlist (issue #120): loopback names are always allowed;
     // the configured bind host is added so `--host mybox.local` still answers.
     allowedHosts: [
@@ -1521,6 +1527,7 @@ export {
   checkHealth, cmdExport,
   die, main, HELP, VERSION,
 };
+
 
 
 

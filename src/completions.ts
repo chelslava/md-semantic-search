@@ -28,6 +28,7 @@ export const FLAGS: FlagSpec[] = [
   { name: '--watch', kind: 'flag' },
   { name: '--watch-debug', kind: 'flag' },
   { name: '--no-ui', kind: 'flag' },
+  { name: '--mcp', kind: 'flag' },
   { name: '--rerank', kind: 'flag' },
   { name: '--explain', kind: 'flag' },
   { name: '--interactive', alias: '-i', kind: 'flag' },
