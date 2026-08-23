@@ -23,6 +23,7 @@ import { MODELS, DEFAULT_MODEL, resolveModel } from '../dist/models.js';
 import { decodeVec, walkMarkdown, SCHEMA_VERSION, assertSafePath, setDownloadProgressListener } from '../dist/core.js';
 import { DownloadProgressAggregator } from '../dist/download-progress.js';
 import { generateCompletion, COMPLETION_SHELLS } from '../dist/completions.js';
+import { openHit, resolveOpenCommand } from '../dist/open.js';
 import { inspectIndexSchema, validateCurrentChunk, validateIndexEnvelope, validateNumericVector } from '../dist/index-format.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -1061,6 +1062,12 @@ async function cmdSearch(opts) {
   if (opts.json) { process.stdout.write(JSON.stringify(results, null, 2) + '\n'); return; }
   if (results.length === 0) { process.stdout.write('No matches.\n'); return; }
 
+  // --open (issue #110): jump into the editor at the hit's exact line.
+  if (opts.open || opts.openRank) {
+    await openSearchHit(opts, results);
+    return;
+  }
+
   process.stdout.write(`\nTop ${results.length} for: "${query}"\n\n`);
 
   // Group by file (issue #13): each file becomes a header with its hits below.
@@ -1089,9 +1096,50 @@ async function cmdSearch(opts) {
   }
 }
 
+/**
+ * --open (issue #110): resolve the Nth hit to an absolute path and jump to it
+ * in the user's editor at startLine. With --json on a non-TTY nothing is
+ * launched — the intent is printed as a JSON line on stderr instead, keeping
+ * stdout machine-readable.
+ */
+async function openSearchHit(opts, results) {
+  const rank = opts.openRank || 1;
+  if (!Number.isInteger(rank) || rank < 1) die(`--open N must be a positive hit number, got ${rank}`);
+  const hit = results[rank - 1];
+  if (!hit) {
+    die(`--open ${rank}: only ${results.length} hit(s) available`);
+  }
+
+  // Resolve relative hit paths against the right base (db or the matched vault).
+  let base = null;
+  if (hit.vault && Array.isArray(opts.vaults)) {
+    base = opts.vaults.find((v) => v === hit.vault || path.basename(v) === hit.vault) || null;
+  }
+  if (!base) base = resolveDb(opts);
+  const absFile = path.isAbsolute(hit.file) ? hit.file : path.join(base, hit.file);
+  const target = { file: absFile, line: hit.startLine };
+  const envEditor = process.env.MDSS_EDITOR || process.env.VISUAL || process.env.EDITOR || undefined;
+
+  // --json on a non-TTY: print what WOULD be launched, launch nothing (issue #110).
+  if (opts.json && !process.stdout.isTTY) {
+    const would = resolveOpenCommand(target, { editor: envEditor, platform: process.platform });
+    if (!would) die(`could not resolve an editor for ${absFile} — set $MDSS_EDITOR/$VISUAL/$EDITOR`);
+    process.stderr.write(JSON.stringify({
+      type: 'open-intent',
+      file: absFile,
+      line: hit.startLine ?? null,
+      via: would.via,
+    }) + '\n');
+    return;
+  }
+
+  const resolved = openHit(target, { editor: envEditor });
+  if (!resolved) die(`could not resolve an editor for ${absFile} — set $MDSS_EDITOR/$VISUAL/$EDITOR`);
+  process.stderr.write(`→ opened ${absFile}${hit.startLine ? `:${hit.startLine}` : ''} via ${resolved.via}\n`);
+}
+
 /** Escape a string for use inside a RegExp. */
-function escRe(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function escRe(s) {  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function cmdModels() {
