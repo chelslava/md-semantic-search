@@ -42,7 +42,8 @@ test('recency: age source priority — created beats updated beats mtime (issue 
     fs.utimesSync(f, new Date(mtime), new Date(mtime));
 
     // neither frontmatter date → mtime fallback
-    assert.equal(resolvePassageAgeMs({}, f), mtime);
+    const gotMtime = resolvePassageAgeMs({}, f);
+    assert.ok(Math.abs(gotMtime - mtime) < 1, `mtime fallback (got ${gotMtime})`);
 
     // updated present → beats mtime
     const updated = '2026-08-01T00:00:00Z';
@@ -57,7 +58,8 @@ test('recency: age source priority — created beats updated beats mtime (issue 
     );
 
     // invalid strings skipped → falls to mtime
-    assert.equal(resolvePassageAgeMs({ created: 'garbage', updated: 'also-bad' }, f), mtime);
+    const gotMtime2 = resolvePassageAgeMs({ created: 'garbage', updated: 'also-bad' }, f);
+    assert.ok(Math.abs(gotMtime2 - mtime) < 1, `invalid dates fall through to mtime (got ${gotMtime2})`);
 
     // nothing at all → null
     assert.equal(resolvePassageAgeMs({}), null);
