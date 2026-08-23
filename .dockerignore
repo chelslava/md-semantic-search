@@ -1,0 +1,15 @@
+node_modules
+**/node_modules
+.git
+.github
+test
+bench
+docs
+integrations/vscode/out
+*.vsix
+.cache
+.mdss
+.omo
+.omc
+.codegraph
+site

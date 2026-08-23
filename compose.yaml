@@ -1,0 +1,40 @@
+# md-semantic-search — headless serve with auth (issue #126)
+#
+#   1. create the API key secret once:
+#        openssl rand -hex 32 | docker secret create mdss_key -
+#      (or, for plain docker compose without swarm, put the key into
+#       ./mdss_key.txt and use the env_file variant below)
+#   2. put your markdown notes into ./notes/
+#   3. docker compose up -d
+#   4. curl:  curl http://localhost:8747/search \
+#               -H "Authorization: Bearer $KEY" \
+#               -H 'content-type: application/json' \
+#               -d '{"query":"failover runbook"}'
+#
+# First start downloads the embedding model (~280 MB) into the `model-cache`
+# volume and builds the index from /notes (mounted READ-ONLY).
+
+services:
+  mdss:
+    build: .
+    image: ghcr.io/chelslava/md-semantic-search:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8747:8747"     # publish on loopback only; TLS via reverse proxy
+    environment:
+      MDSS_HOST: 0.0.0.0          # inside the container; auth REQUIRED (below)
+      MDSS_API_KEY_FILE: /run/secrets/mdss_key
+      # MDSS_RATE_LIMIT: "120"
+      # MDSS_MAX_CONCURRENCY: "4"
+    volumes:
+      - model-cache:/cache
+      - ./notes:/notes:ro         # notes are never modified by mdss
+    secrets:
+      - mdss_key
+
+secrets:
+  mdss_key:
+    file: ./mdss_key.txt          # compose-compatible alternative to swarm secrets
+
+volumes:
+  model-cache:
