@@ -91,7 +91,7 @@ test('expand: hyde without endpoint degrades silently; with endpoint uses the pa
   const { dir, idx } = await seedPrf();
   try {
     const loaded = loadIndex(idx);
-    const baseline = await searchIndex({
+    const _baseline = await searchIndex({
       loaded, cacheDir: path.join(dir, '.c'), query: 'kubernetes pod crashloop', k: 3, embedFn: fakeEmbed,
     });
 
@@ -108,12 +108,12 @@ test('expand: hyde without endpoint degrades silently; with endpoint uses the pa
 
     // with an endpoint: the LLM passage REPLACES the query as the embed input
     const seenInputs = [];
-    const spyEmbed = async (texts, role, model, cd, off) => {
+    const spyEmbed = async (texts, role, model, _cd, _off) => {
       seenInputs.push(texts[0]);
       return fakeEmbed(texts, role, model);
     };
     const origFetch = globalThis.fetch;
-    globalThis.fetch = (async (url, init) => {
+    globalThis.fetch = (async (url, _init) => {
       if (!String(url).endsWith('/chat/completions')) throw new Error('unexpected ' + url);
       return {
         ok: true, status: 200,
@@ -137,3 +137,4 @@ test('expand: hyde without endpoint degrades silently; with endpoint uses the pa
     safeRm(dir);
   }
 });
+
