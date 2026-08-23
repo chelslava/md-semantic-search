@@ -1,0 +1,43 @@
+name: Feature request
+description: Propose an idea or improvement for mdss
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing an improvement! Before filing, please check the README —
+        several "missing features" turn out to exist (config layering, workers,
+        quantized downloads, etc.). Search existing issues too, including closed ones.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to do, and what blocks you today? Concrete workflows beat abstract wishes.
+      placeholder: "When working with a 100k-chunk vault, I need ..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should happen instead? If you have an API/CLI shape in mind, sketch it.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches, workarounds, or tools you evaluated.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked the README and existing issues (including closed ones)
+          required: true
+        - label: This fits the project's local-first, zero-infra philosophy (no cloud services)
+          required: true
+        - label: I am willing to help implement this
+          required: false

@@ -779,6 +779,15 @@ is an in-memory dot-product sweep.
 - **Model Context Protocol (MCP)**: Native stdio JSON-RPC 2.0 server (`mdss mcp`) integrating with Claude Desktop, Cursor, Copilot, Antigravity, and AI agents for local knowledge retrieval.
 - **VS Code / Raycast / Alfred**: see [`integrations/README.md`](./integrations/README.md). Releases are automated — tagging `integrations/vscode/vX.Y.Z` builds and attaches the VSIX to a GitHub Release from source (no binaries are committed; issue #112).
 
+## Contributing
+
+Contributions are welcome — bug reports with reproduction steps, docs fixes,
+tests, and features all help. Start with
+[CONTRIBUTING.md](./CONTRIBUTING.md) (dev setup, project tour, conventions)
+and look for issues labeled **`good first issue`** — they are scoped for a
+first-time contributor. By participating you agree to the
+[Code of Conduct](./CODE_OF_CONDUCT.md).
+
 ## License
 
 MIT © chelslava

@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Issue #133** — Contributor onboarding: `CONTRIBUTING.md` (dev setup, module
+  tour, ground rules, PR checklist), `CODE_OF_CONDUCT.md` (Contributor Covenant
+  v2.1), GitHub issue templates (`bug_report`, `feature_request`) and a pull-
+  request template. Open starter issues are now curated under the
+  `good first issue` label.
+
 ## [1.0.2] - 2026-08-22
 
 ### Fixed

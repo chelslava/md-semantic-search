@@ -1,0 +1,65 @@
+name: Bug report
+description: Something in mdss is broken or behaves wrong
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please fill in the details below — `mdss --version`
+        and the exact command output are what make bugs reproducible.
+  - type: input
+    id: version
+    attributes:
+      label: mdss version
+      description: Output of `mdss --version` (or the commit hash if running from source).
+      placeholder: "1.0.2"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+      description: Output of `node --version` (skip if using a packaged binary).
+      placeholder: "v20.11.0"
+    validations:
+      required: false
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce, expected vs actual
+      description: Exact commands, what you expected to happen, what happened instead. Include stderr — mdss logs progress there on purpose.
+      placeholder: |
+        1. `mdss index --db ./notes`
+        Expected: ...
+        Actual: ...
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics output
+      description: For index/search problems run `mdss check --json --db <dir>` and paste the report. Redact anything private first.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues (including closed ones) for a duplicate
+          required: true
+        - label: I ran `mdss check` and it did not already explain the problem
+          required: false
+        - label: I am willing to submit a fix
+          required: false
