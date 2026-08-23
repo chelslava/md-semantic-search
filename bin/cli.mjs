@@ -25,6 +25,7 @@ import { DownloadProgressAggregator } from '../dist/download-progress.js';
 import { generateCompletion, COMPLETION_SHELLS } from '../dist/completions.js';
 import { openHit, resolveOpenCommand } from '../dist/open.js';
 import { planRepairs, applyRepairs } from '../dist/repair.js';
+import { resolveExternalEmbedder } from '../dist/providers.js';
 import { inspectIndexSchema, validateCurrentChunk, validateIndexEnvelope, validateNumericVector } from '../dist/index-format.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -132,6 +133,10 @@ function parseArgs(argv) {
       opts.recency = nextFloat(argv, ++i, a);
       if (!(opts.recency > 0)) die(`--recency must be a positive half-life in days, got "${opts.recency}"`);
     }
+    else if (a === '--embedder') opts.embedder = nextValue(argv, ++i, a);
+    else if (a === '--embedder-model') opts.embedderModel = nextValue(argv, ++i, a);
+    else if (a === '--embedder-base-url') opts.embedderBaseUrl = nextValue(argv, ++i, a);
+    else if (a === '--embedder-key-file') opts.embedderKeyFile = nextValue(argv, ++i, a);
     else if (a.startsWith('-')) die(`unknown option: ${a}. Try \`mdss --help\`.`);
     else opts._.push(a);
   }
@@ -192,7 +197,9 @@ const KNOWN_CONFIG_KEYS = new Set([
   'vault', 'vaults', 'rag', 'autoTag', 'auto-tag', 'autoSummarize', 'auto-summarize',
   'llmEndpoint', 'llm-endpoint', 'llmModel', 'llm-model', 'systemPrompt', 'system-prompt',
   'completions', 'open', 'dry-run', 'fix', 'yes', 'no-ui', 'noUi',
-  'noQueryCache', 'no-query-cache'
+  'noQueryCache', 'no-query-cache',
+  'embedder', 'embedder-model', 'embedder-base-url', 'embedder-key-file',
+  'embedderModel', 'embedderBaseUrl', 'embedderKeyFile'
 ]);
 
 function findConfigFile(explicitPath) {
@@ -372,6 +379,16 @@ Options:
   --recency <days>    search: time-decay half-life — fresher passages get
                       0.5^(age/halfLife) boost post-fusion (frontmatter
                       created/updated, then file mtime; issue #127).
+  --embedder <name>   Use an EXTERNAL embedding provider instead of local
+                      transformers.js: "ollama" or "openai" (issue #124).
+                      Local stays the zero-config default and the only
+                      fully-offline path.
+  --embedder-model <m>   Provider-side model (e.g. nomic-embed-text).
+  --embedder-base-url <u>  Endpoint (default: OLLAMA_HOST /
+                      http://127.0.0.1:11434 for ollama,
+                      https://api.openai.com/v1 for openai).
+  --embedder-key-file <p>  Bearer key file for openai-compatible endpoints
+                      (or OPENAI_API_KEY env).
   --open [N]          search: open the top (or Nth) hit in your editor at its
                       startLine — MDSS_EDITOR/VISUAL/EDITOR, then VS Code
                       --goto, then the GUI opener (issue #110). With --json on
@@ -398,6 +415,35 @@ function formatDuration(sec) {
   const m = Math.floor((s % 3600) / 60);
   const remainingS = s % 60;
   return `${h}:${String(m).padStart(2, '0')}:${String(remainingS).padStart(2, '0')}`;
+}
+
+/**
+ * External embedder wiring (issue #124): when --embedder is set, build the
+ * synthetic adapter + embedFn and pass BOTH into the pipeline. Provider
+ * mismatch across rebuilds surfaces through the existing adapter-fingerprint
+ * invalidation, with the index `model` field naming the provider explicitly.
+ */
+async function resolveEmbedderOverrides(opts) {
+  if (!opts.embedder) return {};
+  if (!['ollama', 'openai'].includes(opts.embedder)) {
+    die(`unknown --embedder "${opts.embedder}" - use "ollama" or "openai"`);
+  }
+  if (!opts.embedderModel) {
+    die(`--embedder ${opts.embedder} requires --embedder-model <name>`);
+  }
+  const emb = resolveExternalEmbedder({
+    embedder: opts.embedder,
+    model: opts.embedderModel,
+    baseUrl: opts.embedderBaseUrl,
+    keyFile: opts.embedderKeyFile,
+  });
+  const descriptor = await emb.descriptor();
+  logErr(`embedder: ${emb.id}/${emb.model} (dim ${descriptor.dim} via ${opts.embedderBaseUrl || 'default endpoint'})`);
+  return { modelName: descriptor, embedFn: emb.embedFn };
+}
+
+function logErr(s) {
+  process.stderr.write(s + '\n');
 }
 
 async function cmdIndex(opts) {
@@ -427,11 +473,14 @@ async function cmdIndex(opts) {
     }
   };
 
+  const embedderOverrides = await resolveEmbedderOverrides(opts);
+
   let r;
   try {
     r = await buildIndex({
       db, indexDir, cacheDir,
-      modelName: opts.model || DEFAULT_MODEL,
+      modelName: embedderOverrides.modelName || opts.model || DEFAULT_MODEL,
+      ...(embedderOverrides.embedFn ? { embedFn: embedderOverrides.embedFn } : {}),
       ignore: opts.ignore,
       offline: resolveOffline(opts),
       workers: opts.workers,
@@ -1067,11 +1116,13 @@ async function cmdSearch(opts) {
   const query = opts._.join(' ').trim();
   if (!query) die('Missing query text. e.g. mdss search --db ./docs "your question"');
 
+  const embedderOverrides = await resolveEmbedderOverrides(opts);
   let results;
   const isFederated = Array.isArray(opts.vaults) && opts.vaults.length > 0;
 
   if (isFederated) {
     results = await searchFederated({
+      ...(embedderOverrides.embedFn ? { embedFn: embedderOverrides.embedFn } : {}),
       vaults: opts.vaults,
       cacheDir,
       query,
@@ -1100,6 +1151,8 @@ async function cmdSearch(opts) {
     const indexDir = resolveIndexDir(opts, db);
 
     results = await search({
+      ...(embedderOverrides.modelName ? { model: embedderOverrides.modelName } : {}),
+      ...(embedderOverrides.embedFn ? { embedFn: embedderOverrides.embedFn } : {}),
       indexDir, cacheDir, query,
       k: opts.k || 6,
       semanticOnly: !!opts.semantic,
@@ -1237,6 +1290,8 @@ async function cmdServe(opts) {
   const host = opts.host || process.env.MDSS_HOST || DEFAULT_HOST;
   const log = s => process.stderr.write(s + '\n');
 
+  const embedderOverrides = await resolveEmbedderOverrides(opts);
+
   // API key precedence (issue #121): literal flag/env first, then key file —
   // the file form avoids shell-history and CI-log leaks of the literal value.
   let apiKey = opts.apiKey || process.env.MDSS_API_KEY || undefined;
@@ -1251,9 +1306,10 @@ async function cmdServe(opts) {
 
   const { server, state, close } = await createServe({
     db, indexDir, cacheDir,
-    modelName: opts.model || DEFAULT_MODEL,
+    modelName: embedderOverrides.modelName || opts.model || DEFAULT_MODEL,
     ignore: opts.ignore,
     offline: resolveOffline(opts),
+    ...(embedderOverrides.embedFn ? { embedFn: embedderOverrides.embedFn } : {}),
     watch: !!opts.watch,
     watchInterval: opts.watchInterval,
     watchDelay: opts.watchDelay,
@@ -1318,6 +1374,8 @@ async function cmdMcp(opts) {
   const { startMcpServer } = await import('../dist/mcp.js');
   await startMcpServer({
     db, indexDir, cacheDir,
+    // NOTE: external embedders (--embedder) are not yet wired into the MCP
+    // stdio server; it keeps the local transformers.js path (issue #124).
     modelName: opts.model || DEFAULT_MODEL,
     ignore: opts.ignore,
     offline: resolveOffline(opts),
@@ -1463,5 +1521,9 @@ export {
   checkHealth, cmdExport,
   die, main, HELP, VERSION,
 };
+
+
+
+
 
 

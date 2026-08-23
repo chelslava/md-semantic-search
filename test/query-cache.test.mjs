@@ -1,7 +1,19 @@
 // @ts-check
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { QueryEmbeddingCache, searchIndex } from '../dist/search.js';
+
+// Isolated per-run cacheDir: the disk query cache (issue #114) must not leak
+// state between suite runs into these process-level memory-cache assertions.
+const CACHE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-qcmem-'));
+process.on('exit', () => {
+  try {
+    fs.rmSync(CACHE_DIR, { recursive: true, force: true });
+  } catch {}
+});
 
 function makeTestIndex() {
   return /** @type {import('../dist/search.js').IndexFile} */ ({
@@ -80,7 +92,7 @@ test('searchIndex reuses cached query vector across repeated queries', async () 
 
   const hits1 = await searchIndex({
     loaded,
-    cacheDir: '.cache',
+    cacheDir: CACHE_DIR,
     query: 'backup schedule',
     embedFn: fakeEmbedFn,
   });
@@ -91,7 +103,7 @@ test('searchIndex reuses cached query vector across repeated queries', async () 
   // Second search with identical query reuses cached query vector
   const hits2 = await searchIndex({
     loaded,
-    cacheDir: '.cache',
+    cacheDir: CACHE_DIR,
     query: 'backup schedule',
     embedFn: fakeEmbedFn,
   });
@@ -102,7 +114,7 @@ test('searchIndex reuses cached query vector across repeated queries', async () 
   // Bypassing cache forces fresh embed call
   await searchIndex({
     loaded,
-    cacheDir: '.cache',
+    cacheDir: CACHE_DIR,
     query: 'backup schedule',
     useQueryCache: false,
     embedFn: fakeEmbedFn,
@@ -110,3 +122,4 @@ test('searchIndex reuses cached query vector across repeated queries', async () 
 
   assert.equal(embedCalls, 2);
 });
+
