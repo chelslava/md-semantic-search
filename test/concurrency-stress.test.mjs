@@ -52,6 +52,7 @@ test('concurrency: daemon handles 50 parallel search requests without race condi
       embedFn: fakeEmbed,
       offline: true,
       log: () => {},
+      rateLimit: 0, maxConcurrency: 0, // correctness-under-load harness, not a fairness test (issue #119)
     });
 
     await new Promise((resolve) => svc.server.listen(0, resolve));

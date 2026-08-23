@@ -420,11 +420,65 @@ const { results } = await r.json();
 ```
 
 The API is unauthenticated by default (or secured via `--api-key`) — by default it binds to **loopback only**
-(`127.0.0.1`), so other machines on your LAN cannot reach it. Pass `--host
-0.0.0.0` (or `MDSS_HOST`) only if you intend to expose it on a network, and put
-a reverse proxy (or at least a firewall rule) in front of it. Request bodies
-are capped at 64 KB (oversized → `413`), and malformed JSON gets a clear `400`
-instead of being silently swallowed.
+(`127.0.0.1`), so other machines on your LAN cannot reach it. Passing `--host 0.0.0.0` (or `MDSS_HOST`)
+without authentication **refuses to start** — set an API key, or opt in explicitly with `--allow-unsecured`
+(see [Securing remote deployments](#securing-remote-deployments)). Request bodies are capped at 64 KB
+(oversized → `413`), malformed JSON gets a clear `400`, per-client request rate is capped at 60/min with a
+burst of 10 (`429 + Retry-After` above that; tune via `--rate-limit`), and at most `CPU count` searches run
+concurrently with a bounded wait queue (`503` when saturated; tune via `--max-concurrency`). Every response
+carries `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`; the `Host` header is validated
+against a loopback allowlist (`403` otherwise) so DNS-rebinding pages cannot read your notes cross-origin,
+and CORS stays fully off unless you pass `--cors-origin`. `/health` exposes the live counters
+(`in_flight`, `queued`, `rejected_total`).
+
+### Securing remote deployments
+
+`mdss serve` is designed to be private-first: loopback bind by default, refuse-to-start for unauthenticated
+network binds, DNS-rebinding protection, and rate limiting built in. To serve a team over the network safely:
+
+1. **Keep TLS + auth at a reverse proxy** — mdss speaks plain HTTP on loopback; nginx/caddy terminate TLS.
+
+   ```nginx
+   # /etc/nginx/sites-available/mdss — TLS termination + Bearer-auth passthrough
+   server {
+     listen 443 ssl;
+     server_name search.example.com;
+     ssl_certificate     /etc/letsencrypt/live/search.example.com/fullchain.pem;
+     ssl_certificate_key /etc/letsencrypt/live/search.example.com/privkey.pem;
+
+     location / {
+       proxy_pass http://127.0.0.1:8747;
+       proxy_set_header Host $host;            # must match --allowed-host if not loopback-named
+       proxy_set_header X-Forwarded-For $remote_addr;
+     }
+   }
+   ```
+
+   ```caddyfile
+   # Caddyfile — automatic HTTPS
+   search.example.com {
+     reverse_proxy 127.0.0.1:8747
+   }
+   ```
+
+2. **Set an API key without leaking it into shell history or CI logs:**
+
+   ```bash
+   echo "$RANDOM_KEY" > /etc/mdss/api-key && chmod 600 /etc/mdss/api-key
+   mdss serve --db /srv/wiki --host 127.0.0.1 --api-key-file /etc/mdss/api-key
+   # or MDSS_API_KEY_FILE=/etc/mdss/api-key
+   ```
+
+3. **If you must expose mdss directly** (no proxy), require the key *and* keep the firewall tight:
+
+   ```bash
+   MDSS_API_KEY=$(openssl rand -hex 32) mdss serve --db /srv/wiki --host 0.0.0.0
+   ```
+
+   The startup banner warns loudly whenever an unsecured non-loopback bind was explicitly allowed.
+
+4. **Browser clients on another origin?** Opt into CORS explicitly, exact origins only:
+   `--cors-origin https://intranet.example.com`.
 
 ### 4. MCP Server (Claude Desktop, Cursor, Copilot, Antigravity)
 
@@ -492,6 +546,13 @@ Add to your `claude_desktop_config.json`:
 | `--nprobe <n>` | Number of nearest centroid clusters to probe during ANN search (default 8). |
 | `--port <n>` | HTTP port for `serve` (default 8747, or `MDSS_PORT`). |
 | `--host <ip>` | Bind address for `serve` (default `127.0.0.1` — loopback only; use `0.0.0.0` to expose on the LAN, or `MDSS_HOST`). |
+| `--api-key <key>` | `serve`: require Bearer auth on every request (`MDSS_API_KEY`). |
+| `--api-key-file <path>` | `serve`: read the API key from a file instead of a literal value — avoids shell-history / CI-log leaks (`MDSS_API_KEY_FILE`; trailing newline trimmed, POSIX permissions checked). |
+| `--allow-unsecured` | `serve`: explicit opt-in to bind non-loopback **without** auth; without it (and without an API key) such a bind refuses to start (issue #121). |
+| `--allowed-host <h>` | `serve`: extra `Host` header value to accept (repeatable); anything else gets `403` — DNS-rebinding guard (issue #120). |
+| `--cors-origin <o>` | `serve`: allow cross-origin browser access from this exact origin (repeatable); CORS is off unless set (issue #120). |
+| `--rate-limit <n>` | `serve`: max `/search` requests per minute per client, burst 10 → `429 + Retry-After` above it; `0` disables (default 60, `MDSS_RATE_LIMIT`; issue #119). |
+| `--max-concurrency <n>` | `serve`: max concurrent in-flight searches; queue cap 2× → `503` when full; `0` disables (default = CPU count, `MDSS_MAX_CONCURRENCY`; issue #119). |
 | `--watch` | `serve`: re-index incrementally when files change. |
 | `--watch-interval <ms>` | `serve --watch`: poll every N ms (default 3000). |
 | `--watch-delay <ms>` | `serve --watch`: quiet-period debounce before a burst of saves triggers ONE re-index (default 1000; issue #42). |

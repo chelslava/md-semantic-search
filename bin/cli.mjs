@@ -18,7 +18,7 @@ import crypto from 'node:crypto';
 import { buildIndex } from '../dist/indexer.js';
 import { search } from '../dist/search.js';
 import { searchFederated } from '../dist/federation.js';
-import { createServe, DEFAULT_PORT, DEFAULT_HOST } from '../dist/serve.js';
+import { createServe, DEFAULT_PORT, DEFAULT_HOST, isLoopbackHost, validateBindSecurity, loadApiKeyFile } from '../dist/serve.js';
 import { MODELS, DEFAULT_MODEL, resolveModel } from '../dist/models.js';
 import { decodeVec, walkMarkdown, SCHEMA_VERSION, assertSafePath } from '../dist/core.js';
 import { inspectIndexSchema, validateCurrentChunk, validateIndexEnvelope, validateNumericVector } from '../dist/index-format.js';
@@ -72,9 +72,21 @@ function parseArgs(argv) {
     else if (a === '--port') opts.port = nextInt(argv, ++i, a);
     else if (a === '--host') opts.host = nextValue(argv, ++i, a);
     else if (a === '--api-key') opts.apiKey = nextValue(argv, ++i, a);
+    else if (a === '--api-key-file') opts.apiKeyFile = nextValue(argv, ++i, a);
+    else if (a === '--allow-unsecured') opts.allowUnsecured = true;
+    else if (a === '--allowed-host') {
+      const v = nextValue(argv, ++i, a);
+      opts.allowedHost = opts.allowedHost ? [...opts.allowedHost, v] : [v];
+    }
+    else if (a === '--cors-origin') {
+      const v = nextValue(argv, ++i, a);
+      opts.corsOrigin = opts.corsOrigin ? [...opts.corsOrigin, v] : [v];
+    }
     else if (a === '--health-public') opts.healthPublic = true;
     else if (a === '--watch-delay') opts.watchDelay = nextInt(argv, ++i, a);
     else if (a === '--watch-interval') opts.watchInterval = nextInt(argv, ++i, a);
+    else if (a === '--rate-limit') opts.rateLimit = nextNonNegInt(argv, ++i, a);
+    else if (a === '--max-concurrency') opts.maxConcurrency = nextNonNegInt(argv, ++i, a);
     else if (a === '--since') opts.since = nextValue(argv, ++i, a);
     else if (a === '--path') opts.path.push(nextValue(argv, ++i, a));
     else if (a === '--ignore') opts.ignore.push(nextValue(argv, ++i, a));
@@ -126,10 +138,30 @@ function nextFloat(argv, i, flag) {
   return f;
 }
 
+/** Like nextInt but allows 0 (used by serve limit flags where 0 = disabled). */
+function nextNonNegInt(argv, i, flag) {
+  const v = nextValue(argv, i, flag);
+  const n = Number.parseInt(v, 10);
+  if (!Number.isInteger(n) || n < 0) die(`${flag} must be a non-negative integer (0 disables), got "${v}"`);
+  return n;
+}
+
+/** Non-negative integer from an env var; undefined when unset/invalid. */
+function envNonNegInt(name) {
+  const raw = process.env[name];
+  if (!raw) return undefined;
+  const n = Number.parseInt(raw, 10);
+  return Number.isInteger(n) && n >= 0 ? n : undefined;
+}
+
 const KNOWN_CONFIG_KEYS = new Set([
   'db', 'model', 'indexDir', 'index-dir', 'cacheDir', 'cache-dir',
   'ignore', 'path', 'k', 'maxPerFile', 'max-per-file', 'maxPerDoc', 'max-per-doc',
   'targetTokens', 'target-tokens', 'port', 'host', 'apiKey', 'api-key',
+  'apiKeyFile', 'api-key-file', 'allowUnsecured', 'allow-unsecured',
+  'allowedHost', 'allowed-host', 'allowedHosts', 'allowed-hosts',
+  'corsOrigin', 'cors-origin',
+  'rateLimit', 'rate-limit', 'maxConcurrency', 'max-concurrency',
   'healthPublic', 'health-public', 'watch', 'watchInterval', 'watch-interval',
   'watchDelay', 'watch-delay', 'offline', 'rerank', 'semantic', 'tag', 'project', 'type', 'status', 'canonical',
   'format', 'noVectors', 'no-vectors', 'output', 'workers', 'ann', 'nprobe', 'graphBoost', 'graph-boost', 'filter', 'quantize',
@@ -280,6 +312,24 @@ Options:
   --port <n>          HTTP port for serve (default: ${DEFAULT_PORT}).
   --host <ip>         Bind address for serve (default: ${DEFAULT_HOST} — loopback
                       only; use 0.0.0.0 to expose on the LAN, env MDSS_HOST).
+  --api-key <key>     Require Bearer auth on every request (env MDSS_API_KEY).
+  --api-key-file <p>  Read the API key from a file instead of a literal value —
+                      avoids shell-history/CI-log leaks (env MDSS_API_KEY_FILE;
+                      trailing newline trimmed, POSIX chmod-checked).
+  --allow-unsecured   Explicit opt-in to serve non-loopback WITHOUT auth — a loud
+                      banner is printed; without it (and without an api key) a
+                      non-loopback bind refuses to start (issue #121).
+  --allowed-host <h>  Extra Host header value to accept (repeatable) — requests
+                      naming any other Host get 403 (DNS-rebinding guard, issue #120).
+  --cors-origin <o>   Allow cross-origin browser access from this exact origin
+                      (repeatable); CORS is off unless set, and only exact
+                      matches are reflected with Vary: Origin (issue #120).
+  --rate-limit <n>    serve: max /search requests per minute per client, burst
+                      10 → 429 + Retry-After above it; 0 disables (default 60,
+                      env MDSS_RATE_LIMIT; issue #119).
+  --max-concurrency <n>  serve: max concurrent in-flight searches, queue cap
+                      2× → 503 when full; 0 disables (default = CPU count,
+                      env MDSS_MAX_CONCURRENCY; issue #119).
   --watch             serve: re-index incrementally on file changes (mtime poll).
   --watch-interval <ms>  serve --watch: poll every N ms (default 3000).
   --watch-delay <ms>     serve --watch: quiet-period debounce before a burst of
@@ -1052,6 +1102,18 @@ async function cmdServe(opts) {
   const host = opts.host || process.env.MDSS_HOST || DEFAULT_HOST;
   const log = s => process.stderr.write(s + '\n');
 
+  // API key precedence (issue #121): literal flag/env first, then key file —
+  // the file form avoids shell-history and CI-log leaks of the literal value.
+  let apiKey = opts.apiKey || process.env.MDSS_API_KEY || undefined;
+  const keyFile = opts.apiKeyFile || process.env.MDSS_API_KEY_FILE;
+  if (!apiKey && keyFile) {
+    apiKey = loadApiKeyFile(keyFile, log);
+    log(`api-key-file: key loaded from ${keyFile}`);
+  }
+
+  // Refuse to serve the whole knowledge base to the network unauthenticated (issue #121).
+  validateBindSecurity({ host, hasApiKey: !!apiKey, allowUnsecured: !!opts.allowUnsecured });
+
   const { server, state, close } = await createServe({
     db, indexDir, cacheDir,
     modelName: opts.model || DEFAULT_MODEL,
@@ -1060,8 +1122,20 @@ async function cmdServe(opts) {
     watch: !!opts.watch,
     watchInterval: opts.watchInterval,
     watchDelay: opts.watchDelay,
-    apiKey: opts.apiKey || process.env.MDSS_API_KEY,
+    apiKey,
     healthPublic: !!opts.healthPublic || process.env.MDSS_HEALTH_PUBLIC === 'true',
+    // DNS-rebinding allowlist (issue #120): loopback names are always allowed;
+    // the configured bind host is added so `--host mybox.local` still answers.
+    allowedHosts: [
+      ...(opts.allowedHost || []),
+      ...(opts.host ? [opts.host] : []),
+      ...(process.env.MDSS_HOST ? [process.env.MDSS_HOST] : []),
+    ],
+    // CORS stays OFF unless explicitly opted in (issue #120).
+    corsOrigins: opts.corsOrigin,
+    // Fairness gates (issue #119); 0 explicitly disables a gate.
+    rateLimit: opts.rateLimit ?? envNonNegInt('MDSS_RATE_LIMIT'),
+    maxConcurrency: opts.maxConcurrency ?? envNonNegInt('MDSS_MAX_CONCURRENCY'),
     log,
   });
 
@@ -1073,6 +1147,14 @@ async function cmdServe(opts) {
       (state.watching ? ' · watching for changes' : ''));
     log(`  POST /search  {"query": "...", "k": 6}`);
     log(`  GET  /health`);
+    if (!isLoopbackHost(host) && !state.apiKey) {
+      log('');
+      log('  ⚠⚠⚠  UNSECURED NETWORK BIND — EXPLICIT OPT-IN (--allow-unsecured)  ⚠⚠⚠');
+      log('  ⚠⚠⚠  The ENTIRE knowledge base is readable by anyone who can     ⚠⚠⚠');
+      log('  ⚠⚠⚠  reach this port. Put a reverse proxy with TLS + auth in     ⚠⚠⚠');
+      log('  ⚠⚠⚠  front, or set an API key (--api-key / --api-key-file).       ⚠⚠⚠');
+      log('');
+    }
     log(`  Ctrl+C to stop.`);
   });
 
