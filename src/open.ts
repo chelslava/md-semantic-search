@@ -42,7 +42,10 @@ const VSCODE_FAMILY = /^(code|code-insiders|codium|cursor|windsurf)$/i;
 const PLUS_LINE_EDITORS = /^(vim|vi|nvim|nano|ne|emacs|emacsclient|micro|hx)$/i;
 
 function baseName(cmd: string): string {
-  return path.basename(cmd).replace(/\.(exe|cmd|bat)$/i, '');
+  // handle BOTH separators so a Windows full path resolves its family even
+  // when mdss runs on POSIX CI (issue #110)
+  const last = cmd.split(/[\\/]/).pop() ?? cmd;
+  return last.replace(/\.(exe|cmd|bat)$/i, '');
 }
 
 function splitEditorCommand(editor: string): string[] {
