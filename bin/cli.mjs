@@ -138,6 +138,14 @@ function parseArgs(argv) {
     else if (a === '--embedder-model') opts.embedderModel = nextValue(argv, ++i, a);
     else if (a === '--embedder-base-url') opts.embedderBaseUrl = nextValue(argv, ++i, a);
     else if (a === '--embedder-key-file') opts.embedderKeyFile = nextValue(argv, ++i, a);
+    else if (a === '--expand') {
+      opts.expand = nextValue(argv, ++i, a);
+      if (!['prf', 'hyde'].includes(opts.expand)) die(`unknown --expand "${opts.expand}" - use prf|hyde`);
+    }
+    else if (a === '--expand-passages') {
+      opts.expandPassages = nextInt(argv, ++i, a);
+      if (opts.expandPassages > 20) die(`--expand-passages must be <= 20`);
+    }
     else if (a.startsWith('-')) die(`unknown option: ${a}. Try \`mdss --help\`.`);
     else opts._.push(a);
   }
@@ -201,7 +209,8 @@ const KNOWN_CONFIG_KEYS = new Set([
   'noQueryCache', 'no-query-cache',
   'mcp',
   'embedder', 'embedder-model', 'embedder-base-url', 'embedder-key-file',
-  'embedderModel', 'embedderBaseUrl', 'embedderKeyFile'
+  'embedderModel', 'embedderBaseUrl', 'embedderKeyFile',
+  'expand', 'expandPassages', 'expand-passages', 'llm-endpoint', 'llmEndpoint'
 ]);
 
 function findConfigFile(explicitPath) {
@@ -394,6 +403,11 @@ Options:
                       https://api.openai.com/v1 for openai).
   --embedder-key-file <p>  Bearer key file for openai-compatible endpoints
                       (or OPENAI_API_KEY env).
+  --expand <mode>     search: query expansion - "prf" (offline pseudo-
+                      relevance feedback: top passages feed salient terms,
+                      ONE embed total; issue #125) or "hyde" (LLM-generated
+                      passage via --llm-endpoint; degrades silently without it).
+  --expand-passages <n>  prf feedback pool size (default 3, max 20).
   --open [N]          search: open the top (or Nth) hit in your editor at its
                       startLine — MDSS_EDITOR/VISUAL/EDITOR, then VS Code
                       --goto, then the GUI opener (issue #110). With --json on
@@ -1136,6 +1150,8 @@ async function cmdSearch(opts) {
       offline: resolveOffline(opts),
       queryDiskCache: !opts.noQueryCache,
       recency: opts.recency,
+      expand: opts.expand,
+      expandPassages: opts.expandPassages,
       path: opts.path.length > 0 ? opts.path : undefined,
       since: opts.since,
       rerank: !!opts.rerank,
@@ -1164,6 +1180,8 @@ async function cmdSearch(opts) {
       offline: resolveOffline(opts),
       queryDiskCache: !opts.noQueryCache,
       recency: opts.recency,
+      expand: opts.expand,
+      expandPassages: opts.expandPassages,
       path: opts.path.length > 0 ? opts.path : undefined,
       since: opts.since,
       rerank: !!opts.rerank,
@@ -1527,6 +1545,7 @@ export {
   checkHealth, cmdExport,
   die, main, HELP, VERSION,
 };
+
 
 
 

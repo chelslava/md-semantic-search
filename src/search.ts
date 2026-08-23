@@ -242,7 +242,76 @@ export function recencyBoost(ageMs: number | null, halfLifeDays: number, now: nu
   return Math.pow(0.5, ageDays / halfLifeDays);
 }
 
+/**
+ * HyDE passage generation via an OpenAI-compatible chat endpoint (issue #125).
+ * Returns null on ANY failure — HyDE must degrade to PRF/baseline silently.
+ * Injectable fetch for tests.
+ */
+export async function hydePassage(
+  endpoint: string,
+  query: string,
+  model?: string,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<string | null> {
+  try {
+    const res = await fetchImpl(endpoint.replace(/\/$/, '') + '/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...(model ? { model } : {}),
+        messages: [
+          { role: 'system', content: 'Write one short passage (2-4 sentences) that would plausibly contain the answer. Output only the passage.' },
+          { role: 'user', content: query },
+        ],
+      }),
+    });
+    if (!res.ok) return null;
+    const data: any = await res.json();
+    const text = data?.choices?.[0]?.message?.content ?? data?.response ?? null;
+    return typeof text === 'string' && text.trim() ? text.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 const runtimeIndexStates = new WeakMap<IndexFile, RuntimeIndexState>();
+
+/** Minimal EN+RU stopword set for PRF expansion (issue #125). */
+const EXPANSION_STOPWORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'with', 'is', 'are',
+  'be', 'this', 'that', 'it', 'as', 'at', 'by', 'from', 'not', 'but', 'we', 'you',
+  'и', 'в', 'на', 'с', 'по', 'для', 'как', 'это', 'не', 'а', 'но', 'или', 'из',
+]);
+
+/**
+ * Salient-term extraction for PRF (issue #125): tokens that appear in the
+ * top-m feedback passages, are not query terms or stopwords, and are ranked
+ * by (tf-in-feedback × distinct-passage coverage). Pure + deterministic.
+ */
+export function extractExpansionTerms(
+  topTexts: string[],
+  queryTerms: string[],
+  maxTerms: number,
+): string[] {
+  const qSet = new Set(queryTerms);
+  const tf = new Map<string, number>();
+  const df = new Map<string, number>();
+  for (const text of topTexts) {
+    const seen = new Set<string>();
+    for (const tok of tokenize(text)) {
+      if (tok.length < 3 || qSet.has(tok) || EXPANSION_STOPWORDS.has(tok)) continue;
+      tf.set(tok, (tf.get(tok) ?? 0) + 1);
+      seen.add(tok);
+    }
+    for (const tok of seen) df.set(tok, (df.get(tok) ?? 0) + 1);
+  }
+  return [...tf.entries()]
+    .filter(([, count]) => count >= 2 || topTexts.length === 1)
+    .map(([tok, count]) => [tok, count * Math.log(2 + (df.get(tok) ?? 0))] as const)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, maxTerms)
+    .map(([tok]) => tok);
+}
 
 function snapshotRuntimeIndex(
   index: IndexFile,
@@ -538,6 +607,14 @@ export interface SearchOptions {
   queryDiskCache?: boolean;
   /** issue #127: time-decay half-life in days; boost = 0.5^(ageDays/halfLife). Omitted = off. */
   recency?: number;
+  /** issue #125: query expansion mode. 'prf' is fully offline; 'hyde' needs llmEndpoint (else baseline). */
+  expand?: 'prf' | 'hyde';
+  /** issue #125: feedback passages for 'prf' (default 3). */
+  expandPassages?: number;
+  /** issue #125: LLM endpoint used by 'hyde' (OpenAI-compatible chat completions). */
+  llmEndpoint?: string;
+  /** issue #125: model name for the HyDE chat call. */
+  llmModel?: string;
   ann?: boolean;
   nprobe?: number;
   graphBoost?: number;
@@ -653,9 +730,37 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
     });
   }
 
+  // Issue #125: offline pseudo-relevance feedback (PRF) query expansion.
+  // A lexical-only first pass picks the top-m passages; salient terms from
+  // them enrich the query, which is then embedded ONCE (replacing the raw
+  // query embed — zero extra model calls). HyDE would swap the enriched text
+  // for an LLM-generated passage; without a configured endpoint it degrades
+  // to the baseline silently.
+  let effectiveQuery = query;
+  let expandedTerms: string[] | null = null;
+  if ((opts.expand === 'prf' || opts.expand === 'hyde') && candidates.length > 0) {
+    const qt0 = [...new Set(tokenize(query))];
+    if (qt0.length > 0 && lexicalState.kind === 'persisted-bm25') {
+      const firstPass = [
+        ...bm25Scores(lexicalState.lexical, qt0, new Set(candidates.map((c) => c.idx))).entries(),
+      ]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, Math.max(1, opts.expandPassages ?? 3));
+      const topTexts = firstPass.map(([idx]) => chunks[idx].text);
+      expandedTerms = extractExpansionTerms(topTexts, qt0, 8);
+      if (opts.expand === 'hyde' && opts.llmEndpoint) {
+        const hydeText = await hydePassage(opts.llmEndpoint, query, opts.llmModel);
+        if (hydeText) effectiveQuery = hydeText;
+        else if (expandedTerms.length > 0) effectiveQuery = `${query} ${expandedTerms.join(' ')}`;
+      } else if (expandedTerms.length > 0) {
+        effectiveQuery = `${query} ${expandedTerms.join(' ')}`;
+      }
+    }
+  }
+
   let qVec: Float32Array | number[];
   if (opts.useQueryCache !== false && runtime.queryCache) {
-    const normQuery = query.trim().toLowerCase();
+    const normQuery = effectiveQuery.trim().toLowerCase();
     const cacheKey = `${runtime.model.id}:${runtime.model.revision || 'main'}:${expectedDim || 0}:${normQuery}`;
     // L2 disk layer (issue #114): persists across processes under cacheDir;
     // corrupt/missing files degrade silently to a normal embed.
@@ -666,7 +771,7 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
         const fromDisk = diskQueryGet(cacheDir, diskKey, expectedDim);
         if (fromDisk) return fromDisk;
       }
-      const [v] = await embedFn([query], 'query', runtime.model, cacheDir, offline);
+      const [v] = await embedFn([effectiveQuery], 'query', runtime.model, cacheDir, offline);
       if ((Array.isArray(v) || v instanceof Float32Array) && expectedDim !== undefined && v.length !== expectedDim) {
         throw new Error(`query vector has ${v.length} dims, expected ${expectedDim} - run \`mdss index\` to rebuild`);
       }
@@ -675,7 +780,7 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
       return v;
     });
   } else {
-    const [v] = await embedFn([query], 'query', runtime.model, cacheDir, offline);
+    const [v] = await embedFn([effectiveQuery], 'query', runtime.model, cacheDir, offline);
     if ((Array.isArray(v) || v instanceof Float32Array) && expectedDim !== undefined && v.length !== expectedDim) {
       throw new Error(`query vector has ${v.length} dims, expected ${expectedDim} — run \`mdss index\` to rebuild`);
     }
@@ -861,6 +966,7 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
                         : +r.recencyAgeDays.toFixed(2),
                   }
                 : {}),
+              ...(expandedTerms ? { expandedTerms } : {}),
             },
           }
         : {}),
@@ -882,3 +988,4 @@ export async function search(opts: OneShotSearchOptions): Promise<SearchResultHi
   const loaded = loadIndex(indexDir);
   return searchIndex({ ...rest, loaded });
 }
+

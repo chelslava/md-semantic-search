@@ -40,6 +40,8 @@ export const FLAGS: FlagSpec[] = [
   { name: '--embedder-model', kind: 'value' },
   { name: '--embedder-base-url', kind: 'value' },
   { name: '--embedder-key-file', kind: 'file' },
+  { name: '--expand', kind: 'value' },
+  { name: '--expand-passages', kind: 'number' },
   { name: '--health-public', kind: 'flag' },
   { name: '--allow-unsecured', kind: 'flag' },
   { name: '--ann', kind: 'flag' },
