@@ -12,6 +12,7 @@ import { buildRelationshipGraph, computePageRank, expandGraphNeighborhood, Relat
 import { evaluateFilter, FilterNode } from './filter.js';
 import { deserializeBinaryIndex } from './binary-format.js';
 import { dequantizeFromInt8 } from './quantization.js';
+import { buildDiskKey, diskQueryGet, diskQueryPut } from './query-cache-disk.js';
 
 export { tokenize } from './lexical.js';
 
@@ -500,6 +501,8 @@ export interface SearchOptions {
   maxPerFile?: number;
   maxPerDoc?: number;
   useQueryCache?: boolean;
+  /** issue #114: persist query embeddings to <cacheDir>/query-cache.json (default on). */
+  queryDiskCache?: boolean;
   ann?: boolean;
   nprobe?: number;
   graphBoost?: number;
@@ -617,13 +620,23 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
 
   let qVec: Float32Array | number[];
   if (opts.useQueryCache !== false && runtime.queryCache) {
-    const cacheKey = `${runtime.model.id}:${runtime.model.revision || 'main'}:${expectedDim || 0}:${query.trim().toLowerCase()}`;
+    const normQuery = query.trim().toLowerCase();
+    const cacheKey = `${runtime.model.id}:${runtime.model.revision || 'main'}:${expectedDim || 0}:${normQuery}`;
+    // L2 disk layer (issue #114): persists across processes under cacheDir;
+    // corrupt/missing files degrade silently to a normal embed.
+    const diskKey = buildDiskKey(runtime.model.id, runtime.model.revision || 'main', expectedDim, normQuery);
+    const useDisk = opts.queryDiskCache !== false;
     qVec = await runtime.queryCache.getOrCompute(cacheKey, async () => {
+      if (useDisk) {
+        const fromDisk = diskQueryGet(cacheDir, diskKey, expectedDim);
+        if (fromDisk) return fromDisk;
+      }
       const [v] = await embedFn([query], 'query', runtime.model, cacheDir, offline);
       if ((Array.isArray(v) || v instanceof Float32Array) && expectedDim !== undefined && v.length !== expectedDim) {
-        throw new Error(`query vector has ${v.length} dims, expected ${expectedDim} — run \`mdss index\` to rebuild`);
+        throw new Error(`query vector has ${v.length} dims, expected ${expectedDim} - run \`mdss index\` to rebuild`);
       }
       validateNumericVector(v, undefined, 'query vector');
+      if (useDisk) diskQueryPut(cacheDir, diskKey, v);
       return v;
     });
   } else {

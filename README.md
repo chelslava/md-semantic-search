@@ -576,6 +576,7 @@ Add to your `claude_desktop_config.json`:
 | `--max-concurrency <n>` | `serve`: max concurrent in-flight searches; queue cap 2× → `503` when full; `0` disables (default = CPU count, `MDSS_MAX_CONCURRENCY`; issue #119). |
 | `--watch` | `serve`: re-index incrementally when files change. |
 | `--watch-debug` | `serve --watch`: verbose trace of polls, FS-error classifications and retries (issue #116). |
+| `--no-query-cache` | `search`: skip the persistent query-embedding cache — repeated queries in fresh processes re-embed otherwise (issue #114). |
 | `--no-ui` | `serve`: disable the built-in web UI at `/` — restores JSON API help there (issue #111). |
 | `--watch-interval <ms>` | `serve --watch`: poll every N ms (default 3000). |
 | `--watch-delay <ms>` | `serve --watch`: quiet-period debounce before a burst of saves triggers ONE re-index (default 1000; issue #42). |

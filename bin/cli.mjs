@@ -127,6 +127,7 @@ function parseArgs(argv) {
     else if (a === '--fix') opts.fix = true;
     else if (a === '--dry-run') opts.dryRun = true;
     else if (a === '--no-ui') opts.noUi = true;
+    else if (a === '--no-query-cache') opts.noQueryCache = true;
     else if (a.startsWith('-')) die(`unknown option: ${a}. Try \`mdss --help\`.`);
     else opts._.push(a);
   }
@@ -186,7 +187,8 @@ const KNOWN_CONFIG_KEYS = new Set([
   'format', 'noVectors', 'no-vectors', 'output', 'workers', 'ann', 'nprobe', 'graphBoost', 'graph-boost', 'filter', 'quantize',
   'vault', 'vaults', 'rag', 'autoTag', 'auto-tag', 'autoSummarize', 'auto-summarize',
   'llmEndpoint', 'llm-endpoint', 'llmModel', 'llm-model', 'systemPrompt', 'system-prompt',
-  'completions', 'open', 'dry-run', 'fix', 'yes', 'no-ui', 'noUi'
+  'completions', 'open', 'dry-run', 'fix', 'yes', 'no-ui', 'noUi',
+  'noQueryCache', 'no-query-cache'
 ]);
 
 function findConfigFile(explicitPath) {
@@ -360,6 +362,9 @@ Options:
   --watch-delay <ms>     serve --watch: quiet-period debounce before a burst of
                          saves triggers ONE re-index (default 1000; issue #42).
   --offline           Never download the model; require a cached one (env MDSS_OFFLINE=1).
+  --no-query-cache    search: skip the persistent query-embedding cache
+                      (<cacheDir>/query-cache.json, issue #114); in-memory
+                      caching stays on.
   --open [N]          search: open the top (or Nth) hit in your editor at its
                       startLine — MDSS_EDITOR/VISUAL/EDITOR, then VS Code
                       --goto, then the GUI opener (issue #110). With --json on
@@ -1066,6 +1071,7 @@ async function cmdSearch(opts) {
       k: opts.k || 6,
       semanticOnly: !!opts.semantic,
       offline: resolveOffline(opts),
+      queryDiskCache: !opts.noQueryCache,
       path: opts.path.length > 0 ? opts.path : undefined,
       since: opts.since,
       rerank: !!opts.rerank,
@@ -1090,6 +1096,7 @@ async function cmdSearch(opts) {
       k: opts.k || 6,
       semanticOnly: !!opts.semantic,
       offline: resolveOffline(opts),
+      queryDiskCache: !opts.noQueryCache,
       path: opts.path.length > 0 ? opts.path : undefined,
       since: opts.since,
       rerank: !!opts.rerank,
@@ -1447,3 +1454,4 @@ export {
   checkHealth, cmdExport,
   die, main, HELP, VERSION,
 };
+

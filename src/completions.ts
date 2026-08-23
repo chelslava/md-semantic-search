@@ -33,6 +33,7 @@ export const FLAGS: FlagSpec[] = [
   { name: '--interactive', alias: '-i', kind: 'flag' },
   { name: '--list-tools', kind: 'flag' },
   { name: '--no-vectors', alias: '--no-vector', kind: 'flag' },
+  { name: '--no-query-cache', kind: 'flag' },
   { name: '--health-public', kind: 'flag' },
   { name: '--allow-unsecured', kind: 'flag' },
   { name: '--ann', kind: 'flag' },
