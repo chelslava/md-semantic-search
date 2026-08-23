@@ -755,6 +755,7 @@ is an in-memory dot-product sweep.
 
 - **Obsidian**: An official plugin is available in [`integrations/obsidian`](./integrations/obsidian) providing a live semantic search panel directly in your vault connected to `mdss serve`.
 - **Model Context Protocol (MCP)**: Native stdio JSON-RPC 2.0 server (`mdss mcp`) integrating with Claude Desktop, Cursor, Copilot, Antigravity, and AI agents for local knowledge retrieval.
+- **VS Code / Raycast / Alfred**: see [`integrations/README.md`](./integrations/README.md). Releases are automated — tagging `integrations/vscode/vX.Y.Z` builds and attaches the VSIX to a GitHub Release from source (no binaries are committed; issue #112).
 
 ## License
 

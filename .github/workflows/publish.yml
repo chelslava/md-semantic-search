@@ -9,17 +9,18 @@ on:
     tags:
       - 'v*'
 
-permissions:
-  contents: write   # needed to upload release assets
-  id-token: write   # enables npm provenance attestation
+permissions: {}
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # enables npm provenance attestation
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
@@ -43,16 +44,30 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Generate CycloneDX SBOM (issue #122)
+        run: npm sbom --sbom-format cyclonedx > mdss-sbom.cdx.json
+
+      - name: Upload SBOM to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" "mdss-sbom.cdx.json" \
+            --clobber \
+            --repo "${GITHUB_REPOSITORY}"
+
   vscode-extension:
+    permissions:
+      contents: write   # needed to upload release assets
     # Build the .vsix and attach it to the GitHub Release.
     # Requires the release to already exist (created by the tag push or a
     # preceding workflow). The gh CLI uploads the asset with --clobber so
     # re-runs are safe.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
 
@@ -87,3 +102,5 @@ jobs:
           gh release upload "${GITHUB_REF_NAME}" "$VSIX" \
             --clobber \
             --repo "$GITHUB_REPOSITORY"
+
+

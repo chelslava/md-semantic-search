@@ -21,7 +21,11 @@ The following known transitive upstream advisories currently exist in third-part
 | `GHSA-xcpc-8h2w-3j85` | `adm-zip` (<0.6.0) | `onnxruntime-node` | mdss does not accept or extract untrusted ZIP files. |
 | `GHSA-f88m-g3jw-g9cj` | `sharp` (<0.35.0) | `@huggingface/transformers` | mdss does not decode image files. |
 
-Any new high or critical vulnerabilities introduced outside this baseline immediately fail the CI audit build.
+These advisories are codified as **dated waivers** in `scripts/audit-ci.mjs`
+(issue #122): each carries a `reason` and an `expires` date; an expired waiver
+FAILS the audit gate and forces re-triage. Any new high or critical vulnerability
+outside this baseline immediately fails the CI audit build, the weekly scheduled
+audit sweep (cron in ci.yml), and blocks `npm publish`.
 
 ---
 
@@ -36,4 +40,6 @@ When passing custom Hugging Face model IDs or downloading remote ONNX weights, o
 - **Path Canonicalization**: `--db` and `--index-dir` inputs resolve to canonical absolute paths (`fs.realpathSync`) and are validated against allowed root directories (current working directory and user homedir by default, or explicitly configured via `MDSS_ROOT_GUARD`).
 - **Query Length Cap**: Query strings in `searchIndex` and `POST /search` are capped at 2048 characters to prevent excessive computation or memory consumption.
 - **Glob Validation**: `--ignore` and `--path` globs are validated for control or injection characters (such as `|`, `(`, `)`, `$`, `{`, `}`) before RegExp compilation.
+
+
 

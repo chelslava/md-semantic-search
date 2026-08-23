@@ -5,25 +5,26 @@ on:
     - cron: '17 3 * * *'
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   real-transformers-smoke:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 45
     env:
       MDSS_NIGHTLY_CACHE_DIR: ${{ github.workspace }}/.cache/mdss-nightly
       MDSS_RUN_NIGHTLY_REAL_MODEL: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
 
       - name: Restore Transformers.js model cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ github.workspace }}/.cache/mdss-nightly
           key: mdss-real-model-${{ runner.os }}-node20-${{ hashFiles('package-lock.json', 'src/core.mjs', 'src/models.mjs', 'src/rerank.mjs', 'test/nightly-real-model.mjs') }}
@@ -42,3 +43,5 @@ jobs:
           MDSS_RUN_REAL_MODEL: '1'
           MDSS_NIGHTLY_CACHE_DIR: ${{ github.workspace }}/.cache/mdss-nightly
         run: node scripts/verify-pack.mjs
+
+

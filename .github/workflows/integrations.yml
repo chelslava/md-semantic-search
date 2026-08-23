@@ -1,0 +1,117 @@
+name: integrations
+
+# Release pipeline for editor integrations (issue #112).
+# Trigger: push a tag like `integrations/vscode/v1.0.3` or `integrations/obsidian/v1.0.1`.
+# Builds artifacts reproducibly from source (no committed .vsix), verifies the
+# manifest version matches the tag, and attaches them to a GitHub Release.
+# Marketplace publishing (VS Code) is SECRET-GATED: skipped with a notice when
+# the VSCE_PAT secret is absent.
+
+on:
+  push:
+    tags:
+      - 'integrations/*/v*'
+
+permissions:
+  contents: write   # create/update the GitHub Release and upload assets
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      integration: ${{ steps.parse.outputs.integration }}
+      version: ${{ steps.parse.outputs.version }}
+    steps:
+      - name: Parse tag
+        id: parse
+        run: |
+          TAG="${GITHUB_REF_NAME}"           # integrations/<name>/v<semver>
+          INTEGRATION="${TAG#integrations/}"; INTEGRATION="${INTEGRATION%%/*}"
+          VERSION="${TAG##*/v}"
+          echo "integration=${INTEGRATION}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+  vscode:
+    if: needs.detect.outputs.integration == 'vscode'
+    needs: detect
+    runs-on: ubuntu-latest
+    env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+
+      - name: Verify extension version matches tag
+        working-directory: integrations/vscode
+        run: node ../../scripts/check-integration-manifests.mjs && node -e "
+          const v = require('./package.json').version;
+          const want = process.env.MDSS_TAG_VERSION;
+          if (v !== want) { console.error(\`manifest \${v} != tag \${want}\`); process.exit(1); }"
+        env:
+          MDSS_TAG_VERSION: ${{ needs.detect.outputs.version }}
+
+      - name: Build VSIX from source
+        working-directory: integrations/vscode
+        run: |
+          npm install
+          npx vsce package --no-dependencies --out "md-semantic-search-vscode-${{ needs.detect.outputs.version }}.vsix"
+
+      - name: Create / update GitHub Release and attach VSIX
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" \
+            --notes "VS Code extension ${{ needs.detect.outputs.version }}" || true
+          gh release upload "${GITHUB_REF_NAME}" \
+            "integrations/vscode/md-semantic-search-vscode-${{ needs.detect.outputs.version }}.vsix" \
+            --clobber
+
+      - name: Publish to VS Code Marketplace (secret-gated)
+        working-directory: integrations/vscode
+        if: env.VSCE_PAT != ''
+        run: npx vsce publish --no-dependencies
+
+  obsidian:
+    if: needs.detect.outputs.integration == 'obsidian'
+    needs: detect
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create/update the GitHub Release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+
+      - name: Verify manifest version matches tag
+        run: node scripts/check-integration-manifests.mjs && node -e "
+          const m = require('./integrations/obsidian/manifest.json');
+          const want = process.env.MDSS_TAG_VERSION;
+          if (m.version !== want) { console.error(\`manifest \${m.version} != tag \${want}\`); process.exit(1); }"
+        env:
+          MDSS_TAG_VERSION: ${{ needs.detect.outputs.version }}
+
+      - name: Package plugin bundle
+        run: |
+          cd integrations/obsidian
+          zip -r "../../mdss-obsidian-${{ needs.detect.outputs.version }}.zip" \
+            main.ts manifest.json styles.css README.md
+
+      - name: Create / update GitHub Release and attach bundle
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" \
+            --notes "Obsidian plugin ${{ needs.detect.outputs.version }} — copy into .obsidian/plugins/mdss-obsidian/" || true
+          gh release upload "${GITHUB_REF_NAME}" \
+            "mdss-obsidian-${{ needs.detect.outputs.version }}.zip" \
+            --clobber
+
