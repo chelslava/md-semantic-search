@@ -784,6 +784,17 @@ is an in-memory dot-product sweep.
 - **Obsidian**: An official plugin is available in [`integrations/obsidian`](./integrations/obsidian) providing a live semantic search panel directly in your vault connected to `mdss serve`.
 - **Model Context Protocol (MCP)**: Native stdio JSON-RPC 2.0 server (`mdss mcp`) integrating with Claude Desktop, Cursor, Copilot, Antigravity, and AI agents for local knowledge retrieval.
 - **VS Code / Raycast / Alfred**: see [`integrations/README.md`](./integrations/README.md). Releases are automated — tagging `integrations/vscode/vX.Y.Z` builds and attaches the VSIX to a GitHub Release from source (no binaries are committed; issue #112).
+- **Windows tray icon**: [`integrations/windows/mdss-tray.ps1`](./integrations/windows/mdss-tray.ps1) — a zero-dependency system-tray companion for `mdss serve` (pure PowerShell + .NET WinForms, built into Windows): state-colored icon, indexing stats on hover (chunks / model / index age), a balloon when your notes get re-indexed. Run it:
+
+```powershell
+# attach to an already-running daemon:
+powershell -ExecutionPolicy Bypass -File integrations\windows\mdss-tray.ps1
+
+# ...or let the tray spawn and own a hidden `mdss serve --watch`:
+powershell -ExecutionPolicy Bypass -File integrations\windows\mdss-tray.ps1 -Db D:\Notes -Launch
+```
+
+Details, menu actions and the headless `-CheckHealth` self-test are described in [`integrations/README.md`](./integrations/README.md).
 
 ## Contributing
 

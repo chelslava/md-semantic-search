@@ -12,6 +12,7 @@ for the pinned contract.
 | `obsidian/` | Obsidian plugin (BRAT/manual) | Tag `integrations/obsidian/vX.Y.Z` → CI verifies `manifest.json` version, zips plugin files, attaches to a GitHub Release |
 | `raycast/` | Raycast extension | Manual store submission (below) |
 | `alfred/` | Alfred workflow | Manual packaging (below) |
+| `windows/` | Windows tray companion (PowerShell + WinForms) | Manual script — no packaging |
 
 ## Releasing VS Code
 
@@ -46,3 +47,24 @@ Same tag flow: `integrations/obsidian/vX.Y.Z`. The workflow checks that
 2. `cd integrations/alfred && zip -r mdss.alfredworkflow . -x '.git*'`
 3. Attach `mdss.alfredworkflow` to a GitHub Release created manually, or to an
    `integrations/alfred vX.Y.Z` tag using the obsidian job as a template.
+
+## Windows tray companion (`windows/mdss-tray.ps1`)
+
+A zero-dependency system tray icon for `mdss serve`: green = healthy,
+yellow = searches in flight, gray = unreachable. Hovering shows chunk count,
+model, index age and watch state; a balloon pops whenever the knowledge base
+gets re-indexed (`built` timestamp changes). Pure PowerShell + .NET WinForms —
+built into Windows, no npm packages added.
+
+```powershell
+# attach to an already-running daemon:
+powershell -ExecutionPolicy Bypass -File integrations\windows\mdss-tray.ps1
+
+# or let the tray spawn a hidden `mdss serve --watch` (owned by the tray):
+powershell -ExecutionPolicy Bypass -File integrations\windows\mdss-tray.ps1 -Db D:\Notes -Launch
+```
+
+Menu: Open Web UI / Show status / Start serve (hidden) / Stop serve / Exit.
+Headless self-test for scripts and CI: add `-CheckHealth` — prints one status
+line, exit 0 when healthy, 1 when unreachable. If the daemon requires auth,
+pass `-ApiKey <token>` or set `MDSS_API_KEY`.
