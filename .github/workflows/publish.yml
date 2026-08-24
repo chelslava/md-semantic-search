@@ -15,7 +15,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write   # create the GitHub Release and upload the SBOM asset
       id-token: write   # enables npm provenance attestation
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -39,10 +39,32 @@ jobs:
           fi
           echo "Publishing version $PKG"
 
+      - name: Ensure GitHub Release exists
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
+            echo "release ${GITHUB_REF_NAME} already exists"
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "mdss ${GITHUB_REF_NAME}" \
+              --verify-tag \
+              --generate-notes
+          fi
+
       - name: Publish
-        run: npm publish --access public --provenance
+        shell: bash
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          if npm view "md-semantic-search@${TAG}" version > /dev/null 2>&1; then
+            echo "md-semantic-search@${TAG} is already on npm — skipping publish (rerun-safe)"
+            exit 0
+          fi
+          npm publish --access public --provenance
 
       - name: Generate CycloneDX SBOM (issue #122)
         run: npm sbom --sbom-format cyclonedx > mdss-sbom.cdx.json
@@ -58,14 +80,28 @@ jobs:
 
   vscode-extension:
     permissions:
-      contents: write   # needed to upload release assets
-    # Build the .vsix and attach it to the GitHub Release.
-    # Requires the release to already exist (created by the tag push or a
-    # preceding workflow). The gh CLI uploads the asset with --clobber so
-    # re-runs are safe.
+      contents: write   # needed to create the release (if missing) and upload assets
+    # Build the .vsix and attach it to the GitHub Release. The release is
+    # created on demand (rerun-safe); the asset upload uses --clobber so
+    # repeated runs are safe.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Ensure GitHub Release exists
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
+            echo "release ${GITHUB_REF_NAME} already exists"
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "mdss ${GITHUB_REF_NAME}" \
+              --verify-tag \
+              --generate-notes
+          fi
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
