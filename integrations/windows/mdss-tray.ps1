@@ -125,10 +125,8 @@ $icons = @{
 
 $form = New-Object System.Windows.Forms.Form
 $form.ShowInTaskbar = $false
-$form.WindowState = 'Hidden'
 $form.FormBorderStyle = 'None'
 $form.Opacity = 0
-$form.ShowInTaskbar = $false
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $itemUi     = $menu.Items.Add('Open Web UI');            $itemUi.Add_Click({ Start-Process "http://$($BindHost):$Port/" }.GetNewClosure())
