@@ -96,6 +96,11 @@ if ($CheckHealth) {
     exit 0
 }
 
+# ---- Single instance guard ----------------------------------------------------
+# A second tray would just duplicate the icon; bail out quietly instead.
+$script:trayMutex = New-Object System.Threading.Mutex($true, 'Local\mdss-tray-icon')
+if (-not $script:trayMutex.WaitOne(0)) { exit 0 }
+
 # ---- Tray UI -----------------------------------------------------------------
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
