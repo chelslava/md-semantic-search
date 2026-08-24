@@ -54,8 +54,9 @@ real-model suites, so keeping local runs green is usually enough.
 
 A user-facing overview lives in the README ("Architecture & Retrieval
 Pipeline"); `docs/architecture.md` sketches the storage layout and ranking
-math, and a deeper contributor internals guide (module map, format spec,
-extension points) is tracked as #135. The short version:
+math, and [ARCHITECTURE.md](./ARCHITECTURE.md) is the deeper contributor
+internals guide (module map, format spec, extension points). The short
+version:
 
 | Area | Where | Notes |
 |---|---|---|

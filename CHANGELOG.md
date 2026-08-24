@@ -7,6 +7,11 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Issue #135** — `ARCHITECTURE.md`: contributor internals guide — module map of
+  all 31 `src/*.ts` files with covering-test column, data-flow diagrams (index
+  build / search path / serve --watch / MCP transports), on-disk format spec
+  (`vectors.json` v4 envelope, `vectors.bin` + sha256 sidecars, `ivf.json`,
+  `.checkpoint.json`, `.mdss.lock`) and extension-point checklists.
 - **Issue #133** — Contributor onboarding: `CONTRIBUTING.md` (dev setup, module
   tour, ground rules, PR checklist), `CODE_OF_CONDUCT.md` (Contributor Covenant
   v2.1), GitHub issue templates (`bug_report`, `feature_request`) and a pull-

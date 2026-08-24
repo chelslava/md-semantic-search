@@ -796,7 +796,9 @@ Contributions are welcome — bug reports with reproduction steps, docs fixes,
 tests, and features all help. Start with
 [CONTRIBUTING.md](./CONTRIBUTING.md) (dev setup, project tour, conventions)
 and look for issues labeled **`good first issue`** — they are scoped for a
-first-time contributor. By participating you agree to the
+first-time contributor. For the internals — module map, data-flow diagrams,
+on-disk formats, and extension points — see
+[ARCHITECTURE.md](./ARCHITECTURE.md). By participating you agree to the
 [Code of Conduct](./CODE_OF_CONDUCT.md).
 
 ## License
