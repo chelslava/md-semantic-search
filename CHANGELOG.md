@@ -13,6 +13,33 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
   request template. Open starter issues are now curated under the
   `good first issue` label.
 
+## [1.0.3] - 2026-08-24
+
+### Added
+- **Windows tray companion** (`integrations/windows/`) — zero-dependency
+  system-tray icon for `mdss serve`: state-colored icon (healthy / busy /
+  unreachable), tooltip with live indexing stats (chunks, model, index age,
+  watch), balloon on every knowledge-base rebuild, menu with Web UI / Start /
+  Stop / Exit. Attach mode plus `-Launch` owned-daemon mode; `-ApiKey` /
+  `MDSS_API_KEY` support; `-CheckHealth` headless self-test (exit 0/1) for
+  scripts and CI; single-instance mutex guard.
+- **One-command launcher**: `integrations/windows/start-mdss.cmd <notes-dir>`
+  — reuses a running daemon or spawns a hidden `mdss serve --watch`, waits for
+  the model to warm up, then starts the tray. Setup guide in
+  `integrations/windows/README.md` (incl. autostart-at-login recipe).
+
+### Fixed
+- **Install documentation drift**: `docs/index.md` quick start used a
+  nonexistent `--query` flag and omitted the required `--db`; "zero native
+  dependencies" claim corrected (ONNX Runtime ships as prebuilt binaries);
+  Node ≥ 18 requirement surfaced in README and docs index; Docker deploy path
+  linked from the Install section.
+- **Stale `docs/cli-reference.md`** regenerated from the parser — ~56 lines of
+  missing flags (`completions`, `--api-key-file`, `--rate-limit`,
+  `--max-concurrency`, `--allowed-host`, `--filter`, `--graph-boost`, …).
+- **Tray startup crash**: `FormWindowState` has no `Hidden` member — the
+  assignment threw and killed the script within a second of launch.
+
 ## [1.0.2] - 2026-08-22
 
 ### Fixed
