@@ -53,7 +53,9 @@ real-model suites, so keeping local runs green is usually enough.
 ## Project tour
 
 A user-facing overview lives in the README ("Architecture & Retrieval
-Pipeline"); an internals guide is planned (#135). The short version:
+Pipeline"); `docs/architecture.md` sketches the storage layout and ranking
+math, and a deeper contributor internals guide (module map, format spec,
+extension points) is tracked as #135. The short version:
 
 | Area | Where | Notes |
 |---|---|---|

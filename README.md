@@ -109,6 +109,9 @@ measurements that shaped its defaults.
 
 ## Install
 
+Requires **Node.js ≥ 18**. Native dependencies ship as prebuilt binaries — no
+compiler toolchain needed on any platform.
+
 Run on demand with `npx` (no install):
 
 ```bash
@@ -130,6 +133,9 @@ cd md-semantic-search
 npm install
 node bin/cli.mjs --help
 ```
+
+For headless server deployments there is a Docker path — see
+[docs/deploy.md](./docs/deploy.md).
 
 ---
 
