@@ -6,6 +6,8 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-30
+
 ### Added
 - **Issue #147** — Persistent citation-first chat sessions: interactive REPL `mdss chat [--session <id>] [--resume]`, multi-turn context carry-over, reproducible source manifests with exact line ranges (`citations ⊆ manifest`), and multi-turn agent conversations via `ask_knowledge_base(sessionId)`.
 - **Issue #146** — MCP Specification (2025-11-25) upgrade: dynamic resources (`mdss://note/{path}`, `mdss://note/{path}?fromLine=…&maxLines=…`, `mdss://vault/{vault}`, `mdss://status`), 5 workflow prompts (`search-and-cite`, `summarize-note`, `compare-notes`, `find-contradictions`, `timeline`), and `structuredContent` across all tool responses with `readOnly`/`idempotent` annotations.
