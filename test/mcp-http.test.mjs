@@ -89,7 +89,7 @@ test('mcp-http: initialize → tools/list → tools/call over Streamable HTTP be
     const names = list.body.result.tools.map((t) => t.name);
     assert.ok(names.includes('search_markdown'), 'search_markdown advertised');
 
-    // tools/call actually searches
+    // tools/call actually searches and returns structuredContent
     const call = await mcpPost(url, {
       jsonrpc: '2.0', id: 4, method: 'tools/call',
       params: { name: 'search_markdown', arguments: { query: 'coffee', k: 3 } },
@@ -97,7 +97,30 @@ test('mcp-http: initialize → tools/list → tools/call over Streamable HTTP be
     assert.equal(call.status, 200);
     const text = call.body.result.content?.[0]?.text || '';
     assert.ok(/coffee/i.test(text), 'tool returned search content');
+    assert.ok(Array.isArray(call.body.result.structuredContent), 'tool returned structuredContent');
     assert.equal(call.body.result.isError ?? false, false);
+
+    // resources/list and resources/read over HTTP
+    const resList = await mcpPost(url, { jsonrpc: '2.0', id: 5, method: 'resources/list' }, sid);
+    assert.equal(resList.status, 200);
+    assert.ok(resList.body.result.resources.some((r) => r.uri.includes('a.md')));
+
+    const resRead = await mcpPost(url, {
+      jsonrpc: '2.0', id: 6, method: 'resources/read', params: { uri: 'mdss://note/a.md' },
+    }, sid);
+    assert.equal(resRead.status, 200);
+    assert.ok(resRead.body.result.contents[0].text.includes('# Coffee'));
+
+    // prompts/list and prompts/get over HTTP
+    const pList = await mcpPost(url, { jsonrpc: '2.0', id: 7, method: 'prompts/list' }, sid);
+    assert.equal(pList.status, 200);
+    assert.ok(pList.body.result.prompts.some((p) => p.name === 'search-and-cite'));
+
+    const pGet = await mcpPost(url, {
+      jsonrpc: '2.0', id: 8, method: 'prompts/get', params: { name: 'summarize-note', arguments: { note: 'a.md' } },
+    }, sid);
+    assert.equal(pGet.status, 200);
+    assert.ok(pGet.body.result.messages[0].content.text.includes('mdss://note/a.md'));
 
     // notifications → 202 empty
     const note = await mcpPost(url, { jsonrpc: '2.0', method: 'notifications/initialized' }, sid);

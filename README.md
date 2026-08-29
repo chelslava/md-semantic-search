@@ -387,8 +387,31 @@ mdss search --db /path/to/your/markdown "how do I rotate the api token" --rerank
 - The reranker is lazy: nothing loads unless `--rerank` is actually requested,
   so searches without it pay zero extra cost.
 
+### 3. Ask & Interactive Multi-turn Chat (`mdss ask`, `mdss chat`)
 
-### 3. Serve (daemon, warm index + model)
+`md-semantic-search` includes a grounded RAG QA engine that operates fully offline by default with zero external dependencies, or connects optionally to local/remote LLMs (Ollama, OpenAI-compatible APIs).
+
+```bash
+# One-shot grounded QA with citations:
+mdss ask --db ./notes "What is the token expiration policy?"
+
+# Multi-turn persistent chat session:
+mdss chat --db ./notes
+
+# Resume the most recent session or a specific session:
+mdss chat --db ./notes --resume
+mdss chat --db ./notes --session my-session-id
+
+# One-shot query into a persistent session:
+mdss chat --db ./notes --session my-session-id "What about database failover?"
+```
+
+- **Offline Extractive Synthesis**: Zero-dependency default extracts salient factual sentences with strict `[file › heading]` source provenance.
+- **Persistent Sessions**: Multi-turn sessions are stored in `<indexDir>/sessions/<id>.json` preserving full conversation turns, retrieved chunk provenance manifests (file, heading, exact line numbers, chunk hashes), and model metadata.
+- **Context Carry-Over**: Follow-up turns re-rank and expand query tokens using prior conversational context.
+- **Interactive REPL Commands**: `/session` (info), `/sources` (manifest of last turn), `/help`, `/exit`.
+
+### 4. Serve (daemon, warm index + model)
 
 ```bash
 mdss serve --db /path/to/your/markdown [--port 8747] [--host 127.0.0.1] [--watch]
@@ -520,10 +543,27 @@ rate-limit gates as `/search`, so remote agents inherit the hardening. stdio
 via `mdss mcp` remains the default transport.
 
 #### Available MCP Tools:
-- **`search_markdown`**: Hybrid semantic vector + BM25 search with optional `path` glob and `tag` filters.
+- **`search_markdown`**: Hybrid semantic vector + BM25 search with optional `path` glob, `tag`, rich `filter`, and `graphBoost`.
 - **`get_chunk`**: Retrieve a specific section by file and heading.
+- **`get_lines`**: Retrieve exact line spans (`fromLine`, `maxLines`) from an indexed Markdown document.
+- **`related_notes`**: Find graph-connected (outgoing, backlinks, 2-hop) and semantically related notes for a document.
 - **`list_files`**: List indexed Markdown files with chunk counts.
 - **`index_status`**: Inspect index health, chunk counts, and model metadata.
+- **`ask_knowledge_base`**: Grounded direct Q&A synthesis with citations.
+- *All tools return `structuredContent` alongside text and include `readOnly: true, idempotent: true` annotations.*
+
+#### Available MCP Resources & Templates:
+- **`mdss://note/{path}`**: Read full content of an indexed Markdown document.
+- **`mdss://note/{path}?fromLine=1&maxLines=50`**: Addressable line-span slices of notes.
+- **`mdss://vault/{vault}`**: List all indexed notes within a vault.
+- **`mdss://status`**: Live index status and chunk count statistics.
+
+#### Available MCP Prompts:
+- **`search-and-cite`**: Synthesizes a grounded answer referencing `mdss://note/{path}` resource URIs.
+- **`summarize-note`**: Produces a structured summary of core concepts and linked notes.
+- **`compare-notes`**: Identifies agreements, divergences, and synergies across two notes.
+- **`find-contradictions`**: Audits notes for conflicting statements or outdated ADRs.
+- **`timeline`**: Builds a chronological milestone / event timeline from notes.
 
 #### Claude Desktop Configuration:
 Add to your `claude_desktop_config.json`:

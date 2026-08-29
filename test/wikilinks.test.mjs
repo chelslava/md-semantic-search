@@ -7,6 +7,7 @@ import {
   getRelatedNotes,
   computePageRank,
   expandGraphNeighborhood,
+  findRelatedNotes,
 } from '../dist/wikilinks.js';
 
 test('extractLinks parses Obsidian wikilinks and relative Markdown links', () => {
@@ -121,4 +122,76 @@ test('expandGraphNeighborhood propagates relevance with decay over 2 hops', () =
   // 3-hop is beyond maxDepth 2
   assert.equal(propagated.has('hop3.md'), false);
 });
+
+test('findRelatedNotes finds backlinks, outgoing links, 2-hop and semantic relations (issue #141)', () => {
+  const loaded = {
+    index: {
+      chunks: [
+        {
+          file: 'ideas.md',
+          title: 'Project Ideas',
+          text: 'We explore new concepts. See [[Architecture]] and [[Database]].',
+          vec: [1, 0, 0, 0],
+        },
+        {
+          file: 'arch.md',
+          title: 'Architecture',
+          text: 'Core architecture overview. Backlinks to [[ideas.md]]. Also references [[deployment.md]].',
+          vec: [0.9, 0.1, 0, 0],
+        },
+        {
+          file: 'db.md',
+          title: 'Database',
+          text: 'Database schema and tables.',
+          vec: [0, 1, 0, 0],
+        },
+        {
+          file: 'deployment.md',
+          title: 'Deployment',
+          text: 'Production Kubernetes and Docker setup.',
+          vec: [0, 0, 1, 0],
+        },
+        {
+          file: 'unlinked-concept.md',
+          title: 'Unlinked Idea',
+          text: 'Conceptual project thoughts without direct links.',
+          vec: [0.95, 0.05, 0, 0],
+        },
+      ],
+    },
+  };
+
+  // 1. Query for "ideas.md"
+  const rel = findRelatedNotes({ loaded, target: 'ideas.md', k: 5, semantic: true });
+  assert.equal(rel.resolvedFile, 'ideas.md');
+  assert.ok(rel.results.length >= 3);
+
+  // Architecture is bi-directional (ideas -> arch and arch -> ideas)
+  const archHit = rel.results.find((r) => r.file === 'arch.md');
+  assert.ok(archHit);
+  assert.ok(archHit.reason.includes('bi-directional'));
+
+  // Database is outgoing (ideas -> db)
+  const dbHit = rel.results.find((r) => r.file === 'db.md');
+  assert.ok(dbHit);
+  assert.ok(dbHit.reason.includes('outgoing'));
+
+  // Deployment is 2-hop (ideas -> arch -> deployment)
+  const deployHit = rel.results.find((r) => r.file === 'deployment.md');
+  assert.ok(deployHit);
+  assert.ok(deployHit.reason.includes('2-hop'));
+
+  // unlinked-concept has high cosine similarity (0.95 vs [1,0,0,0])
+  const unlinkedHit = rel.results.find((r) => r.file === 'unlinked-concept.md');
+  assert.ok(unlinkedHit);
+  assert.ok(unlinkedHit.reason.includes('semantic'));
+
+  // 2. Note lookup by title
+  const relTitle = findRelatedNotes({ loaded, target: 'Architecture', k: 5 });
+  assert.equal(relTitle.resolvedFile, 'arch.md');
+
+  // 3. Unknown note throws clear error
+  assert.throws(() => findRelatedNotes({ loaded, target: 'NonExistent' }), /Note not found/);
+});
+
 

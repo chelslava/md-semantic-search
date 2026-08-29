@@ -760,3 +760,67 @@ test('cli: check and stats reject invalid current format and vector storage', ()
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('cli: mdss related returns related notes and supports --json (issue #141)', () => {
+  const dir = tempDir('cli-related');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Note A\nLinks to [[Note B]].\n');
+    fs.writeFileSync(path.join(dir, 'b.md'), '# Note B\nLinks back to [[Note A]].\n');
+    const vecB64 = Buffer.alloc(768 * 4).toString('base64');
+    writeFakeIndex(dir, {
+      chunks: [
+        { file: 'a.md', title: 'Note A', heading: 'Note A', headingPath: ['Note A'], text: '# Note A\nLinks to [[Note B]].', chunkHash: 'ha', vec: vecB64 },
+        { file: 'b.md', title: 'Note B', heading: 'Note B', headingPath: ['Note B'], text: '# Note B\nLinks back to [[Note A]].', chunkHash: 'hb', vec: vecB64 },
+      ],
+    });
+
+    // 1. Plain human output
+    const res = runCli(['related', '--db', dir, 'Note A']);
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /Related notes for "Note A"/);
+    assert.match(res.stdout, /b\.md/);
+
+    // 2. JSON output
+    const jsonRes = runCli(['related', '--db', dir, 'Note A', '--json']);
+    assert.equal(jsonRes.status, 0, jsonRes.stderr);
+    const json = JSON.parse(jsonRes.stdout);
+    assert.equal(json.resolvedFile, 'a.md');
+    assert.ok(json.results.some((r) => r.file === 'b.md'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('cli: mdss chat executes one-shot turn and persists session (issue #147)', () => {
+  const dir = tempDir('cli-chat');
+  try {
+    fs.writeFileSync(path.join(dir, 'doc.md'), '# Architecture\nWe use Redis for session caching.\n');
+    const vecB64 = Buffer.alloc(768 * 4).toString('base64');
+    writeFakeIndex(dir, {
+      chunkCount: 1,
+      lexical: { format: 'bm25-v1', documentLengths: [2], postings: { redis: [[0, 1]], session: [[0, 1]] } },
+      chunks: [
+        { file: 'doc.md', title: 'Architecture', heading: 'Architecture', headingPath: ['Architecture'], text: 'We use Redis for session caching.', chunkHash: 'hd', vec: vecB64 },
+      ],
+    });
+
+    const res = runCli(['chat', '--db', dir, '--session', 'cli-sess-1', '--json', 'What is used for session caching?']);
+    assert.equal(res.status, 0, res.stderr);
+    const json = JSON.parse(res.stdout);
+    assert.equal(json.session.id, 'cli-sess-1');
+    assert.equal(json.session.turns.length, 1);
+    assert.ok(json.answer);
+    assert.ok(Array.isArray(json.manifest));
+
+    // Verify session file was written to disk
+    const sessionFile = path.join(dir, '.mdss', 'sessions', 'cli-sess-1.json');
+    assert.ok(fs.existsSync(sessionFile), 'session file exists on disk');
+    const diskSession = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+    assert.equal(diskSession.turns.length, 1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+

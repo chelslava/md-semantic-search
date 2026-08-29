@@ -64,6 +64,7 @@ export const FLAGS: FlagSpec[] = [
   { name: '--index-dir', kind: 'dir' },
   { name: '--cache-dir', kind: 'dir' },
   { name: '--model', kind: 'value' },
+  { name: '--dimensions', alias: '--dim', kind: 'number' },
   { name: '--k', kind: 'number' },
   { name: '--max-per-file', kind: 'number' },
   { name: '--max-per-doc', kind: 'number' },
@@ -89,6 +90,10 @@ export const FLAGS: FlagSpec[] = [
   { name: '--graph-boost', kind: 'number' },
   { name: '--filter', kind: 'value' },
   { name: '--quantize', kind: 'value' },
+  { name: '--direction', kind: 'value' },
+  { name: '--no-semantic', kind: 'flag' },
+  { name: '--session', kind: 'value' },
+  { name: '--resume', kind: 'flag' },
   { name: '--llm-endpoint', kind: 'value' },
   { name: '--llm-model', kind: 'value' },
   { name: '--system-prompt', kind: 'value' },
@@ -96,7 +101,7 @@ export const FLAGS: FlagSpec[] = [
 
 export const COMMANDS = [
   'index', 'stats', 'check', 'doctor', 'export', 'search',
-  'ask', 'tui', 'serve', 'mcp', 'models', 'completions',
+  'ask', 'chat', 'tui', 'serve', 'mcp', 'models', 'completions', 'related',
 ];
 
 export const COMPLETION_SHELLS = ['bash', 'zsh', 'fish', 'powershell'] as const;

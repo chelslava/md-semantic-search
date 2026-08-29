@@ -179,3 +179,82 @@ test('ivf: buildIndex and search with ann option and graceful fallback', async (
     safeRm(dir);
   }
 });
+
+test('ivf: deterministic k-means++ seeding produces bit-for-bit identical IVF payloads (issue #139)', () => {
+  const dim = 16;
+  const numVectors = 60;
+  const vectors = Array.from({ length: numVectors }, () => randomNormalizedVector(dim));
+
+  let metrics1;
+  const ivf1 = trainIVF(vectors, { k: 6, maxIterations: 10, seeding: 'kmeans++', seed: 12345, onMetric: (m) => { metrics1 = m; } });
+  const ivf2 = trainIVF(vectors, { k: 6, maxIterations: 10, seeding: 'kmeans++', seed: 12345 });
+
+  assert.deepEqual(Array.from(ivf1.centroids), Array.from(ivf2.centroids));
+  assert.deepEqual(ivf1.clusters, ivf2.clusters);
+  assert.ok(metrics1 !== undefined);
+  assert.equal(typeof metrics1.emptyClusters, 'number');
+  assert.ok(metrics1.iterations >= 1);
+
+  const ser1 = serializeIVF(ivf1);
+  const ser2 = serializeIVF(ivf2);
+  assert.equal(ser1.centroids, ser2.centroids);
+});
+
+test('ivf: deserializeIVF rejects malformed, truncated, and corrupt payloads (issue #138)', () => {
+  assert.throws(() => deserializeIVF(null), /invalid IVF payload.*expected JSON object/i);
+  assert.throws(() => deserializeIVF([]), /invalid IVF payload.*expected JSON object/i);
+  assert.throws(() => deserializeIVF({ dim: 0, k: 5 }), /invalid dim or k/i);
+  assert.throws(() => deserializeIVF({ dim: 8, k: -1 }), /invalid dim or k/i);
+  assert.throws(() => deserializeIVF({ dim: 8, k: 2, centroids: '' }), /centroids must be a base64 string/i);
+
+  // Truncated / misaligned centroid buffer (not k * dim * 4 bytes)
+  const badCentroidsBuf = Buffer.alloc(10); // 10 is not a multiple of 4, and not 2 * 4 * 4 = 32
+  assert.throws(
+    () => deserializeIVF({ dim: 4, k: 2, centroids: badCentroidsBuf.toString('base64'), clusters: [[], []] }),
+    /centroids buffer has 10 bytes, expected 32 bytes/i
+  );
+
+  // Valid buffer with 2 * 4 floats
+  const validBuf = Buffer.alloc(2 * 4 * 4);
+  const f32 = new Float32Array(validBuf.buffer, validBuf.byteOffset, 8);
+  f32.fill(0.5);
+
+  // Clusters length mismatch
+  assert.throws(
+    () => deserializeIVF({ dim: 4, k: 2, centroids: validBuf.toString('base64'), clusters: [[]] }),
+    /clusters array has length 1, expected 2/i
+  );
+
+  // Non-array cluster item
+  assert.throws(
+    () => deserializeIVF({ dim: 4, k: 2, centroids: validBuf.toString('base64'), clusters: ['bad', []] }),
+    /cluster 0 must be an array/i
+  );
+
+  // Non-integer index in cluster
+  assert.throws(
+    () => deserializeIVF({ dim: 4, k: 2, centroids: validBuf.toString('base64'), clusters: [['abc'], []] }),
+    /cluster 0 contains non-integer index/i
+  );
+
+  // Out of range chunk index
+  assert.throws(
+    () => deserializeIVF({ dim: 4, k: 2, centroids: validBuf.toString('base64'), clusters: [[100], []] }, 10),
+    /chunk index 100 out of range/i
+  );
+
+  // Duplicate chunk index within same cluster
+  assert.throws(
+    () => deserializeIVF({ dim: 4, k: 2, centroids: validBuf.toString('base64'), clusters: [[1, 1], []] }),
+    /duplicate chunk index 1 in cluster 0/i
+  );
+
+  // Valid deserialization
+  const valid = deserializeIVF(
+    { dim: 4, k: 2, centroids: validBuf.toString('base64'), clusters: [[0, 1], [2, 3]] },
+    10
+  );
+  assert.equal(valid.dim, 4);
+  assert.equal(valid.k, 2);
+  assert.equal(valid.clusters.length, 2);
+});

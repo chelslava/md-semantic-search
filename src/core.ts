@@ -300,6 +300,30 @@ export function prepareEmbeddingRequest(
   };
 }
 
+export function truncateAndNormalizeVector(
+  vec: number[] | Float32Array,
+  targetDim: number,
+  normalize: boolean = true
+): number[] {
+  const len = Math.min(vec.length, targetDim);
+  const out = new Array<number>(len);
+  let norm = 0;
+  for (let i = 0; i < len; i++) {
+    const val = vec[i];
+    out[i] = val;
+    norm += val * val;
+  }
+  if (normalize) {
+    norm = Math.sqrt(norm);
+    if (norm > 0) {
+      for (let i = 0; i < len; i++) {
+        out[i] /= norm;
+      }
+    }
+  }
+  return out;
+}
+
 export async function embed(
   texts: string[],
   kind: 'query' | 'passage',
@@ -311,7 +335,13 @@ export async function embed(
   const ext = await getExtractor(model, cacheDir, offline, retryOpts);
   const { input, options } = prepareEmbeddingRequest(model, texts, kind);
   const out = await ext(input, options);
-  return out.tolist();
+  const list: number[][] = out.tolist();
+  const targetDim = model.dim;
+  if (targetDim && list.length > 0 && list[0].length > targetDim) {
+    const doNorm = model.normalize !== false;
+    return list.map((vec) => truncateAndNormalizeVector(vec, targetDim, doNorm));
+  }
+  return list;
 }
 
 export function cosine(
@@ -578,3 +608,106 @@ export function parseFile(absPath: string, dbDir: string, maxChunk?: number, raw
     };
   });
 }
+
+export interface GetDocLinesOptions {
+  file: string;
+  fromLine?: number;
+  maxLines?: number;
+  dbDir?: string;
+  chunks?: Array<{ file: string; text: string; startLine?: number; endLine?: number }>;
+}
+
+export interface GetDocLinesResult {
+  file: string;
+  fromLine: number;
+  toLine: number;
+  lineCount: number;
+  totalLines: number;
+  text: string;
+}
+
+/**
+ * Line-range retrieval helper (issue #140).
+ * Retrieves an exact line span from disk or fallback chunk data with EOF clamping.
+ */
+export function getDocLines(opts: GetDocLinesOptions): GetDocLinesResult {
+  const { file, fromLine = 1, maxLines, dbDir, chunks } = opts;
+  if (!file || typeof file !== 'string') {
+    throw new Error('getDocLines: "file" parameter is required');
+  }
+
+  const normalizedFile = file.split(/[/\\]/).join('/');
+  let rawContent: string | null = null;
+
+  if (dbDir) {
+    const candidatePath = path.resolve(dbDir, file);
+    try {
+      assertSafePath(candidatePath, [dbDir]);
+      if (fs.existsSync(candidatePath) && fs.statSync(candidatePath).isFile()) {
+        rawContent = fs.readFileSync(candidatePath, 'utf8');
+      }
+    } catch (e: any) {
+      if (e.message?.includes('path traversal guard')) throw e;
+    }
+  }
+
+  if (rawContent === null && Array.isArray(chunks)) {
+    const matchingChunks = chunks.filter(
+      (c) => c.file === file || c.file === normalizedFile || c.file.split(/[/\\]/).join('/') === normalizedFile
+    );
+    if (matchingChunks.length > 0) {
+      matchingChunks.sort((a, b) => (a.startLine || 0) - (b.startLine || 0));
+      const maxEnd = Math.max(...matchingChunks.map((c) => c.endLine || c.startLine || 1));
+      const lineMap = new Array(maxEnd).fill('');
+      for (const ch of matchingChunks) {
+        const start = (ch.startLine || 1) - 1;
+        const chunkLines = (ch.text || '').split(/\r?\n/);
+        for (let i = 0; i < chunkLines.length; i++) {
+          if (start + i < lineMap.length) {
+            lineMap[start + i] = chunkLines[i];
+          }
+        }
+      }
+      rawContent = lineMap.join('\n');
+    }
+  }
+
+  if (rawContent === null) {
+    throw new Error(`File not found: ${file}`);
+  }
+
+  const lines = rawContent.split(/\r?\n/);
+  const totalLines = lines.length;
+
+  let from = typeof fromLine === 'number' && !isNaN(fromLine) ? Math.floor(fromLine) : 1;
+  if (from < 1) from = 1;
+
+  let selected: string[];
+  let to: number;
+
+  if (totalLines === 0) {
+    from = 1;
+    to = 0;
+    selected = [];
+  } else if (from > totalLines) {
+    from = totalLines;
+    to = totalLines;
+    selected = [lines[totalLines - 1]];
+  } else {
+    const count = typeof maxLines === 'number' && !isNaN(maxLines) && maxLines > 0
+      ? Math.min(Math.floor(maxLines), totalLines - from + 1)
+      : totalLines - from + 1;
+    to = from + count - 1;
+    selected = lines.slice(from - 1, to);
+  }
+
+  return {
+    file: normalizedFile,
+    fromLine: from,
+    toLine: to,
+    lineCount: selected.length,
+    totalLines,
+    text: selected.join('\n'),
+  };
+}
+

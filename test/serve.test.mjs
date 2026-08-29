@@ -803,3 +803,95 @@ test('serve: concurrency cap queues searches; queue overflow sheds with 503 (iss
     safeRm(dir);
   }
 });
+
+test('serve: GET /doc retrieves exact line span with EOF clamping (issue #140)', async () => {
+  const dir = tempDir('serve-doc');
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(
+      path.join(dir, 'manual.md'),
+      '# Manual\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\n'
+    );
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const srv = await startServe({ indexDir: idx, cacheDir: dir, embedFn: fakeEmbed });
+    try {
+      // 1. Missing file param -> 400
+      const noFile = await fetch(`${srv.url}/doc`, { headers: { connection: 'close' } });
+      assert.equal(noFile.status, 400);
+
+      // 2. Normal span fromLine=2, maxLines=3
+      const spanRes = await fetch(`${srv.url}/doc?file=manual.md&fromLine=2&maxLines=3`, { headers: { connection: 'close' } });
+      assert.equal(spanRes.status, 200);
+      const span = await spanRes.json();
+      assert.equal(span.file, 'manual.md');
+      assert.equal(span.fromLine, 2);
+      assert.equal(span.toLine, 4);
+      assert.equal(span.lineCount, 3);
+      assert.equal(span.text, 'Line 2\nLine 3\nLine 4');
+
+      // 3. Beyond EOF clamps to last line
+      const eofRes = await fetch(`${srv.url}/doc?file=manual.md&fromLine=100`, { headers: { connection: 'close' } });
+      assert.equal(eofRes.status, 200);
+      const eof = await eofRes.json();
+      assert.equal(eof.fromLine, eof.totalLines);
+      assert.equal(eof.toLine, eof.totalLines);
+
+      // 4. Non-existent file -> 404
+      const missing = await fetch(`${srv.url}/doc?file=not-found.md`, { headers: { connection: 'close' } });
+      assert.equal(missing.status, 404);
+    } finally {
+      await srv.close();
+    }
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('serve: POST /related & GET /related return ranked related notes (issue #141)', async () => {
+  const dir = tempDir('serve-related');
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'core.md'), '# Core\nCheck out the [[plugins.md]] architecture and [[api.md]] documentation.\n');
+    fs.writeFileSync(path.join(dir, 'plugins.md'), '# Plugins\nPlugin module that extends the [[core.md]] framework with hooks.\n');
+    fs.writeFileSync(path.join(dir, 'api.md'), '# API\nREST API and endpoints documentation for all services.\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const srv = await startServe({ indexDir: idx, cacheDir: dir, embedFn: fakeEmbed });
+    try {
+      // 1. POST /related
+      const postRes = await fetch(`${srv.url}/related`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', connection: 'close' },
+        body: JSON.stringify({ file: 'core.md', k: 5 }),
+      });
+      assert.equal(postRes.status, 200);
+      const postData = await postRes.json();
+      assert.equal(postData.resolvedFile, 'core.md');
+      assert.ok(postData.results.length >= 2);
+
+      // plugins.md is bi-directional
+      const pluginsHit = postData.results.find((r) => r.file === 'plugins.md');
+      assert.ok(pluginsHit);
+      assert.ok(pluginsHit.reason.includes('bi-directional'));
+
+      // 2. GET /related
+      const getRes = await fetch(`${srv.url}/related?file=core.md&k=5`, {
+        headers: { connection: 'close' },
+      });
+      assert.equal(getRes.status, 200);
+      const getData = await getRes.json();
+      assert.equal(getData.resolvedFile, 'core.md');
+
+      // 3. 404 for unknown note
+      const missingRes = await fetch(`${srv.url}/related?file=unknown-note.md`, {
+        headers: { connection: 'close' },
+      });
+      assert.equal(missingRes.status, 404);
+    } finally {
+      await srv.close();
+    }
+  } finally {
+    safeRm(dir);
+  }
+});
+
+

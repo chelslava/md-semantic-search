@@ -7,16 +7,23 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
-- **Issue #135** — `ARCHITECTURE.md`: contributor internals guide — module map of
-  all 31 `src/*.ts` files with covering-test column, data-flow diagrams (index
-  build / search path / serve --watch / MCP transports), on-disk format spec
-  (`vectors.json` v4 envelope, `vectors.bin` + sha256 sidecars, `ivf.json`,
-  `.checkpoint.json`, `.mdss.lock`) and extension-point checklists.
-- **Issue #133** — Contributor onboarding: `CONTRIBUTING.md` (dev setup, module
-  tour, ground rules, PR checklist), `CODE_OF_CONDUCT.md` (Contributor Covenant
-  v2.1), GitHub issue templates (`bug_report`, `feature_request`) and a pull-
-  request template. Open starter issues are now curated under the
-  `good first issue` label.
+- **Issue #147** — Persistent citation-first chat sessions: interactive REPL `mdss chat [--session <id>] [--resume]`, multi-turn context carry-over, reproducible source manifests with exact line ranges (`citations ⊆ manifest`), and multi-turn agent conversations via `ask_knowledge_base(sessionId)`.
+- **Issue #146** — MCP Specification (2025-11-25) upgrade: dynamic resources (`mdss://note/{path}`, `mdss://note/{path}?fromLine=…&maxLines=…`, `mdss://vault/{vault}`, `mdss://status`), 5 workflow prompts (`search-and-cite`, `summarize-note`, `compare-notes`, `find-contradictions`, `timeline`), and `structuredContent` across all tool responses with `readOnly`/`idempotent` annotations.
+- **Issue #145** — Obsidian related notes panel: dedicated side-panel tab consuming `/related`, active note tracking with debounced `file-open` event listener, connection failure cards, and relationship badges (`outgoing link`, `backlink`, `bi-directional link`, `2-hop co-citation`, `semantic similarity`).
+- **Issue #144** — Interactive TUI filter DSL parity: in-session `Ctrl+F` filter editing with resilient error recovery, header badges for active filter expressions, `--since` cutoffs, and tag constraints.
+- **Issue #143** — MRL dimension selection (`--dimensions <n>` / `--dim <n>`): truncated vector storage and dot-product acceleration for Matryoshka models (`qwen3-embedding-0.6b` and `bge-m3`), $L_2$ unit re-normalization, adapter fingerprint invalidation, and `bench/mrl-recall.mjs`.
+- **Issue #142** — Config trust policy for repo-checked-in `.mdssrc.json`: strict execution/network boundary rules in `CONTRIBUTING.md` and `SECURITY.md`, machine-auditable `trustTiers` (`local-safe`, `network`, `exec`, `unknown`) in `mdss check --json`.
+- **Issue #141** — Related Notes Graph API: `findRelatedNotes` algorithm combining 1-hop, 2-hop co-citations, and centroid semantic cosine similarity, CLI command `mdss related`, HTTP endpoints `POST /related` and `GET /related`, and MCP tool `related_notes`.
+- **Issue #140** — Line-range retrieval: `getDocLines` helper in `src/core.ts` with disk-read and chunk-fallback reconstruction, HTTP endpoint `GET /doc`, and MCP tool `get_lines`.
+- **Issue #139** — Deterministic k-means++ centroid seeding: Mulberry32 PRNG $D^2$-weighted initial cluster selection to prevent centroid collapse on adjacent correlated notes, empty cluster tracking (`onMetric`), and `bench/ann-recall.mjs` recall quality gate.
+- **Issue #137** — Obsidian search view result parity: safe DOM term highlighting (`matches[]`), full arrow key navigation, relevance score bars, connection diagnostics, and daemon startup error cards.
+- **Issue #136** — Obsidian plugin test suite: pure helper extraction (`helpers.mjs`, `helpers.d.ts`) and unit tests in `test/obsidian-plugin.test.mjs`.
+- **Issue #135** — `ARCHITECTURE.md`: contributor internals guide — module map of all 31 `src/*.ts` files, data-flow diagrams, on-disk format specs, and extension checklists.
+- **Issue #133** — Contributor onboarding: `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, GitHub issue & PR templates.
+
+### Fixed
+- **Issue #134** — Cancel stale in-flight `/search` requests: `AbortController` cancellation and monotonic sequence counter guards in Web UI and Obsidian plugin.
+- **Issue #138** — Type safety at rerank/IVF boundaries: replaced untyped `any` with strict structural interfaces in `src/rerank.ts`, added finite tensor validation, and hardened `deserializeIVF` against malformed payloads, misaligned centroid buffers, and duplicate/out-of-bound cluster indices.
 
 ## [1.0.3] - 2026-08-24
 

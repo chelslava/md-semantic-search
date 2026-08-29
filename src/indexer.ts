@@ -156,6 +156,7 @@ export interface BuildIndexOptions {
   indexDir: string;
   cacheDir: string;
   modelName: string;
+  dimensions?: number;
   ignore?: string[];
   offline?: boolean;
   log?: (s: string) => void;
@@ -187,6 +188,7 @@ export async function buildIndex(opts: BuildIndexOptions): Promise<BuildIndexRes
     indexDir,
     cacheDir,
     modelName,
+    dimensions,
     ignore = [],
     log = () => {},
     offline = false,
@@ -199,9 +201,9 @@ export async function buildIndex(opts: BuildIndexOptions): Promise<BuildIndexRes
     quantize = 'fp32',
   } = opts;
   if (_lockHeld)
-    return _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn, maxRetries, onProgress, workers, ann, quantize });
+    return _buildIndexInner({ db, indexDir, cacheDir, modelName, dimensions, ignore, log, offline, embedFn, maxRetries, onProgress, workers, ann, quantize });
   return withIndexLock(indexDir, () =>
-    _buildIndexInner({ db, indexDir, cacheDir, modelName, ignore, log, offline, embedFn, maxRetries, onProgress, workers, ann, quantize })
+    _buildIndexInner({ db, indexDir, cacheDir, modelName, dimensions, ignore, log, offline, embedFn, maxRetries, onProgress, workers, ann, quantize })
   );
 }
 
@@ -210,6 +212,7 @@ async function _buildIndexInner({
   indexDir,
   cacheDir,
   modelName,
+  dimensions,
   ignore = [],
   log = () => {},
   offline = false,
@@ -219,13 +222,14 @@ async function _buildIndexInner({
   workers = 1,
   ann = false,
   quantize = 'fp32',
-}: Required<Omit<BuildIndexOptions, '_lockHeld' | 'onProgress' | 'workers' | 'ann' | 'quantize'>> & {
+}: Required<Omit<BuildIndexOptions, '_lockHeld' | 'onProgress' | 'workers' | 'ann' | 'quantize' | 'dimensions'>> & {
+  dimensions?: number;
   onProgress?: (done: number, total: number, chunksPerSec: number) => void;
   workers?: number;
   ann?: boolean;
   quantize?: 'fp32' | 'int8';
 }): Promise<BuildIndexResult> {
-  const model = resolveModel(modelName);
+  const model = resolveModel(modelName, dimensions);
   const modelIdentity = `${model.id}@${model.revision || 'main'}`;
   const adapterFingerprint = embeddingAdapterFingerprint(model);
   const legacyAdapterFingerprint = legacyEmbeddingAdapterFingerprint(model);

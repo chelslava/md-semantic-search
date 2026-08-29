@@ -16,11 +16,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { buildIndex } from '../dist/indexer.js';
-import { search } from '../dist/search.js';
+import { loadIndex, search } from '../dist/search.js';
 import { searchFederated } from '../dist/federation.js';
 import { createServe, DEFAULT_PORT, DEFAULT_HOST, isLoopbackHost, validateBindSecurity, loadApiKeyFile } from '../dist/serve.js';
 import { MODELS, DEFAULT_MODEL, resolveModel } from '../dist/models.js';
 import { decodeVec, walkMarkdown, SCHEMA_VERSION, assertSafePath, setDownloadProgressListener } from '../dist/core.js';
+import { findRelatedNotes } from '../dist/wikilinks.js';
 import { DownloadProgressAggregator } from '../dist/download-progress.js';
 import { generateCompletion, COMPLETION_SHELLS } from '../dist/completions.js';
 import { openHit, resolveOpenCommand } from '../dist/open.js';
@@ -93,6 +94,7 @@ function parseArgs(argv) {
     else if (a === '--watch-interval') opts.watchInterval = nextInt(argv, ++i, a);
     else if (a === '--rate-limit') opts.rateLimit = nextNonNegInt(argv, ++i, a);
     else if (a === '--max-concurrency') opts.maxConcurrency = nextNonNegInt(argv, ++i, a);
+    else if (a === '--dimensions' || a === '--dim') opts.dimensions = nextInt(argv, ++i, a);
     else if (a === '--since') opts.since = nextValue(argv, ++i, a);
     else if (a === '--path') opts.path.push(nextValue(argv, ++i, a));
     else if (a === '--ignore') opts.ignore.push(nextValue(argv, ++i, a));
@@ -108,6 +110,8 @@ function parseArgs(argv) {
     else if (a === '--canonical') opts.canonical = true;
     else if (a === '--graph-boost') opts.graphBoost = nextFloat(argv, ++i, a);
     else if (a === '--filter') opts.filter = nextValue(argv, ++i, a);
+    else if (a === '--direction') opts.direction = nextValue(argv, ++i, a);
+    else if (a === '--no-semantic') opts.noSemantic = true;
     else if (a === '--quantize') opts.quantize = nextValue(argv, ++i, a);
     else if (a === '--rag') opts.rag = true;
     else if (a === '--auto-tag') opts.autoTag = true;
@@ -115,6 +119,8 @@ function parseArgs(argv) {
     else if (a === '--llm-endpoint') opts.llmEndpoint = nextValue(argv, ++i, a);
     else if (a === '--llm-model') opts.llmModel = nextValue(argv, ++i, a);
     else if (a === '--system-prompt') opts.systemPrompt = nextValue(argv, ++i, a);
+    else if (a === '--session') opts.session = nextValue(argv, ++i, a);
+    else if (a === '--resume') opts.resume = true;
     else if (a === '--open') {
       // `--open` opens the top hit; `--open N` opens the Nth hit (issue #110).
       const next = argv[i + 1];
@@ -202,9 +208,10 @@ const KNOWN_CONFIG_KEYS = new Set([
   'healthPublic', 'health-public', 'watch', 'watchInterval', 'watch-interval',
   'watchDelay', 'watch-delay', 'offline', 'rerank', 'semantic', 'tag', 'project', 'type', 'status', 'canonical',
   'watchDebug', 'watch-debug',
-  'format', 'noVectors', 'no-vectors', 'output', 'workers', 'ann', 'nprobe', 'graphBoost', 'graph-boost', 'filter', 'quantize',
+  'format', 'noVectors', 'no-vectors', 'output', 'workers', 'dimensions', 'dim', 'ann', 'nprobe', 'graphBoost', 'graph-boost', 'filter', 'quantize',
   'vault', 'vaults', 'rag', 'autoTag', 'auto-tag', 'autoSummarize', 'auto-summarize',
   'llmEndpoint', 'llm-endpoint', 'llmModel', 'llm-model', 'systemPrompt', 'system-prompt',
+  'session', 'resume',
   'completions', 'open', 'dry-run', 'fix', 'yes', 'no-ui', 'noUi',
   'noQueryCache', 'no-query-cache',
   'mcp',
@@ -212,6 +219,27 @@ const KNOWN_CONFIG_KEYS = new Set([
   'embedderModel', 'embedderBaseUrl', 'embedderKeyFile',
   'expand', 'expandPassages', 'expand-passages', 'llm-endpoint', 'llmEndpoint'
 ]);
+
+const CONFIG_NETWORK_KEYS = new Set([
+  'port', 'host', 'apiKey', 'api-key', 'apiKeyFile', 'api-key-file',
+  'allowUnsecured', 'allow-unsecured', 'allowedHost', 'allowed-host',
+  'allowedHosts', 'allowed-hosts', 'corsOrigin', 'cors-origin',
+  'rateLimit', 'rate-limit', 'maxConcurrency', 'max-concurrency',
+  'healthPublic', 'health-public', 'mcp', 'llmEndpoint', 'llm-endpoint',
+  'llmModel', 'llm-model', 'embedder', 'embedder-model', 'embedder-base-url',
+  'embedder-key-file', 'embedderModel', 'embedderBaseUrl', 'embedderKeyFile'
+]);
+
+const CONFIG_EXEC_KEYS = new Set([
+  // No execution surfaces permitted in local repo config
+]);
+
+function getConfigKeyTrustTier(key) {
+  if (CONFIG_EXEC_KEYS.has(key)) return 'exec';
+  if (CONFIG_NETWORK_KEYS.has(key)) return 'network';
+  if (KNOWN_CONFIG_KEYS.has(key)) return 'local-safe';
+  return 'unknown';
+}
 
 function findConfigFile(explicitPath) {
   if (explicitPath) {
@@ -252,22 +280,26 @@ function findConfigFile(explicitPath) {
 }
 
 function loadConfigFile(configPath) {
-  if (!configPath) return { config: {}, path: null, unknownKeys: [], error: null };
+  if (!configPath) return { config: {}, path: null, unknownKeys: [], trustTiers: {}, error: null };
   try {
     const raw = fs.readFileSync(configPath, 'utf8');
     const parsed = JSON.parse(raw);
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return { config: {}, path: configPath, unknownKeys: [], error: `Config at ${configPath} must be a JSON object` };
+      return { config: {}, path: configPath, unknownKeys: [], trustTiers: {}, error: `Config at ${configPath} must be a JSON object` };
     }
     const unknownKeys = Object.keys(parsed).filter(k => !KNOWN_CONFIG_KEYS.has(k));
+    const trustTiers = {};
+    for (const k of Object.keys(parsed)) {
+      trustTiers[k] = getConfigKeyTrustTier(k);
+    }
     const normalized = {};
     for (const [k, v] of Object.entries(parsed)) {
       const camel = k.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
       normalized[camel] = v;
     }
-    return { config: normalized, path: configPath, unknownKeys, error: null };
+    return { config: normalized, path: configPath, unknownKeys, trustTiers, error: null };
   } catch (e) {
-    return { config: {}, path: configPath, unknownKeys: [], error: `Failed to parse config at ${configPath}: ${e.message}` };
+    return { config: {}, path: configPath, unknownKeys: [], trustTiers: {}, error: `Failed to parse config at ${configPath}: ${e.message}` };
   }
 }
 
@@ -328,6 +360,9 @@ Usage:
   mdss check  --db <dir> [--json]             Diagnose index/db/model cache (alias: doctor)
   mdss export --db <dir> [options]            Export index to JSONL / CSV / Parquet
   mdss search --db <dir> [options] "query"    Search by meaning
+  mdss related --db <dir> [options] <note>    Find related notes via graph links and similarity
+  mdss ask    --db <dir> [options] "question" Grounded QA synthesis with citations
+  mdss chat   --db <dir> [options]            Multi-turn persistent chat with citation manifest
   mdss serve  --db <dir> [--port <n>] [--host <ip>] [--watch]  Daemon: warm model + index
   mdss mcp    --db <dir> [--list-tools]       Start MCP server over stdio for LLM agents / IDEs
   mdss models                                  List available models
@@ -339,6 +374,7 @@ Options:
   --index-dir <dir>   Where to store the index (default: <db>/.mdss).
   --cache-dir <dir>   Model cache dir (default: ~/.cache/mdss, or MDSS_CACHE_DIR).
   --model <name|id>   Embedding model (default: ${DEFAULT_MODEL}). See \`mdss models\`.
+  --dimensions <n>    Truncate vector dimensions for Matryoshka/MRL models (alias: --dim).
   --workers <n>       Number of parallel batch workers for indexing (default: 1).
   --format <fmt>      Export format: jsonl (default), csv, parquet (export).
   --no-vectors        Omit vector embeddings from export (export).
@@ -499,6 +535,7 @@ async function cmdIndex(opts) {
     r = await buildIndex({
       db, indexDir, cacheDir,
       modelName: embedderOverrides.modelName || opts.model || DEFAULT_MODEL,
+      dimensions: opts.dimensions,
       ...(embedderOverrides.embedFn ? { embedFn: embedderOverrides.embedFn } : {}),
       ignore: opts.ignore,
       offline: resolveOffline(opts),
@@ -775,6 +812,7 @@ function checkHealth({ db, indexDir, cacheDir, requireOffline = false, config = 
       path: config.path,
       valid: !config.error && (!config.unknownKeys || config.unknownKeys.length === 0),
       unknownKeys: config.unknownKeys || [],
+      trustTiers: config.trustTiers || {},
       error: config.error || (config.unknownKeys && config.unknownKeys.length > 0 ? `unknown config keys: ${config.unknownKeys.join(', ')}` : null),
     };
     if (!report.config.valid) {
@@ -1088,6 +1126,13 @@ async function cmdTui(opts) {
     semanticOnly: !!opts.semantic,
     offline: resolveOffline(opts),
     path: opts.path.length > 0 ? opts.path : undefined,
+    since: opts.since || undefined,
+    filter: opts.filter || undefined,
+    tag: opts.tag.length > 0 ? opts.tag : undefined,
+    project: opts.project || undefined,
+    type: opts.type || undefined,
+    status: opts.status || undefined,
+    graphBoost: typeof opts.graphBoost === 'number' ? opts.graphBoost : undefined,
     rerank: !!opts.rerank,
     rag: !!opts.rag,
   });
@@ -1127,6 +1172,150 @@ async function cmdAsk(opts) {
     }
     process.stdout.write('\n');
   }
+}
+
+async function cmdChat(opts) {
+  const db = resolveDb(opts);
+  const indexDir = resolveIndexDir(opts, db);
+  const cacheDir = resolveCache(opts);
+  const k = opts.k || 5;
+
+  const vectorsPath = path.join(indexDir, 'vectors.json');
+  if (!fs.existsSync(vectorsPath)) {
+    die(`No index at ${vectorsPath}. Run \`mdss index --db ${db}\` first.`);
+  }
+
+  const { chatTurn, loadChatSession, listChatSessions } = await import('../dist/rag.js');
+  const loaded = loadIndex(indexDir);
+
+  let sessionId = opts.session;
+  if (!sessionId && opts.resume) {
+    const existing = listChatSessions(indexDir);
+    if (existing.length > 0) {
+      sessionId = existing[0].id;
+    }
+  }
+  if (!sessionId) {
+    sessionId = crypto.randomUUID().slice(0, 8);
+  }
+
+  const session = loadChatSession(indexDir, sessionId, (msg) => {
+    if (!opts.json) process.stderr.write(`${msg}\n`);
+  });
+
+  const query = opts._.join(' ').trim();
+  // If one-shot query provided as argument:
+  if (query) {
+    const res = await chatTurn({
+      session,
+      query,
+      loaded,
+      indexDir,
+      cacheDir,
+      k,
+      llmEndpoint: opts.llmEndpoint,
+      llmModel: opts.llmModel,
+      systemPrompt: opts.systemPrompt,
+    });
+
+    if (opts.json) {
+      process.stdout.write(JSON.stringify(res, null, 2) + '\n');
+      return;
+    }
+
+    process.stdout.write(`\n${res.answer}\n\n`);
+    if (res.citations && res.citations.length > 0) {
+      process.stdout.write('Sources:\n');
+      for (const c of res.citations) {
+        const heading = c.heading ? ` › ${c.heading}` : '';
+        process.stdout.write(`  - ${c.file}${heading} [score: ${c.score.toFixed(3)}]\n`);
+      }
+      process.stdout.write('\n');
+    }
+    return;
+  }
+
+  // Interactive REPL mode:
+  const readline = await import('node:readline');
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  const banner = `\x1b[1mmdss chat\x1b[0m (session: \x1b[36m${session.id}\x1b[0m, turns: ${session.turns.length}, chunks: ${loaded.index.chunks.length})\nCommands: /session, /sources, /help, /exit\n`;
+  process.stdout.write(banner);
+
+  const promptUser = () => {
+    rl.question('\n\x1b[1mmdss chat>\x1b[0m ', async (input) => {
+      const line = (input || '').trim();
+      if (!line) {
+        promptUser();
+        return;
+      }
+
+      if (line === '/exit' || line === '/quit' || line === ':q') {
+        rl.close();
+        return;
+      }
+
+      if (line === '/help') {
+        process.stdout.write('Available commands:\n  /session   Show current session information\n  /sources   Show retrieved sources manifest from last turn\n  /help      Show this help message\n  /exit      Quit chat\n');
+        promptUser();
+        return;
+      }
+
+      if (line === '/session') {
+        process.stdout.write(`Session ID: ${session.id}\nCreated: ${session.createdAt}\nTurns: ${session.turns.length}\n`);
+        promptUser();
+        return;
+      }
+
+      if (line === '/sources') {
+        const lastTurn = session.turns[session.turns.length - 1];
+        if (!lastTurn || !lastTurn.manifest || lastTurn.manifest.length === 0) {
+          process.stdout.write('No sources available yet.\n');
+        } else {
+          process.stdout.write('Sources from last turn:\n');
+          for (const m of lastTurn.manifest) {
+            const loc = (m.startLine && m.endLine) ? `:L${m.startLine}-L${m.endLine}` : '';
+            const heading = m.heading ? ` › ${m.heading}` : '';
+            process.stdout.write(`  - ${m.file}${heading}${loc} [score: ${m.score.toFixed(3)}]\n`);
+          }
+        }
+        promptUser();
+        return;
+      }
+
+      try {
+        const res = await chatTurn({
+          session,
+          query: line,
+          loaded,
+          indexDir,
+          cacheDir,
+          k,
+          llmEndpoint: opts.llmEndpoint,
+          llmModel: opts.llmModel,
+          systemPrompt: opts.systemPrompt,
+        });
+
+        process.stdout.write(`\n${res.answer}\n`);
+        if (res.citations && res.citations.length > 0) {
+          process.stdout.write('\nSources:\n');
+          for (const c of res.citations) {
+            const heading = c.heading ? ` › ${c.heading}` : '';
+            process.stdout.write(`  - ${c.file}${heading} [score: ${c.score.toFixed(3)}]\n`);
+          }
+        }
+      } catch (e) {
+        process.stdout.write(`\nError: ${e.message}\n`);
+      }
+
+      promptUser();
+    });
+  };
+
+  promptUser();
 }
 
 async function cmdSearch(opts) {
@@ -1196,6 +1385,7 @@ async function cmdSearch(opts) {
       nprobe: opts.nprobe,
       graphBoost: opts.graphBoost,
       filter: opts.filter,
+      dimensions: opts.dimensions,
     });
   }
 
@@ -1289,9 +1479,10 @@ function cmdModels() {
     const pooling = m.pooling ?? 'mean';
     const normalized = m.normalize !== false ? 'L2' : 'raw';
     const rev = m.revision ? ` · rev ${m.revision.slice(0, 8)}` : '';
+    const mrl = m.dimensions ? ` · MRL: ${m.dimensions.join(', ')}` : '';
     process.stdout.write(
       `  ${alias}${star}\n` +
-      `    ${m.id} · dim ${m.dim}${rev}\n` +
+      `    ${m.id} · dim ${m.dim}${mrl}${rev}\n` +
       `    ${pooling} · ${normalized} · maxTokens ${m.maxTokens ?? '—'} ` +
       (m.family ? `· family ${m.family}\n` : '\n') +
       `    ${m.note}\n\n`,
@@ -1414,7 +1605,7 @@ async function cmdMcp(opts) {
 // on STDERR so stdout stays machine-readable; warm cache emits nothing at all.
 // ---------------------------------------------------------------------------
 
-const DOWNLOAD_COMMANDS = new Set(['index', 'search', 'ask', 'serve']);
+const DOWNLOAD_COMMANDS = new Set(['index', 'search', 'ask', 'chat', 'serve']);
 
 function formatMb(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB';
@@ -1469,6 +1660,59 @@ async function cmdCompletions(opts) {
   process.stdout.write(generateCompletion(shell));
 }
 
+async function cmdRelated(opts) {
+  const db = resolveDb(opts);
+  const indexDir = resolveIndexDir(opts, db);
+  const vectorsPath = path.join(indexDir, 'vectors.json');
+  if (!fs.existsSync(vectorsPath)) {
+    die(`No index at ${vectorsPath}. Run \`mdss index --db ${db}\` first.`);
+  }
+  const target = opts._.shift();
+  if (!target) {
+    die('Missing note path/title/alias to find relations for. e.g. `mdss related --db . "Architecture"`');
+  }
+
+  const loaded = loadIndex(indexDir);
+  const k = Number.isInteger(opts.k) && opts.k > 0 ? opts.k : 10;
+  const direction = opts.direction || 'both';
+  const semantic = !opts.noSemantic;
+
+  let r;
+  try {
+    r = findRelatedNotes({
+      loaded,
+      target,
+      k,
+      direction,
+      semantic,
+    });
+  } catch (e) {
+    die(e.message);
+  }
+
+  if (opts.json) {
+    process.stdout.write(JSON.stringify(r, null, 2) + '\n');
+    return;
+  }
+
+  if (r.results.length === 0) {
+    process.stdout.write(`No related notes found for "${target}" (${r.resolvedFile}).\n`);
+    if (opts.noSemantic) {
+      process.stdout.write('Hint: Try running without `--no-semantic` to discover conceptually related notes without explicit links.\n');
+    }
+    return;
+  }
+
+  process.stdout.write(`Related notes for "${target}" (${r.resolvedFile}):\n\n`);
+  r.results.forEach((hit, idx) => {
+    const scoreStr = hit.score.toFixed(2);
+    process.stdout.write(`  ${idx + 1}. \x1b[1m${hit.file}\x1b[0m — score: ${scoreStr} [${hit.reason}]\n`);
+    if (hit.title && hit.title !== hit.file) {
+      process.stdout.write(`     title: "${hit.title}"\n`);
+    }
+  });
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const opts = parseArgs(argv);
@@ -1496,7 +1740,9 @@ async function main() {
       case 'doctor': return await cmdCheck(opts);
       case 'export': return await cmdExport(opts);
       case 'search': return await cmdSearch(opts);
+      case 'related': return await cmdRelated(opts);
       case 'ask': return await cmdAsk(opts);
+      case 'chat': return await cmdChat(opts);
       case 'tui': return await cmdTui(opts);
       case 'serve': return await cmdServe(opts);
       case 'mcp': return await cmdMcp(opts);
@@ -1542,6 +1788,7 @@ export {
   parseArgs, nextInt, nextFloat, nextValue,
   resolveDb, resolveIndexDir, resolveCache, resolveOffline,
   findConfigFile, loadConfigFile, applyConfigDefaults, KNOWN_CONFIG_KEYS,
+  CONFIG_NETWORK_KEYS, CONFIG_EXEC_KEYS, getConfigKeyTrustTier,
   checkHealth, cmdExport,
   die, main, HELP, VERSION,
 };

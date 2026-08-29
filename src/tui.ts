@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { loadIndex, searchIndex, SearchResultHit } from './search.js';
 import { extractAnswerFallback } from './rag.js';
-import { ModelDescriptor } from './core.js';
+import { parseFilter, FilterNode } from './filter.js';
 
 export interface TuiOptions {
   indexDir: string;
@@ -14,6 +14,13 @@ export interface TuiOptions {
   semanticOnly?: boolean;
   offline?: boolean;
   path?: string | string[];
+  since?: string | Date;
+  filter?: string | FilterNode;
+  tag?: string | string[];
+  project?: string;
+  type?: string;
+  status?: string;
+  graphBoost?: number;
   rerank?: boolean;
   rerankPool?: number;
   rag?: boolean;
@@ -30,12 +37,30 @@ export async function runTui(opts: TuiOptions): Promise<SearchResultHit | null> 
   const loaded = loadIndex(opts.indexDir);
   const db = opts.db || loaded.index.db || process.cwd();
   let query = opts.query || '';
+  let activeFilter = typeof opts.filter === 'string' ? opts.filter : '';
+  let editingField: 'query' | 'filter' = 'query';
+  let filterError: string | null = null;
   let selectedIndex = 0;
   let results: SearchResultHit[] = [];
   let searching = false;
   let debounceTimer: NodeJS.Timeout | null = null;
 
   const performSearch = async () => {
+    if (activeFilter.trim()) {
+      try {
+        parseFilter(activeFilter.trim());
+        filterError = null;
+      } catch (err: any) {
+        filterError = err?.message || 'invalid filter expression';
+        results = [];
+        selectedIndex = 0;
+        render();
+        return;
+      }
+    } else {
+      filterError = null;
+    }
+
     if (!query.trim()) {
       results = [];
       selectedIndex = 0;
@@ -53,6 +78,13 @@ export async function runTui(opts: TuiOptions): Promise<SearchResultHit | null> 
         semanticOnly: opts.semanticOnly,
         offline: opts.offline,
         path: opts.path,
+        since: opts.since,
+        filter: activeFilter.trim() || opts.filter || undefined,
+        tag: opts.tag,
+        project: opts.project,
+        type: opts.type,
+        status: opts.status,
+        graphBoost: opts.graphBoost,
         rerank: opts.rerank,
         rerankPool: opts.rerankPool,
         embedFn: opts.embedFn,
@@ -86,15 +118,29 @@ export async function runTui(opts: TuiOptions): Promise<SearchResultHit | null> 
     buf += '\x1b[?25l'; // hide cursor
     buf += '\x1b[H\x1b[J'; // clear screen from cursor down
 
-    // Header
+    // Header Line 1: Mode & Query
     const searchStatus = searching ? ' [searching...]' : '';
     const modeLabel = showRag ? 'RAG QA & Synthesis' : 'search';
-    const headerStr = ` mdss interactive ${modeLabel} | Query: ${query}${searchStatus}`;
+    const queryCursor = editingField === 'query' ? ' ▍' : '';
+    const headerStr = ` mdss interactive ${modeLabel} | [Q]uery: ${query}${queryCursor}${searchStatus}`;
     buf += `\x1b[7m${headerStr.padEnd(cols).slice(0, cols)}\x1b[0m\n`;
 
+    // Header Line 2: Filter & Narrowing Status
+    const filterCursor = editingField === 'filter' ? ' ▍' : '';
+    const filterDisplay = activeFilter || '(none)';
+    const tagDisplay = opts.tag ? ` | tag: ${Array.isArray(opts.tag) ? opts.tag.join(',') : opts.tag}` : '';
+    const sinceDisplay = opts.since ? ` | since: ${opts.since}` : '';
+    const errDisplay = filterError ? ` [Err: ${filterError}]` : '';
+    const filterLineStr = ` [F]ilter (Ctrl+F): ${filterDisplay}${filterCursor}${errDisplay}${tagDisplay}${sinceDisplay}`;
+    if (filterError) {
+      buf += `\x1b[31;7m${filterLineStr.padEnd(cols).slice(0, cols)}\x1b[0m\n`;
+    } else {
+      buf += `\x1b[2;7m${filterLineStr.padEnd(cols).slice(0, cols)}\x1b[0m\n`;
+    }
+
     // Calculate layout heights
-    const listHeight = Math.max(3, Math.floor((rows - 4) * 0.35));
-    const previewHeight = Math.max(4, rows - 4 - listHeight);
+    const listHeight = Math.max(3, Math.floor((rows - 5) * 0.35));
+    const previewHeight = Math.max(4, rows - 5 - listHeight);
 
     // Render list
     buf += `\x1b[1m--- Results (${results.length}) ---\x1b[0m\n`;
@@ -147,7 +193,7 @@ export async function runTui(opts: TuiOptions): Promise<SearchResultHit | null> 
     }
 
     // Footer
-    const footerStr = ' [Tab]: Toggle RAG/Passage | [Up/Down]: Select | [Enter]: Open | [Esc]: Quit';
+    const footerStr = ' [Tab]: Toggle QA | [Ctrl+F]: Filter | [Up/Down]: Select | [Enter]: Open | [Esc]: Quit';
     buf += `\x1b[7m${footerStr.padEnd(cols).slice(0, cols)}\x1b[0m`;
 
     process.stdout.write(buf);
@@ -182,10 +228,16 @@ export async function runTui(opts: TuiOptions): Promise<SearchResultHit | null> 
         resolve(null);
         return;
       }
-      if (key.name === 'escape' || (key.name === 'q' && query === '')) {
+      if (key.name === 'escape' || (key.name === 'q' && query === '' && !activeFilter)) {
         cleanupTui();
         process.removeListener('keypress', onKeypress);
         resolve(null);
+        return;
+      }
+
+      if (key.ctrl && key.name === 'f') {
+        editingField = editingField === 'query' ? 'filter' : 'query';
+        render();
         return;
       }
 
@@ -211,6 +263,11 @@ export async function runTui(opts: TuiOptions): Promise<SearchResultHit | null> 
       }
 
       if (key.name === 'return') {
+        if (editingField === 'filter') {
+          editingField = 'query';
+          performSearch();
+          return;
+        }
         const hit = results[selectedIndex];
         cleanupTui();
         process.removeListener('keypress', onKeypress);
@@ -228,18 +285,32 @@ export async function runTui(opts: TuiOptions): Promise<SearchResultHit | null> 
       }
 
       if (key.name === 'backspace') {
-        if (query.length > 0) {
-          query = query.slice(0, -1);
-          scheduleSearch();
-          render();
+        if (editingField === 'query') {
+          if (query.length > 0) {
+            query = query.slice(0, -1);
+            scheduleSearch();
+            render();
+          }
+        } else if (editingField === 'filter') {
+          if (activeFilter.length > 0) {
+            activeFilter = activeFilter.slice(0, -1);
+            scheduleSearch();
+            render();
+          }
         }
         return;
       }
 
       if (_str && _str.length === 1 && _str.charCodeAt(0) >= 32) {
-        query += _str;
-        scheduleSearch();
-        render();
+        if (editingField === 'query') {
+          query += _str;
+          scheduleSearch();
+          render();
+        } else if (editingField === 'filter') {
+          activeFilter += _str;
+          scheduleSearch();
+          render();
+        }
       }
     };
 
@@ -249,3 +320,4 @@ export async function runTui(opts: TuiOptions): Promise<SearchResultHit | null> 
     performSearch();
   });
 }
+

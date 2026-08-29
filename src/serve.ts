@@ -10,10 +10,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { buildIndex } from './indexer.js';
 import { loadIndex, searchIndex } from './search.js';
-import { walkMarkdown, assertSafePath, ModelDescriptor } from './core.js';
+import { walkMarkdown, assertSafePath, getDocLines, ModelDescriptor } from './core.js';
 import { createFileWatcher, FileWatcher, classifyFsError, readWithRetry } from './watcher.js';
 import { WEBUI_HTML, WEBUI_JS, WEBUI_CSS } from './webui.js';
 import { handleMcpRequest } from './mcp.js';
+import { findRelatedNotes } from './wikilinks.js';
 
 const DEFAULT_PORT = 8747;
 const DEFAULT_HOST = '127.0.0.1';
@@ -814,6 +815,36 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     return;
   }
 
+  if (req.method === 'GET' && url.pathname === '/doc') {
+    const file = url.searchParams.get('file');
+    if (!file) {
+      json(res, 400, { error: 'missing "file" query parameter' });
+      return;
+    }
+    const fromLineParam = url.searchParams.get('fromLine') || url.searchParams.get('from');
+    const maxLinesParam = url.searchParams.get('maxLines') || url.searchParams.get('lines') || url.searchParams.get('limit');
+    const fromLine = fromLineParam ? parseInt(fromLineParam, 10) : 1;
+    const maxLines = maxLinesParam ? parseInt(maxLinesParam, 10) : undefined;
+
+    try {
+      const docResult = getDocLines({
+        file,
+        fromLine: isNaN(fromLine) ? 1 : fromLine,
+        maxLines: maxLines && !isNaN(maxLines) ? maxLines : undefined,
+        dbDir: state.loaded.index.db,
+        chunks: state.loaded.index.chunks,
+      });
+      json(res, 200, docResult);
+    } catch (e: any) {
+      if (e.message?.includes('not found')) {
+        json(res, 404, { error: e.message });
+      } else {
+        json(res, 400, { error: e.message });
+      }
+    }
+    return;
+  }
+
   if (req.method === 'GET' && url.pathname === '/health') {
     json(res, 200, {
       ok: true,
@@ -847,11 +878,70 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     return;
   }
 
+  if (url.pathname === '/related' && (req.method === 'POST' || req.method === 'GET')) {
+    let target = '';
+    let k = 10;
+    let direction: 'both' | 'outgoing' | 'backlinks' = 'both';
+    let semantic = true;
+
+    if (req.method === 'GET') {
+      target = url.searchParams.get('file') || url.searchParams.get('target') || url.searchParams.get('note') || '';
+      const kParam = url.searchParams.get('k');
+      if (kParam) k = parseInt(kParam, 10) || 10;
+      const dirParam = url.searchParams.get('direction');
+      if (dirParam === 'outgoing' || dirParam === 'backlinks' || dirParam === 'both') direction = dirParam;
+      if (url.searchParams.has('semantic')) semantic = url.searchParams.get('semantic') !== 'false';
+    } else {
+      let body = '';
+      for await (const chunk of req) {
+        body += chunk;
+        if (body.length > MAX_BODY_BYTES) break;
+      }
+      try {
+        const payload = body ? JSON.parse(body) : {};
+        target = payload.file || payload.target || payload.note || '';
+        if (typeof payload.k === 'number' && payload.k > 0) k = payload.k;
+        if (payload.direction === 'outgoing' || payload.direction === 'backlinks' || payload.direction === 'both') {
+          direction = payload.direction;
+        }
+        if (payload.semantic !== undefined) semantic = Boolean(payload.semantic);
+      } catch (e: any) {
+        json(res, 400, { error: `invalid JSON body: ${e.message}` });
+        return;
+      }
+    }
+
+    if (!target) {
+      json(res, 400, { error: 'missing "file" or "target" parameter' });
+      return;
+    }
+
+    try {
+      const relatedResult = findRelatedNotes({
+        loaded: state.loaded,
+        target,
+        k,
+        direction,
+        semantic,
+      });
+      json(res, 200, relatedResult);
+    } catch (e: any) {
+      if (e.message?.includes('not found')) {
+        json(res, 404, { error: e.message });
+      } else {
+        json(res, 400, { error: e.message });
+      }
+    }
+    return;
+  }
+
   if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/help')) {
     json(res, 200, {
       name: 'mdss serve',
       endpoints: [
         { method: 'POST', path: '/search', body: '{ "query": "...", "k": 6, "semanticOnly": false, "rerank": false }' },
+        { method: 'GET', path: '/doc?file=...&fromLine=1&maxLines=50' },
+        { method: 'POST', path: '/related', body: '{ "file": "...", "k": 10, "semantic": true }' },
         { method: 'GET', path: '/health' },
       ],
     });

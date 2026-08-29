@@ -167,9 +167,16 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
   }
 
   var timer = null;
+  var searchAbort = null;
+  var searchSeq = 0;
   function run() {
     var query = q.value.trim();
-    if (!query) { resultsEl.innerHTML = ''; meta.textContent = ''; return; }
+    if (!query) {
+      if (searchAbort) { searchAbort.abort(); searchAbort = null; }
+      resultsEl.innerHTML = '';
+      meta.textContent = '';
+      return;
+    }
     var filters = {};
     ['f-tag', 'f-type', 'f-status'].forEach(function (id) {
       var v = document.getElementById(id).value.trim();
@@ -178,13 +185,27 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
     var lim = parseInt(document.getElementById('f-limit').value, 10);
     if (lim > 0) filters.maxPerFile = lim;
 
-    api('/search', { method: 'POST', body: JSON.stringify(Object.assign({ query: query, k: 20 }, filters)) })
+    if (searchAbort) { searchAbort.abort(); }
+    searchAbort = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    var currentSeq = ++searchSeq;
+    var signal = searchAbort ? searchAbort.signal : undefined;
+
+    api('/search', {
+      method: 'POST',
+      signal: signal,
+      body: JSON.stringify(Object.assign({ query: query, k: 20 }, filters))
+    })
       .then(function (data) {
+        if (currentSeq !== searchSeq) return;
         var lastTerms = (data.results || []).length
           ? (data.results[0].matches || []) : [];
         render(data, lastTerms);
       })
-      .catch(function (e) { if (String(e.message) !== 'HTTP 401') meta.textContent = 'error: ' + e.message; });
+      .catch(function (e) {
+        if (currentSeq !== searchSeq) return;
+        if (e && (e.name === 'AbortError' || e.message === 'The user aborted a request.' || e.code === 20)) return;
+        if (String(e.message) !== 'HTTP 401') meta.textContent = 'error: ' + e.message;
+      });
   }
   q.addEventListener('input', function () {
     clearTimeout(timer);

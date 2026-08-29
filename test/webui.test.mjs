@@ -167,3 +167,17 @@ test('webui: UI sits behind Bearer auth like every other route (issue #111)', as
     safeRm(dir);
   }
 });
+
+test('webui: /ui.js includes AbortController and sequence counter guards for /search (issue #134)', async () => {
+  const srv = await startUiServe();
+  try {
+    const js = await get(srv.url, '/ui.js');
+    assert.equal(js.status, 200);
+    assert.ok(js.body.includes('AbortController'), 'uses AbortController for in-flight search requests');
+    assert.ok(js.body.includes('searchSeq') || js.body.includes('currentSeq'), 'uses monotonic sequence counter');
+    assert.ok(js.body.includes('AbortError'), 'handles AbortError silently');
+  } finally {
+    await srv.close();
+  }
+});
+

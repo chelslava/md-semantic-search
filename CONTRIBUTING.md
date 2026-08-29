@@ -96,6 +96,12 @@ map above and reality disagree, trust the code and send a docs fix.
    welcome for parsers and math helpers.
 8. **Commit style:** conventional commits as seen in history —
    `feat(scope): …`, `fix(…): …`, `docs: …`, `perf(…): …`, `chore(ci): …`.
+9. **Config trust policy (repo-checked-in `.mdssrc.json`):**
+   `.mdssrc.json` is discovered from the current working directory upwards. Because repositories can be cloned and indexed from untrusted sources, strict trust boundaries apply to configuration:
+   - **No Executable Surfaces:** Project-local config files may never execute arbitrary shell commands, scripts, or hooks.
+   - **Network & Remote Endpoints:** Keys that configure outbound network endpoints (e.g. external embedder base URLs, LLM endpoints) or daemon bindings are classified into the `network` trust tier and must not be weaponizable without explicit user opt-in.
+   - **PR Template & Security Checklist:** Any PR that introduces new config keys touching network or process execution must include a security rationale and be classified in `CONFIG_NETWORK_KEYS` or `CONFIG_EXEC_KEYS`.
+   - **Machine-Detectable Trust Tiers:** `mdss check --json` reports `trustTiers` for all configured keys (`local-safe`, `network`, `exec`, `unknown`). Unknown keys immediately fail `mdss check`.
 
 ## Submitting changes
 

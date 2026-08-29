@@ -619,6 +619,7 @@ export interface SearchOptions {
   nprobe?: number;
   graphBoost?: number;
   filter?: string | FilterNode;
+  dimensions?: number;
 }
 
 export interface SearchResultHit {
@@ -673,6 +674,12 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
   const { index } = loaded;
   const runtime = validateRuntimeIndex(index);
   const { chunks, db, lexicalState, expectedDim } = runtime;
+
+  if (opts.dimensions !== undefined && typeof opts.dimensions === 'number' && expectedDim !== undefined && opts.dimensions !== expectedDim) {
+    throw new Error(
+      `requested search dimensions (${opts.dimensions}) does not match index dimension (${expectedDim}) — run \`mdss index --dimensions ${opts.dimensions}\` to rebuild`
+    );
+  }
 
   const pathRes = pathFilter ? (Array.isArray(pathFilter) ? pathFilter : [pathFilter]).map(globToRegExp) : [];
   let sinceMs: number | undefined;

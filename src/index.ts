@@ -37,14 +37,16 @@ export {
 } from './rerank.js';
 
 export {
-  embed, getExtractor, cosine,
+  embed, getExtractor, cosine, truncateAndNormalizeVector,
   walkMarkdown, parseFile, chunkMarkdown,
   splitFrontmatter, extractTitle, globToRegExp,
   encodeVec, decodeVec, isBinaryIndex,
+  getDocLines, GetDocLinesOptions, GetDocLinesResult,
 } from './core.js';
 
 export {
-  MCP_TOOLS, handleMcpRequest, startMcpServer,
+  MCP_TOOLS, MCP_RESOURCE_TEMPLATES, MCP_PROMPTS,
+  handleMcpRequest, startMcpServer,
 } from './mcp.js';
 
 export {
@@ -55,6 +57,7 @@ export {
 export {
   extractLinks, resolveLinks, buildRelationshipGraph, getRelatedNotes,
   computePageRank, expandGraphNeighborhood,
+  findRelatedNotes, FindRelatedNotesOptions, RelatedNoteHit, RelatedNoteResult,
 } from './wikilinks.js';
 
 export {
@@ -81,7 +84,9 @@ export {
 
 export {
   askQuestion, synthesizeAnswer, extractAnswerFallback,
+  chatTurn, loadChatSession, saveChatSession, listChatSessions, getSessionsDir,
   AskOptions, SynthesisResult, Citation, DEFAULT_RAG_SYSTEM_PROMPT,
+  ChatSession, ChatTurn, ChatSourceManifestItem, ChatTurnOptions,
 } from './rag.js';
 
 export {

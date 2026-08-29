@@ -114,7 +114,13 @@ export function validateIndexEnvelope(
   } else if (modelName !== undefined && modelName !== null && typeof modelName !== 'string') {
     throw new Error(`${location} model metadata must be a string${REBUILD}`);
   }
-  const model = resolveModel(modelName as string | undefined);
+  let model: ModelAdapter;
+  try {
+    const candidateDim = typeof index.dim === 'number' && index.dim > 0 ? index.dim : undefined;
+    model = resolveModel(modelName as string | undefined, candidateDim);
+  } catch {
+    model = resolveModel(modelName as string | undefined);
+  }
   const dim = resolveIndexDimension(index.dim, model.dim);
   if (schema < 3) {
     return { index, schema, model, dim };

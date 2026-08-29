@@ -41,5 +41,15 @@ When passing custom Hugging Face model IDs or downloading remote ONNX weights, o
 - **Query Length Cap**: Query strings in `searchIndex` and `POST /search` are capped at 2048 characters to prevent excessive computation or memory consumption.
 - **Glob Validation**: `--ignore` and `--path` globs are validated for control or injection characters (such as `|`, `(`, `)`, `$`, `{`, `}`) before RegExp compilation.
 
+---
+
+## Config Trust Policy & Supply-Chain Boundaries
+
+`mdss` discovers `.mdssrc.json` hierarchically from the working directory upwards. To protect against malicious repositories checking in hostile configs:
+- Project-local configs are restricted from executing commands or loading arbitrary code.
+- Keys are partitioned into machine-auditable trust tiers (`local-safe`, `network`, `exec`).
+- `mdss check --json` audits config keys and fails on unrecognized or ungoverned keys.
+- See [CONTRIBUTING.md](./CONTRIBUTING.md#dev-setup) for policy details.
+
 
 

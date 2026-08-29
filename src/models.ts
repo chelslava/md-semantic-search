@@ -68,6 +68,7 @@ export const MODELS: Record<string, ModelAdapter> = {
     id: 'Xenova/bge-m3',
     nativeDim: 1024,
     dim: 1024,
+    dimensions: [64, 128, 256, 512, 1024],
     queryPrefix: '',
     passagePrefix: '',
     pooling: 'mean',
@@ -82,6 +83,7 @@ export const MODELS: Record<string, ModelAdapter> = {
     revision: 'c25a394dd583836952667c12f008335071b3f43d',
     nativeDim: 1024,
     dim: 1024,
+    dimensions: [32, 64, 128, 256, 512, 768, 1024],
     queryPrefix: 'Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:',
     passagePrefix: '',
     pooling: 'last_token',
@@ -89,7 +91,7 @@ export const MODELS: Record<string, ModelAdapter> = {
     dtype: 'q8',
     maxTokens: 32768,
     family: 'qwen3',
-    note: '~613 MB q8. Opt-in Qwen3 embedding model.',
+    note: '~613 MB q8. Opt-in Qwen3 embedding model with Matryoshka/MRL support.',
   },
 };
 
@@ -148,42 +150,65 @@ export function normalizeAdapter(raw: Partial<ModelAdapter> | ModelAdapter): Mod
   return adapter;
 }
 
-export function resolveModel(name?: string | Partial<ModelAdapter> | ModelAdapter | null): ModelAdapter {
+export function resolveModel(
+  name?: string | Partial<ModelAdapter> | ModelAdapter | null,
+  chosenDim?: number
+): ModelAdapter {
+  let base: ModelAdapter;
   if (name === undefined || name === null || name === '') {
-    return withDim(MODELS[DEFAULT_MODEL]);
-  }
-  if (typeof name === 'object' && !Array.isArray(name)) {
-    return normalizeAdapter(name);
-  }
-  if (typeof name !== 'string') {
+    base = withDim(MODELS[DEFAULT_MODEL]);
+  } else if (typeof name === 'object' && !Array.isArray(name)) {
+    base = normalizeAdapter(name);
+  } else if (typeof name !== 'string') {
     throw new Error(`model must be an alias, id, or adapter object — got ${typeof name}`);
+  } else if (MODELS[name]) {
+    base = withDim(MODELS[name]);
+  } else {
+    let id = name;
+    let revision = 'main';
+    const at = name.indexOf('@');
+    const hasExplicitRevision = at > 0;
+    if (hasExplicitRevision) {
+      id = name.slice(0, at);
+      const requested = name.slice(at + 1);
+      revision = requested === '' ? 'main' : requested;
+    }
+    const alias = aliasByRepoId.get(id);
+    if (alias !== undefined) {
+      const registered = MODELS[alias];
+      const resolved = hasExplicitRevision ? { ...registered, revision } : registered;
+      base = withDim(resolved);
+    } else {
+      base = normalizeAdapter({
+        id,
+        ...(revision !== 'main' ? { revision } : {}),
+        pooling: 'none',
+        normalize: false,
+        nativeDim: 0,
+        dim: 0,
+        unknownAdapter: true,
+      });
+    }
   }
-  if (MODELS[name]) return withDim(MODELS[name]);
 
-  let id = name;
-  let revision = 'main';
-  const at = name.indexOf('@');
-  const hasExplicitRevision = at > 0;
-  if (hasExplicitRevision) {
-    id = name.slice(0, at);
-    const requested = name.slice(at + 1);
-    revision = requested === '' ? 'main' : requested;
+  if (chosenDim !== undefined) {
+    if (typeof chosenDim !== 'number' || !Number.isSafeInteger(chosenDim) || chosenDim <= 0) {
+      throw new Error(`--dimensions must be a positive integer, got "${chosenDim}"`);
+    }
+    if (!base.dimensions || base.dimensions.length === 0) {
+      throw new Error(
+        `model "${base.id}" does not declare Matryoshka/MRL dimensions support (supported MRL models: qwen3-embedding-0.6b, bge-m3)`
+      );
+    }
+    if (!base.dimensions.includes(chosenDim)) {
+      throw new Error(
+        `invalid dimension ${chosenDim} for model "${base.id}" — supported MRL dimensions: ${base.dimensions.join(', ')}`
+      );
+    }
+    return { ...base, dim: chosenDim, nativeDim: base.nativeDim || base.dim };
   }
-  const alias = aliasByRepoId.get(id);
-  if (alias !== undefined) {
-    const registered = MODELS[alias];
-    const resolved = hasExplicitRevision ? { ...registered, revision } : registered;
-    return withDim(resolved);
-  }
-  return normalizeAdapter({
-    id,
-    ...(revision !== 'main' ? { revision } : {}),
-    pooling: 'none',
-    normalize: false,
-    nativeDim: 0,
-    dim: 0,
-    unknownAdapter: true,
-  });
+
+  return base;
 }
 
 export interface FingerprintInput {
@@ -202,7 +227,7 @@ export function embeddingAdapterFingerprint(model: FingerprintInput): string {
     `passage-prefix:${model.passagePrefix ?? ''}`,
     `pooling:${model.pooling ?? 'mean'}`,
     `normalize:${model.normalize !== false}`,
-    `dimension:${model.nativeDim ?? model.dim ?? 0}`,
+    `dimension:${model.dim ?? model.nativeDim ?? 0}`,
   ].join('\u0000');
   return `adapter-v1:${crypto.createHash('sha256').update(semantics).digest('hex')}`;
 }

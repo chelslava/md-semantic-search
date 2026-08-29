@@ -4,7 +4,7 @@ export interface IVFIndex {
   dim: number;
   k: number;
   centroids: Float32Array; // Flattened k * dim
-  clusters: number[][];    // clusters[clusterIndex] = array of chunk indices
+  clusters: number[][]; // clusters[clusterIndex] = array of chunk indices
 }
 
 export interface SerializedIVF {
@@ -14,15 +14,36 @@ export interface SerializedIVF {
   clusters: number[][];
 }
 
+export interface TrainIVFOptions {
+  k?: number;
+  maxIterations?: number;
+  seeding?: 'kmeans++' | 'spread';
+  seed?: number;
+  onMetric?: (metric: { emptyClusters: number; iterations: number }) => void;
+}
+
 export const ANN_THRESHOLD = 500;
 export const DEFAULT_NPROBE = 8;
 
 /**
- * Train a Spherical K-Means IVF index over normalized vectors.
+ * Fast, deterministic pseudo-random number generator (Mulberry32).
+ */
+function mulberry32(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Train a Spherical K-Means IVF index over normalized vectors using k-means++ seeding.
  */
 export function trainIVF(
   vectors: Float32Array[],
-  options: { k?: number; maxIterations?: number } = {}
+  options: TrainIVFOptions = {}
 ): IVFIndex {
   const n = vectors.length;
   if (n === 0) {
@@ -32,19 +53,70 @@ export function trainIVF(
   const targetK = options.k ?? Math.min(256, Math.max(2, Math.floor(Math.sqrt(n))));
   const k = Math.min(targetK, n);
   const maxIterations = options.maxIterations ?? 20;
+  const seeding = options.seeding ?? 'kmeans++';
 
-  // Initialize centroids using deterministic spread or k-means++
   const centroids = new Float32Array(k * dim);
-  const step = Math.floor(n / k);
-  for (let c = 0; c < k; c++) {
-    const src = vectors[c * step];
-    centroids.set(src, c * dim);
+
+  if (seeding === 'spread' || n <= k) {
+    // Deterministic spread
+    const step = Math.floor(n / k);
+    for (let c = 0; c < k; c++) {
+      const src = vectors[c * step];
+      centroids.set(src, c * dim);
+    }
+  } else {
+    // Deterministic k-means++ seeding with D^2 weighted probability
+    const rng = mulberry32(options.seed ?? 42);
+    const firstIdx = Math.floor(rng() * n);
+    centroids.set(vectors[firstIdx], 0);
+
+    const minDistSq = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const cos = cosine(vectors[i], centroids, 0);
+      minDistSq[i] = Math.max(0, 1 - cos);
+    }
+
+    for (let c = 1; c < k; c++) {
+      let sumDistSq = 0;
+      for (let i = 0; i < n; i++) {
+        sumDistSq += minDistSq[i];
+      }
+
+      let chosenIdx = -1;
+      if (sumDistSq > 1e-12) {
+        const target = rng() * sumDistSq;
+        let cumulative = 0;
+        for (let i = 0; i < n; i++) {
+          cumulative += minDistSq[i];
+          if (cumulative >= target) {
+            chosenIdx = i;
+            break;
+          }
+        }
+      }
+      if (chosenIdx === -1 || chosenIdx >= n) {
+        chosenIdx = Math.floor(rng() * n);
+      }
+
+      centroids.set(vectors[chosenIdx], c * dim);
+
+      for (let i = 0; i < n; i++) {
+        const cos = cosine(vectors[i], centroids, c * dim);
+        const distSq = Math.max(0, 1 - cos);
+        if (distSq < minDistSq[i]) {
+          minDistSq[i] = distSq;
+        }
+      }
+    }
   }
 
   let clusters: number[][] = Array.from({ length: k }, () => []);
   const assignments = new Int32Array(n).fill(-1);
+  let totalEmptyClusters = 0;
+  let finalIterations = 0;
 
   for (let iter = 0; iter < maxIterations; iter++) {
+    finalIterations = iter + 1;
     let changed = 0;
     const newClusters: number[][] = Array.from({ length: k }, () => []);
 
@@ -71,11 +143,13 @@ export function trainIVF(
 
     clusters = newClusters;
 
-    // 2. Recompute centroids
+    // 2. Recompute centroids & rescue empty clusters
+    let emptyCount = 0;
     for (let c = 0; c < k; c++) {
       const members = clusters[c];
       if (members.length === 0) {
-        // If empty, reassign to a vector from the largest cluster
+        emptyCount++;
+        // Reassign to a vector from the largest cluster
         let largest = 0;
         for (let j = 1; j < k; j++) {
           if (clusters[j].length > clusters[largest].length) largest = j;
@@ -111,8 +185,11 @@ export function trainIVF(
       }
     }
 
+    totalEmptyClusters = emptyCount;
     if (changed === 0) break;
   }
+
+  options.onMetric?.({ emptyClusters: totalEmptyClusters, iterations: finalIterations });
 
   return { dim, k, centroids, clusters };
 }
@@ -171,20 +248,80 @@ export function serializeIVF(ivf: IVFIndex): SerializedIVF {
 }
 
 /**
- * Deserialize JSON object back to IVFIndex.
+ * Deserialize JSON object back to IVFIndex with hardened validation.
  */
-export function deserializeIVF(raw: any): IVFIndex {
-  if (!raw || typeof raw !== 'object') {
-    throw new Error('invalid IVF payload: expected object');
+export function deserializeIVF(raw: unknown, expectedChunksCount?: number): IVFIndex {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('invalid IVF payload: expected JSON object — run `mdss index` to rebuild');
   }
-  const dim = Number(raw.dim);
-  const k = Number(raw.k);
-  if (!Number.isInteger(dim) || dim <= 0 || !Number.isInteger(k) || k <= 0) {
-    throw new Error('invalid IVF payload: invalid dim or k');
+  const obj = raw as Record<string, unknown>;
+  const dim = obj.dim;
+  const k = obj.k;
+  if (
+    typeof dim !== 'number' ||
+    !Number.isSafeInteger(dim) ||
+    dim <= 0 ||
+    typeof k !== 'number' ||
+    !Number.isSafeInteger(k) ||
+    k <= 0
+  ) {
+    throw new Error('invalid IVF payload: invalid dim or k — run `mdss index` to rebuild');
   }
-  const buf = Buffer.from(raw.centroids, 'base64');
+  if (typeof obj.centroids !== 'string' || obj.centroids.length === 0) {
+    throw new Error('invalid IVF payload: centroids must be a base64 string — run `mdss index` to rebuild');
+  }
+  const buf = Buffer.from(obj.centroids, 'base64');
+  if (buf.byteLength % 4 !== 0 || buf.byteLength !== k * dim * 4) {
+    throw new Error(
+      `invalid IVF payload: centroids buffer has ${buf.byteLength} bytes, expected ${k * dim * 4} bytes — run \`mdss index\` to rebuild`
+    );
+  }
   const centroids = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
-  const clusters = Array.isArray(raw.clusters) ? raw.clusters : [];
+  for (let i = 0; i < centroids.length; i++) {
+    if (!Number.isFinite(centroids[i])) {
+      throw new Error(`invalid IVF payload: non-finite centroid value at index ${i} — run \`mdss index\` to rebuild`);
+    }
+  }
+
+  if (!Array.isArray(obj.clusters)) {
+    throw new Error('invalid IVF payload: clusters must be an array — run `mdss index` to rebuild');
+  }
+  if (obj.clusters.length !== k) {
+    throw new Error(
+      `invalid IVF payload: clusters array has length ${obj.clusters.length}, expected ${k} — run \`mdss index\` to rebuild`
+    );
+  }
+
+  const clusters: number[][] = new Array(k);
+  for (let c = 0; c < k; c++) {
+    const list = obj.clusters[c];
+    if (!Array.isArray(list)) {
+      throw new Error(`invalid IVF payload: cluster ${c} must be an array — run \`mdss index\` to rebuild`);
+    }
+    const validatedCluster: number[] = new Array(list.length);
+    const seen = new Set<number>();
+    for (let j = 0; j < list.length; j++) {
+      const idx = list[j];
+      if (typeof idx !== 'number' || !Number.isSafeInteger(idx) || idx < 0) {
+        throw new Error(
+          `invalid IVF payload: cluster ${c} contains non-integer index "${idx}" — run \`mdss index\` to rebuild`
+        );
+      }
+      if (expectedChunksCount !== undefined && idx >= expectedChunksCount) {
+        throw new Error(
+          `invalid IVF payload: chunk index ${idx} out of range [0, ${expectedChunksCount}) — run \`mdss index\` to rebuild`
+        );
+      }
+      if (seen.has(idx)) {
+        throw new Error(
+          `invalid IVF payload: duplicate chunk index ${idx} in cluster ${c} — run \`mdss index\` to rebuild`
+        );
+      }
+      seen.add(idx);
+      validatedCluster[j] = idx;
+    }
+    clusters[c] = validatedCluster;
+  }
 
   return { dim, k, centroids, clusters };
 }

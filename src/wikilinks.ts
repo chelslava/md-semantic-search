@@ -3,6 +3,8 @@
  * Supports Obsidian wikilinks [[note]], [[note#heading|alias]], and relative Markdown links.
  */
 import { DocumentMetadata } from './frontmatter.js';
+import { cosine, decodeVec } from './core.js';
+import { dequantizeFromInt8 } from './quantization.js';
 
 export interface RawLink {
   type: 'wikilink' | 'markdown';
@@ -86,7 +88,7 @@ export function resolveLinks(
   for (const doc of docs) {
     const relFile = doc.file;
     pathMap.set(relFile.toLowerCase(), relFile);
-    const basename = relFile.replace(/\.md$/i, '').split('/').pop()?.toLowerCase();
+    const basename = relFile.replace(/\.md$/i, '').split(/[/\\]/).pop()?.toLowerCase();
     if (basename && !pathMap.has(basename)) {
       pathMap.set(basename, relFile);
     }
@@ -373,4 +375,221 @@ export function expandGraphNeighborhood(
 
   return propagationScores;
 }
+
+export interface FindRelatedNotesOptions {
+  loaded: { index: any; model?: any };
+  target: string;
+  k?: number;
+  direction?: 'both' | 'outgoing' | 'backlinks';
+  maxDepth?: number;
+  semantic?: boolean;
+  minScore?: number;
+}
+
+export interface RelatedNoteHit {
+  file: string;
+  title: string;
+  score: number;
+  reason: string;
+  distance?: number;
+  cosine?: number;
+}
+
+export interface RelatedNoteResult {
+  target: string;
+  resolvedFile: string;
+  results: RelatedNoteHit[];
+  total: number;
+}
+
+/**
+ * Finds notes related to a target note via graph links (outgoing, backlinks, 2-hop)
+ * and semantic similarity (issue #141).
+ */
+export function findRelatedNotes(opts: FindRelatedNotesOptions): RelatedNoteResult {
+  const { loaded, target, k = 10, direction = 'both', maxDepth = 2, semantic = true } = opts;
+  if (!target || typeof target !== 'string') {
+    throw new Error('findRelatedNotes: "target" parameter is required');
+  }
+
+  const chunks = loaded.index?.chunks || [];
+  if (chunks.length === 0) {
+    throw new Error('Index has no chunks');
+  }
+
+  // 1. Group chunks by file to construct LinkDoc list and index metadata
+  const docMap = new Map<string, { title: string; meta?: DocumentMetadata; texts: string[]; vecs: Float32Array[] }>();
+  for (const c of chunks) {
+    const existing = docMap.get(c.file);
+    let v: Float32Array | null = null;
+    if (c.vec) {
+      if (c.vec instanceof Float32Array) {
+        v = c.vec;
+      } else if (Array.isArray(c.vec)) {
+        v = Float32Array.from(c.vec);
+      } else if (typeof c.vec === 'string') {
+        try {
+          v = decodeVec(c.vec);
+        } catch {
+          v = null;
+        }
+      } else if (c.vec instanceof Int8Array) {
+        v = dequantizeFromInt8(c.vec);
+      }
+    }
+    if (existing) {
+      existing.texts.push(c.text || '');
+      if (v) existing.vecs.push(v);
+    } else {
+      docMap.set(c.file, {
+        title: c.title || '',
+        meta: c.meta,
+        texts: [c.text || ''],
+        vecs: v ? [v] : [],
+      });
+    }
+  }
+
+  const docs: LinkDoc[] = Array.from(docMap.entries()).map(([file, d]) => ({
+    file,
+    title: d.title,
+    meta: d.meta,
+    text: d.texts.join('\n\n'),
+  }));
+
+  // 2. Resolve target note
+  const rawTarget = target.trim();
+  const normalizedTarget = rawTarget.toLowerCase().replace(/\.md$/i, '').split(/[#|]/)[0].trim();
+  let targetFile: string | null = null;
+
+  for (const [file, d] of docMap.entries()) {
+    const normFile = file.toLowerCase().replace(/\.md$/i, '');
+    const basename = normFile.split(/[/\\]/).pop() || '';
+    const normTitle = (d.title || '').toLowerCase();
+    const aliases = (d.meta?.aliases || []).map((a: string) => a.toLowerCase());
+
+    if (
+      file.toLowerCase() === rawTarget.toLowerCase() ||
+      normFile === normalizedTarget ||
+      basename === normalizedTarget ||
+      normTitle === normalizedTarget ||
+      aliases.includes(normalizedTarget)
+    ) {
+      targetFile = file;
+      break;
+    }
+  }
+
+  if (!targetFile) {
+    throw new Error(`Note not found: "${target}"`);
+  }
+
+  // 3. Build graph & find graph relationships
+  const graph = buildRelationshipGraph(docs);
+  const graphRelated = getRelatedNotes(graph, targetFile, { direction, depth: maxDepth });
+
+  const hitsMap = new Map<string, RelatedNoteHit>();
+
+  const outgoingSet = new Set((graph.outgoing.get(targetFile) || []).map((e) => e.file));
+  const backlinkSet = new Set((graph.backlinks.get(targetFile) || []).map((e) => e.file));
+
+  for (const rel of graphRelated) {
+    if (rel.file === targetFile) continue;
+    const d = docMap.get(rel.file);
+    const title = d?.title || rel.file;
+
+    let reason = '';
+    let score = 0;
+
+    if (rel.distance === 1) {
+      const isOut = outgoingSet.has(rel.file);
+      const isBack = backlinkSet.has(rel.file);
+      if (isOut && isBack) {
+        reason = 'bi-directional link';
+        score = 1.5;
+      } else if (isOut) {
+        reason = 'outgoing link';
+        score = 1.0;
+      } else {
+        reason = 'backlink';
+        score = 1.0;
+      }
+    } else {
+      reason = `${rel.distance}-hop connection`;
+      score = Math.max(0.1, 1.0 / rel.distance);
+    }
+
+    hitsMap.set(rel.file, {
+      file: rel.file,
+      title,
+      score,
+      reason,
+      distance: rel.distance,
+    });
+  }
+
+  // 4. Semantic similarity (if enabled or if graph has 0 links)
+  const targetData = docMap.get(targetFile);
+  const targetVecs = targetData?.vecs || [];
+
+  if (semantic && targetVecs.length > 0) {
+    // Compute target centroid
+    const dim = targetVecs[0].length;
+    const centroid = new Float32Array(dim);
+    for (const tv of targetVecs) {
+      for (let i = 0; i < dim; i++) centroid[i] += tv[i];
+    }
+    let norm = 0;
+    for (let i = 0; i < dim; i++) norm += centroid[i] * centroid[i];
+    norm = Math.sqrt(norm) || 1;
+    for (let i = 0; i < dim; i++) centroid[i] /= norm;
+
+    // Compare against every other note's centroid or max chunk cosine
+    for (const [file, d] of docMap.entries()) {
+      if (file === targetFile || d.vecs.length === 0) continue;
+      let maxCos = -1;
+      for (const cv of d.vecs) {
+        if (cv.length === dim) {
+          const cos = cosine(centroid, cv);
+          if (cos > maxCos) maxCos = cos;
+        }
+      }
+
+      if (maxCos > 0.3) {
+        const existing = hitsMap.get(file);
+        if (existing) {
+          existing.score += maxCos * 0.5;
+          existing.reason += ` + semantic (cos: ${maxCos.toFixed(2)})`;
+          existing.cosine = maxCos;
+        } else {
+          hitsMap.set(file, {
+            file,
+            title: d.title || file,
+            score: maxCos,
+            reason: `semantic similarity (cos: ${maxCos.toFixed(2)})`,
+            cosine: maxCos,
+          });
+        }
+      }
+    }
+  }
+
+  // 5. Deterministic sorting: by score descending, ties broken by file ascending
+  const sortedHits = Array.from(hitsMap.values()).sort((a, b) => {
+    if (Math.abs(b.score - a.score) > 1e-6) {
+      return b.score - a.score;
+    }
+    return a.file.localeCompare(b.file);
+  });
+
+  const finalHits = sortedHits.slice(0, k);
+
+  return {
+    target: rawTarget,
+    resolvedFile: targetFile,
+    results: finalHits,
+    total: finalHits.length,
+  };
+}
+
 
