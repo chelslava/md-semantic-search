@@ -66,6 +66,8 @@ jobs:
       contents: read
       packages: read
     steps:
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
       - name: Smoke arm64 (build + /health)
         run: |
           docker run --rm --platform linux/arm64 \
