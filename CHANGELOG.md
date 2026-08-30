@@ -6,6 +6,9 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Issue #148** — MCP `resources/read` now rejects note paths that resolve outside the indexed note directory, including POSIX traversal and UNC-style absolute paths.
+
 ## [1.1.0] - 2026-08-30
 
 ### Added
