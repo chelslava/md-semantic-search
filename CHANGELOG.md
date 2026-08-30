@@ -6,6 +6,9 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Issue #149** — Reject path-traversal session IDs before chat persistence reads or writes the filesystem.
+
 ## [1.1.0] - 2026-08-30
 
 ### Added

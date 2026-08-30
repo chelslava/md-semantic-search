@@ -160,6 +160,27 @@ test('rag: chat sessions persist, list, and degrade gracefully on corruption (is
   }
 });
 
+test('rag: chat session ids cannot escape the sessions directory (issue #149)', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-session-safe-'));
+  const indexDir = path.join(root, '.mdss');
+  fs.mkdirSync(indexDir, { recursive: true });
+  const session = {
+    id: '../../outside',
+    createdAt: '2026-08-30T00:00:00.000Z',
+    updatedAt: '2026-08-30T00:00:00.000Z',
+    turns: [],
+  };
+
+  try {
+    assert.throws(() => saveChatSession(indexDir, session), /Invalid session ID/);
+    assert.throws(() => loadChatSession(indexDir, '../../outside'), /Invalid session ID/);
+    assert.equal(fs.existsSync(path.join(root, 'outside.json')), false);
+    assert.equal(fs.existsSync(path.join(root, 'outside.0.tmp')), false);
+  } finally {
+    safeRm(root);
+  }
+});
+
 test('rag: multi-turn chatTurn maintains context, saves session, and guarantees citations ⊆ manifest (issue #147)', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-chat-'));
   const db = path.join(root, 'notes');
