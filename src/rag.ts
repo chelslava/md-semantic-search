@@ -86,10 +86,23 @@ export function getSessionsDir(indexDir: string): string {
   return path.join(indexDir, 'sessions');
 }
 
+const SESSION_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+
+/**
+ * Validates a session id before it is used as a filesystem path component.
+ */
+export function assertSafeSessionId(id: string): string {
+  if (!SESSION_ID_PATTERN.test(id)) {
+    throw new Error('Invalid session ID: expected 1-64 letters, numbers, hyphens, or underscores');
+  }
+  return id;
+}
+
 /**
  * Atomically saves a ChatSession to disk (<indexDir>/sessions/<id>.json).
  */
 export function saveChatSession(indexDir: string, session: ChatSession): string {
+  assertSafeSessionId(session.id);
   const dir = getSessionsDir(indexDir);
   fs.mkdirSync(dir, { recursive: true });
   const targetPath = path.join(dir, `${session.id}.json`);
@@ -107,6 +120,7 @@ export function loadChatSession(
   id: string,
   log: (msg: string) => void = () => {}
 ): ChatSession {
+  assertSafeSessionId(id);
   const sessionPath = path.join(getSessionsDir(indexDir), `${id}.json`);
   if (fs.existsSync(sessionPath)) {
     try {
