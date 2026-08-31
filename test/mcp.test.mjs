@@ -137,6 +137,32 @@ test('handleMcpRequest: handles resources/list, resources/templates/list, and re
       jsonrpc: '2.0', id: 25, method: 'resources/read', params: { uri: 'mdss://unknown/item' },
     }, state);
     assert.equal(unkRes.error.code, -32602);
+
+    const outsideFile = path.join(path.dirname(dir), `${path.basename(dir)}-outside.md`);
+    const outsideText = 'outside sentinel must not be returned';
+    fs.writeFileSync(outsideFile, outsideText);
+    try {
+      const traversalRes = await handleMcpRequest({
+        jsonrpc: '2.0',
+        id: 26,
+        method: 'resources/read',
+        params: { uri: `mdss://note/${encodeURIComponent(`../${path.basename(outsideFile)}`)}` },
+      }, state);
+      assert.equal(traversalRes.error.code, -32602);
+      assert.match(traversalRes.error.message, /path traversal guard|Forbidden path/i);
+      assert.equal(JSON.stringify(traversalRes).includes(outsideText), false);
+    } finally {
+      safeRm(outsideFile);
+    }
+
+    const uncRes = await handleMcpRequest({
+      jsonrpc: '2.0',
+      id: 27,
+      method: 'resources/read',
+      params: { uri: `mdss://note/${encodeURIComponent('//server/share/secret.md')}` },
+    }, state);
+    assert.equal(uncRes.error.code, -32602);
+    assert.match(uncRes.error.message, /path traversal guard|Forbidden path/i);
   } finally {
     safeRm(dir);
   }
@@ -255,5 +281,4 @@ test('cli: mdss mcp --list-tools outputs tool JSON definitions', () => {
   assert.equal(json.some(t => t.name === 'related_notes'), true);
   assert.equal(json.some(t => t.name === 'ask_knowledge_base'), true);
 });
-
 

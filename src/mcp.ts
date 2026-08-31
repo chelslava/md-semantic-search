@@ -10,7 +10,7 @@ import { buildIndex } from './indexer.js';
 import { loadIndex, searchIndex } from './search.js';
 import { searchFederated } from './federation.js';
 import { askQuestion, chatTurn, loadChatSession } from './rag.js';
-import { globToRegExp, getDocLines } from './core.js';
+import { assertSafePath, globToRegExp, getDocLines } from './core.js';
 import { findRelatedNotes } from './wikilinks.js';
 
 /**
@@ -377,9 +377,9 @@ export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir:
           // Read entire document
           let fullText: string | null = null;
           if (state.loaded.index.db) {
+            const absPath = assertSafePath(path.resolve(state.loaded.index.db, file), [state.loaded.index.db]);
             try {
-              const absPath = path.join(state.loaded.index.db, file);
-              if (fs.existsSync(absPath)) {
+              if (fs.existsSync(absPath) && fs.statSync(absPath).isFile()) {
                 fullText = fs.readFileSync(absPath, 'utf8');
               }
             } catch {}
@@ -411,6 +411,13 @@ export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir:
           },
         };
       } catch (e: any) {
+        if (/path traversal guard|Forbidden path/i.test(e.message || '')) {
+          return {
+            jsonrpc: '2.0',
+            id,
+            error: { code: -32602, message: e.message },
+          };
+        }
         return {
           jsonrpc: '2.0',
           id,
