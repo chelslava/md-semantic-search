@@ -8,6 +8,7 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 - **Issue #148** — MCP `resources/read` now rejects note paths that resolve outside the indexed note directory, including POSIX traversal and UNC-style absolute paths.
+- **Issue #149** — Reject path-traversal session IDs before chat persistence reads or writes the filesystem.
 
 ## [1.1.0] - 2026-08-30
 
