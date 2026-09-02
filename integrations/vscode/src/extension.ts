@@ -45,7 +45,12 @@ export function activate(context: vscode.ExtensionContext) {
         throw new Error(`Daemon returned HTTP ${resp.status}`);
       }
 
-      const results = (await resp.json()) as SearchResultItem[];
+      const data = (await resp.json()) as any;
+      const results: SearchResultItem[] = Array.isArray(data)
+        ? data
+        : Array.isArray(data?.results)
+          ? data.results
+          : [];
       if (!Array.isArray(results) || results.length === 0) {
         vscode.window.showInformationMessage(`No semantic matches for "${query}".`);
         return;
@@ -87,11 +92,30 @@ export function activate(context: vscode.ExtensionContext) {
     }
   });
 
+  // Command 2: Rebuild semantic index across workspace
+  const indexCommand = vscode.commands.registerCommand('mdss.index', async () => {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+      vscode.window.showWarningMessage('No active workspace folder for MDSS note indexing.');
+      return;
+    }
+
+    const rootPath = workspaceFolders[0].uri.fsPath;
+    const terminal = vscode.window.createTerminal({
+      name: 'MDSS Index',
+      cwd: rootPath,
+    });
+    terminal.show();
+    terminal.sendText('npx mdss index');
+    vscode.window.showInformationMessage('MDSS: Rebuilding semantic index in terminal...');
+  });
+
   // Register Webview View Provider for sidebar
   const sidebarProvider = new MdssSidebarProvider(context.extensionUri);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('mdss-search-view', sidebarProvider),
-    searchCommand
+    searchCommand,
+    indexCommand
   );
 }
 
@@ -142,7 +166,8 @@ export class MdssSidebarProvider implements vscode.WebviewViewProvider {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ query: q, k: 8 })
         });
-        const items = await resp.json();
+        const raw = await resp.json();
+        const items = Array.isArray(raw) ? raw : (Array.isArray(raw?.results) ? raw.results : []);
         if (!items || items.length === 0) {
           resDiv.innerHTML = '<p>No matches found.</p>';
           return;

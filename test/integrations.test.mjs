@@ -16,8 +16,36 @@ test('integrations: VS Code extension manifest is valid and specifies contributi
   assert.equal(pkg.name, 'md-semantic-search-vscode');
   assert.ok(Array.isArray(pkg.contributes?.commands));
   assert.ok(pkg.contributes.commands.some((c) => c.command === 'mdss.search'));
+  assert.ok(pkg.contributes.commands.some((c) => c.command === 'mdss.index'));
   assert.ok(pkg.contributes.viewsContainers?.activitybar?.length > 0);
   assert.ok(pkg.contributes.views?.['mdss-sidebar']?.length > 0);
+});
+
+test('integrations: VS Code extension source registers commands and unwraps search envelope (issue #151)', () => {
+  const extSrcPath = path.join(ROOT, 'integrations', 'vscode', 'src', 'extension.ts');
+  assert.ok(fs.existsSync(extSrcPath));
+  const src = fs.readFileSync(extSrcPath, 'utf8');
+
+  // Verify command registration
+  assert.ok(src.includes("vscode.commands.registerCommand('mdss.search'"));
+  assert.ok(src.includes("vscode.commands.registerCommand('mdss.index'"));
+  assert.ok(src.includes("indexCommand"));
+
+  // Verify envelope unwrapping logic in QuickPick and Webview
+  assert.ok(src.includes("data?.results"));
+  assert.ok(src.includes("raw?.results"));
+
+  // Contract test: unwrapping logic behaves identically on bare array and envelope
+  const envelope = { query: 'test', k: 5, count: 1, results: [{ file: 'note.md', score: 0.9, title: 'Note' }] };
+  const bareArray = [{ file: 'note.md', score: 0.9, title: 'Note' }];
+
+  const unwrap = (data) => (Array.isArray(data) ? data : (Array.isArray(data?.results) ? data.results : []));
+  assert.equal(unwrap(envelope).length, 1);
+  assert.equal(unwrap(envelope)[0].file, 'note.md');
+  assert.equal(unwrap(bareArray).length, 1);
+  assert.equal(unwrap(bareArray)[0].file, 'note.md');
+  assert.equal(unwrap(null).length, 0);
+  assert.equal(unwrap({}).length, 0);
 });
 
 test('integrations: Raycast extension manifest is valid and specifies command view', () => {
