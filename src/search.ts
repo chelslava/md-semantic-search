@@ -818,7 +818,10 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
   }
   const cosByIdx = new Map(semantic.map((s) => [s.idx, s.score]));
 
-  const pool = rerank ? rerankPool || Math.max(20, k * 3) : k;
+  const maxPerDoc = opts.maxPerFile || opts.maxPerDoc;
+  const pool = rerank
+    ? (rerankPool || (maxPerDoc && maxPerDoc > 0 ? Math.max(50, k * 5) : Math.max(20, k * 3)))
+    : (maxPerDoc && maxPerDoc > 0 ? Math.max(50, k * 5) : k);
 
   let graphRanking: Array<{ idx: number; score: number }> = [];
   let graphMap: Map<number, number> | undefined;
@@ -917,8 +920,10 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
     const scores = await rerankFn(query, texts, cacheDir, offline);
     ranked = ranked
       .map((r, i) => ({ ...r, rerank: scores[i] ?? -Infinity }))
-      .sort((a, b) => b.rerank - a.rerank)
-      .slice(0, k);
+      .sort((a, b) => b.rerank - a.rerank);
+    if (!maxPerDoc || maxPerDoc <= 0) {
+      ranked = ranked.slice(0, k);
+    }
   }
 
   const hasMetaFields = (m?: DocumentMetadata) =>
@@ -981,7 +986,6 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
     };
   });
 
-  const maxPerDoc = opts.maxPerFile || opts.maxPerDoc;
   if (maxPerDoc && maxPerDoc > 0) {
     return collapseResults(hits, (h) => h.meta?.canonicalRef || h.file, maxPerDoc).slice(0, k);
   }
