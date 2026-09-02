@@ -252,3 +252,69 @@ test('rag: multi-turn chatTurn maintains context, saves session, and guarantees 
   }
 });
 
+test('rag: askQuestion and chatTurn propagate offline: true and custom embedFn (issue #152)', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-rag-offline-'));
+  const db = path.join(root, 'notes');
+  const indexDir = path.join(root, '.mdss');
+  fs.mkdirSync(db, { recursive: true });
+
+  let askEmbedCalled = false;
+  let chatEmbedCalled = false;
+
+  const trackingEmbedAsk = async (texts, kind, model, cacheDir, offline) => {
+    assert.equal(offline, true);
+    askEmbedCalled = true;
+    return fakeEmbed(texts, kind, model);
+  };
+
+  const trackingEmbedChat = async (texts, kind, model, cacheDir, offline) => {
+    assert.equal(offline, true);
+    chatEmbedCalled = true;
+    return fakeEmbed(texts, kind, model);
+  };
+
+  try {
+    fs.writeFileSync(
+      path.join(db, 'airgap.md'),
+      '# Air-Gapped Guide\n\n## Isolation\nAir-gapped clusters operate without any external internet connection.\n'
+    );
+
+    await buildIndex({
+      db,
+      indexDir,
+      cacheDir: root,
+      modelName: 'e5-base',
+      embedFn: fakeEmbed,
+    });
+
+    // 1. askQuestion with offline: true
+    const askRes = await askQuestion({
+      query: 'air gap isolation',
+      indexDir,
+      cacheDir: root,
+      k: 3,
+      offline: true,
+      embedFn: trackingEmbedAsk,
+    });
+
+    assert.ok(askEmbedCalled);
+    assert.ok(askRes.answer.includes('Air-gapped'));
+
+    // 2. chatTurn with offline: true
+    const chatRes = await chatTurn({
+      query: 'external network isolation',
+      indexDir,
+      cacheDir: root,
+      k: 3,
+      offline: true,
+      embedFn: trackingEmbedChat,
+    });
+
+    assert.ok(chatEmbedCalled);
+    assert.ok(chatRes.answer.includes('Air-gapped'));
+  } finally {
+    safeRm(root);
+  }
+});
+
+

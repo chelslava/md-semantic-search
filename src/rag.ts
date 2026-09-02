@@ -51,6 +51,7 @@ export interface AskOptions {
   cacheDir?: string;
   db?: string;
   k?: number;
+  offline?: boolean;
   llmEndpoint?: string;
   llmModel?: string;
   llmFn?: (prompt: string) => Promise<string>;
@@ -66,6 +67,7 @@ export interface ChatTurnOptions {
   cacheDir?: string;
   db?: string;
   k?: number;
+  offline?: boolean;
   llmEndpoint?: string;
   llmModel?: string;
   llmFn?: (prompt: string) => Promise<string>;
@@ -327,6 +329,7 @@ export async function askQuestion(opts: AskOptions): Promise<SynthesisResult> {
     query,
     k,
     embedFn,
+    offline: opts.offline,
   });
 
   return synthesizeAnswer(query, passages, {
@@ -395,6 +398,7 @@ export async function chatTurn(opts: ChatTurnOptions): Promise<{
     query: retrievalQuery,
     k,
     embedFn,
+    offline: opts.offline,
   });
 
   // 3. Construct source manifest from retrieved chunks

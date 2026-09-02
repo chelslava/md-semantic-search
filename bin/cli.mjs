@@ -1146,6 +1146,8 @@ async function cmdAsk(opts) {
   const indexDir = resolveIndexDir(opts, db);
   const cacheDir = resolveCache(opts);
   const k = opts.k || 5;
+  const offline = resolveOffline(opts);
+  const embedderOverrides = await resolveEmbedderOverrides(opts);
 
   const { askQuestion } = await import('../dist/rag.js');
   const result = await askQuestion({
@@ -1153,6 +1155,8 @@ async function cmdAsk(opts) {
     indexDir,
     cacheDir,
     k,
+    offline,
+    ...(embedderOverrides.embedFn ? { embedFn: embedderOverrides.embedFn } : {}),
     llmEndpoint: opts.llmEndpoint,
     llmModel: opts.llmModel,
     systemPrompt: opts.systemPrompt,
@@ -1179,6 +1183,8 @@ async function cmdChat(opts) {
   const indexDir = resolveIndexDir(opts, db);
   const cacheDir = resolveCache(opts);
   const k = opts.k || 5;
+  const offline = resolveOffline(opts);
+  const embedderOverrides = await resolveEmbedderOverrides(opts);
 
   const vectorsPath = path.join(indexDir, 'vectors.json');
   if (!fs.existsSync(vectorsPath)) {
@@ -1213,6 +1219,8 @@ async function cmdChat(opts) {
       indexDir,
       cacheDir,
       k,
+      offline,
+      ...(embedderOverrides.embedFn ? { embedFn: embedderOverrides.embedFn } : {}),
       llmEndpoint: opts.llmEndpoint,
       llmModel: opts.llmModel,
       systemPrompt: opts.systemPrompt,
@@ -1294,6 +1302,8 @@ async function cmdChat(opts) {
           indexDir,
           cacheDir,
           k,
+          offline,
+          ...(embedderOverrides.embedFn ? { embedFn: embedderOverrides.embedFn } : {}),
           llmEndpoint: opts.llmEndpoint,
           llmModel: opts.llmModel,
           systemPrompt: opts.systemPrompt,
