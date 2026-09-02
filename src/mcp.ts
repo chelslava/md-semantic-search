@@ -421,9 +421,9 @@ export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir:
         return {
           jsonrpc: '2.0',
           id,
-          result: {
-            isError: true,
-            content: [{ type: 'text', text: `Error reading resource: ${e.message}` }],
+          error: {
+            code: e.message?.includes('not found') ? -32602 : -32603,
+            message: `Error reading resource: ${e.message}`,
           },
         };
       }

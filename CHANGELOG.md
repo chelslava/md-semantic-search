@@ -7,6 +7,7 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
+- Return standard JSON-RPC errors when `resources/read` cannot read a resource (#153).
 - **Issue #148** — MCP `resources/read` now rejects note paths that resolve outside the indexed note directory, including POSIX traversal and UNC-style absolute paths.
 - **Issue #149** — Reject path-traversal session IDs before chat persistence reads or writes the filesystem.
 

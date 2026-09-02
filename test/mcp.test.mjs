@@ -163,6 +163,17 @@ test('handleMcpRequest: handles resources/list, resources/templates/list, and re
     }, state);
     assert.equal(uncRes.error.code, -32602);
     assert.match(uncRes.error.message, /path traversal guard|Forbidden path/i);
+
+    const missingRes = await handleMcpRequest({
+      jsonrpc: '2.0',
+      id: 28,
+      method: 'resources/read',
+      params: { uri: 'mdss://note/missing.md' },
+    }, state);
+    assert.equal(missingRes.id, 28);
+    assert.equal(missingRes.error.code, -32602);
+    assert.match(missingRes.error.message, /Error reading resource:.*not found/i);
+    assert.equal(missingRes.result, undefined);
   } finally {
     safeRm(dir);
   }
