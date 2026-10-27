@@ -17,7 +17,10 @@ permissions:
 jobs:
   build-push:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # The emulated (QEMU) linux/arm64 npm ci dominates the wall clock since
+    # transformers 4.3.x pulled in sharp 0.35.x + onnxruntime-node 1.30.x;
+    # 25 min timed out mid-install (issue #17 follow-up).
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
