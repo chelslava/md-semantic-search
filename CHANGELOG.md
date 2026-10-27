@@ -13,6 +13,7 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 - **Breaking:** minimum Node version raised from 18 to **20.9.0** (`engines`, CI matrix). `@huggingface/transformers` 4.3.x pulls `sharp` 0.35.x, which requires Node ≥20.9 and cannot load on Node 18; Node 18 has been EOL since April 2025. This upgrade also resolves the transitive adm-zip and sharp advisory baseline, so the security audit runs with zero waivers (issue #17).
 
 ### Fixed
+- **Issue #166** — `planRepairs` (behind `mdss check --fix`) now detects a `vectors.json.sha256` mismatch — the same integrity failure `mdss check` reports — and plans a `rebuild-index` (with the same `--db` gating as corrupt JSON) instead of printing "nothing to repair".
 - **Issue #164** — Recency age source priority flipped to `updated` → `created` → file mtime: long-lived notes that were recently revised are no longer penalized by their original creation date.
 - **Issue #163** — Recency candidate starvation: with `--recency` the fusion pool now expands to `Math.max(50, k * 5)` (like the `--max-per-doc` path) so fresh documents ranked below `k` by raw RRF can still be rescored and surface; the final `k`-truncation moved after the recency re-sort.
 - **Issue #148** — MCP `resources/read` now rejects note paths that resolve outside the indexed note directory, including POSIX traversal and UNC-style absolute paths.

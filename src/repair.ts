@@ -144,7 +144,8 @@ export function planRepairs(indexDir: string, opts: ProbeOptions = {}): RepairPl
   const liveWriter = plan.skipped.some(
     (s) => s.action === 'remove-stale-lock' && /live writer/.test(s.detail),
   );
-  const vectorsRaw = readJsonIfParsable(path.join(indexDir, 'vectors.json'));
+  const vectorsPath = path.join(indexDir, 'vectors.json');
+  const vectorsRaw = readJsonIfParsable(vectorsPath);
   if (vectorsRaw.ok === false) {
     if (db && !liveWriter) {
       plan.actions.push({ action: 'rebuild-index', detail: `vectors.json is not valid JSON — rebuild from ${db}` });
@@ -158,6 +159,41 @@ export function planRepairs(indexDir: string, opts: ProbeOptions = {}): RepairPl
         action: 'rebuild-index',
         detail: 'vectors.json is not valid JSON — pass --db so --fix can rebuild it',
       });
+    }
+  }
+
+  // --- 4b. vectors.json SHA-256 sidecar mismatch (issue #166) ---
+  // `mdss check` reports this as an integrity failure; without a planned
+  // repair `check --fix` printed "nothing to repair" and left the index
+  // broken. Mirror the check's hashing (raw bytes vs first sidecar token)
+  // and plan the same rebuild as the corrupt-JSON path — rewriting the
+  // sidecar would bless whatever tampered content is on disk.
+  if (vectorsRaw.ok === true) {
+    const vectorsShaPath = `${vectorsPath}.sha256`;
+    if (fs.existsSync(vectorsShaPath)) {
+      let mismatch: string | null = null;
+      try {
+        const actual = crypto.createHash('sha256').update(fs.readFileSync(vectorsPath)).digest('hex');
+        const expected = fs.readFileSync(vectorsShaPath, 'utf8').trim().split(/\s+/)[0];
+        if (expected && expected !== actual) mismatch = 'SHA-256 mismatch';
+      } catch (e: any) {
+        mismatch = e.message;
+      }
+      if (mismatch) {
+        if (db && !liveWriter) {
+          plan.actions.push({ action: 'rebuild-index', detail: `vectors.json integrity check failed (${mismatch}) — rebuild from ${db}` });
+        } else if (liveWriter) {
+          plan.skipped.push({
+            action: 'rebuild-index',
+            detail: `vectors.json integrity check failed (${mismatch}), but a live writer holds the lock — retry after it finishes`,
+          });
+        } else {
+          plan.skipped.push({
+            action: 'rebuild-index',
+            detail: `vectors.json integrity check failed (${mismatch}) — pass --db so --fix can rebuild it`,
+          });
+        }
+      }
     }
   }
 

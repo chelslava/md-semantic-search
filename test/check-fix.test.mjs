@@ -143,3 +143,37 @@ test('check --fix: corrupt vectors.json rebuilds with --db, skipped without it (
     safeRm(db);
   }
 });
+
+test('check --fix: vectors.json.sha256 mismatch plans a rebuild and --fix restores integrity (issue #166)', async () => {
+  const { db, idx } = await seed();
+  try {
+    // Tamper with the JSON while keeping it VALID — `mdss check` reports a
+    // SHA-256 mismatch, and pre-#166 planRepairs said "nothing to repair".
+    const vectorsPath = path.join(idx, 'vectors.json');
+    fs.writeFileSync(vectorsPath, fs.readFileSync(vectorsPath, 'utf8').replace('Coffee', 'Cofffe'));
+
+    let plan = planRepairs(idx, {});
+    assert.ok(plan.skipped.some((s) => s.action === 'rebuild-index' && /SHA-256 mismatch/.test(s.detail)),
+      'without db the sha-mismatch rebuild is skipped with guidance');
+
+    plan = planRepairs(idx, { db });
+    assert.ok(plan.actions.some((a) => a.action === 'rebuild-index' && /SHA-256 mismatch/.test(a.detail)),
+      'sha mismatch plans a rebuild-index');
+
+    const res = await applyRepairs(idx, plan, {
+      dryRun: false, db,
+      cacheDir: path.join(db, 'cache'),
+      modelName: 'e5-base',
+      embedFn: fakeEmbed,
+    });
+    assert.ok(res.performed.some((a) => a.action === 'rebuild-index'), 'rebuild performed');
+
+    // After the rebuild the sidecar matches again and nothing is planned.
+    const actual = crypto.createHash('sha256').update(fs.readFileSync(vectorsPath)).digest('hex');
+    const expected = fs.readFileSync(`${vectorsPath}.sha256`, 'utf8').trim().split(/\s+/)[0];
+    assert.equal(actual, expected, 'sidecar matches the rebuilt index');
+    assert.equal(planRepairs(idx, { db }).actions.length, 0, 'no further repairs planned');
+  } finally {
+    safeRm(db);
+  }
+});
