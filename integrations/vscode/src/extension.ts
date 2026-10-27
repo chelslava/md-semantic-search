@@ -1,5 +1,10 @@
 /**
  * Markdown Semantic Search (MDSS) — Official VS Code Extension (issue #98).
+ *
+ * Sidebar search runs through the Extension Host via postMessage (issue #165):
+ * the webview never talks to the daemon directly, so `mdss.daemonUrl` and
+ * `mdss.apiKey` apply uniformly, and all rendered result fields are HTML-
+ * escaped to prevent stored XSS from note content.
  */
 import * as vscode from 'vscode';
 import * as path from 'node:path';
@@ -12,6 +17,37 @@ export interface SearchResultItem {
   cosine: number;
   snippet: string;
   startLine?: number;
+}
+
+/** Accepts both a bare result array and the `{ results }` envelope (issue #151). */
+export function unwrapSearchEnvelope(data: unknown): SearchResultItem[] {
+  if (Array.isArray(data)) return data as SearchResultItem[];
+  if (data !== null && typeof data === 'object' && Array.isArray((data as any)?.results)) {
+    return (data as any).results as SearchResultItem[];
+  }
+  return [];
+}
+
+export interface DaemonSearchParams {
+  daemonUrl: string;
+  apiKey?: string;
+  query: string;
+  k: number;
+}
+
+/** Shared daemon client used by both the QuickPick flow and the sidebar. */
+export async function searchDaemon({ daemonUrl, apiKey, query, k }: DaemonSearchParams): Promise<SearchResultItem[]> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  const resp = await fetch(`${daemonUrl}/search`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ query, k }),
+  });
+  if (!resp.ok) {
+    throw new Error(`Daemon returned HTTP ${resp.status}`);
+  }
+  return unwrapSearchEnvelope(await resp.json());
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -32,26 +68,12 @@ export function activate(context: vscode.ExtensionContext) {
 
     const config = vscode.workspace.getConfiguration('mdss');
     const daemonUrl = config.get<string>('daemonUrl', 'http://127.0.0.1:8747');
+    const apiKey = config.get<string>('apiKey', '');
     const k = config.get<number>('k', 10);
 
     try {
-      const resp = await fetch(`${daemonUrl}/search`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: query.trim(), k }),
-      });
-
-      if (!resp.ok) {
-        throw new Error(`Daemon returned HTTP ${resp.status}`);
-      }
-
-      const data = (await resp.json()) as any;
-      const results: SearchResultItem[] = Array.isArray(data)
-        ? data
-        : Array.isArray(data?.results)
-          ? data.results
-          : [];
-      if (!Array.isArray(results) || results.length === 0) {
+      const results = await searchDaemon({ daemonUrl, apiKey, query: query.trim(), k });
+      if (!results || results.length === 0) {
         vscode.window.showInformationMessage(`No semantic matches for "${query}".`);
         return;
       }
@@ -132,6 +154,27 @@ export class MdssSidebarProvider implements vscode.WebviewViewProvider {
     };
 
     webviewView.webview.html = this._getHtmlForWebview();
+
+    // Issue #165: the webview posts search intents to the Extension Host,
+    // which owns daemon settings (daemonUrl, apiKey, k) and returns results.
+    webviewView.webview.onDidReceiveMessage(async (msg: { type?: string; query?: unknown }) => {
+      if (msg?.type !== 'search' || typeof msg.query !== 'string' || !msg.query.trim()) return;
+      const config = vscode.workspace.getConfiguration('mdss');
+      try {
+        const results = await searchDaemon({
+          daemonUrl: config.get<string>('daemonUrl', 'http://127.0.0.1:8747'),
+          apiKey: config.get<string>('apiKey', ''),
+          query: msg.query.trim(),
+          k: config.get<number>('k', 8),
+        });
+        void webviewView.webview.postMessage({ type: 'results', results });
+      } catch (err: any) {
+        void webviewView.webview.postMessage({
+          type: 'error',
+          message: `Failed to reach mdss daemon: ${err?.message ?? err}`,
+        });
+      }
+    });
   }
 
   private _getHtmlForWebview(): string {
@@ -155,33 +198,45 @@ export class MdssSidebarProvider implements vscode.WebviewViewProvider {
   <button class="btn" onclick="doSearch()">Search</button>
   <div id="results"></div>
   <script>
-    async function doSearch() {
-      const q = document.getElementById('query').value;
+    var vscode = acquireVsCodeApi();
+
+    // Issue #165: every dynamic field is HTML-escaped before it reaches
+    // innerHTML — note titles, headings, and snippets may contain markup.
+    function escapeHtml(str) {
+      return String(str === undefined || str === null ? '' : str).replace(/[&<>"']/g, function (m) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m];
+      });
+    }
+
+    function doSearch() {
+      var q = document.getElementById('query').value;
       if (!q) return;
-      const resDiv = document.getElementById('results');
-      resDiv.innerHTML = '<p>Searching...</p>';
-      try {
-        const resp = await fetch('http://127.0.0.1:8747/search', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: q, k: 8 })
-        });
-        const raw = await resp.json();
-        const items = Array.isArray(raw) ? raw : (Array.isArray(raw?.results) ? raw.results : []);
-        if (!items || items.length === 0) {
+      document.getElementById('results').innerHTML = '<p>Searching...</p>';
+      vscode.postMessage({ type: 'search', query: q });
+    }
+
+    window.addEventListener('message', function (event) {
+      var msg = event.data || {};
+      var resDiv = document.getElementById('results');
+      if (msg.type === 'results') {
+        var items = Array.isArray(msg.results) ? msg.results : [];
+        if (items.length === 0) {
           resDiv.innerHTML = '<p>No matches found.</p>';
           return;
         }
-        resDiv.innerHTML = items.map(h => \`
-          <div class="hit">
-            <div class="hit-title">\${h.title} \${h.heading ? '› ' + h.heading : ''}</div>
-            <div class="hit-snippet">\${h.snippet}</div>
-          </div>
-        \`).join('');
-      } catch (e) {
-        resDiv.innerHTML = '<p style="color:red">Failed to connect to mdss daemon.</p>';
+        var html = '';
+        for (var i = 0; i < items.length; i++) {
+          var h = items[i];
+          html += '<div class="hit">'
+            + '<div class="hit-title">' + escapeHtml(h.title) + (h.heading ? ' › ' + escapeHtml(h.heading) : '') + '</div>'
+            + '<div class="hit-snippet">' + escapeHtml(h.snippet) + '</div>'
+            + '</div>';
+        }
+        resDiv.innerHTML = html;
+      } else if (msg.type === 'error') {
+        resDiv.innerHTML = '<p style="color:red">' + escapeHtml(msg.message) + '</p>';
       }
-    }
+    });
   </script>
 </body>
 </html>`;

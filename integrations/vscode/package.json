@@ -78,6 +78,11 @@
           "type": "number",
           "default": 10,
           "description": "Default number of search results to return"
+        },
+        "mdss.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Optional API key (Bearer token) sent with search requests when the daemon runs with --api-key"
         }
       }
     }

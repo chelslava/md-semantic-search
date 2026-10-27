@@ -6,6 +6,9 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+- **Issue #165** — VS Code extension: eliminated a stored-XSS vector in the sidebar webview (note `title`/`heading`/`snippet` were interpolated into `innerHTML` unescaped — now HTML-escaped, with error messages escaped too); sidebar search moved behind the Extension Host via `postMessage` and the shared daemon client, honoring `mdss.daemonUrl` and the new `mdss.apiKey` setting (`Authorization: Bearer`) instead of a hardcoded `http://127.0.0.1:8747/search`.
+
 ### Changed
 - **Breaking:** minimum Node version raised from 18 to **20.9.0** (`engines`, CI matrix). `@huggingface/transformers` 4.3.x pulls `sharp` 0.35.x, which requires Node ≥20.9 and cannot load on Node 18; Node 18 has been EOL since April 2025. This upgrade also resolves the transitive adm-zip and sharp advisory baseline, so the security audit runs with zero waivers (issue #17).
 
