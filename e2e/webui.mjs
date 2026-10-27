@@ -39,7 +39,10 @@ async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-e2e-'));
   const idx = path.join(dir, '.mdss');
   fs.writeFileSync(path.join(dir, 'a.md'), '# Coffee\n\ncoffee beans roasted ground notes here\n');
-  await buildIndex({ db: dir, indexDir: idx, cacheDir: path.join(dir, '.c'), modelName: 'e5-base', embedFn: fakeEmbed });
+  // An unregistered model id resolves to an unknown adapter (dim 0), so the
+  // 8-dim fake embedder defines the index dimension; a registered alias like
+  // 'e5-base' would enforce its native 768-dim profile contract here.
+  await buildIndex({ db: dir, indexDir: idx, cacheDir: path.join(dir, '.c'), modelName: 'mdss-fake-8d', embedFn: fakeEmbed });
   const svc = await createServe({ indexDir: idx, cacheDir: path.join(dir, '.c'), embedFn: fakeEmbed });
   await new Promise((r) => svc.server.listen(0, r));
   const url = `http://127.0.0.1:${svc.server.address().port}`;
