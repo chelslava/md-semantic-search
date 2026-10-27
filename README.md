@@ -100,7 +100,7 @@ measurements that shaped its defaults.
 
 | Approach | Stronger than mdss at | mdss advantage for its target segment |
 |---|---|---|
-| **QMD** | Query expansion, HyDE, LLM reranking, MCP/SDK ecosystem | Smaller default footprint, Node 18, zero native C++ runtime (pure ONNX.js), fast incremental chunk reuse |
+| **QMD** | Query expansion, HyDE, LLM reranking, MCP/SDK ecosystem | Smaller default footprint, Node 20.9+, zero native C++ runtime (pure ONNX.js), fast incremental chunk reuse |
 | **Obsidian Hybrid Search** | Obsidian GUI integration, Obsidian vault plugins | Standalone CLI & HTTP API, not tied to Obsidian, crash-safe atomic indexing, robust incremental re-index |
 | **Vector Databases (Qdrant/Pinecone)** | Multi-million chunk scale, distributed vector index, cloud replication | Zero infra, single JSON index, no server/daemon required, fast in-memory sweep for 10k–50k chunks |
 | **Grep / Fzf** | Zero model load time, instant literal string matching | Cross-lingual matching (RU/EN), paraphrase retrieval, semantic understanding while retaining exact BM25 lexical precision |
