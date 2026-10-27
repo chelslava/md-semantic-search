@@ -14,18 +14,17 @@ If you discover a security vulnerability in `md-semantic-search`, please report 
 
 Continuous Integration runs `node scripts/audit-ci.mjs` on every commit to audit production dependencies (`npm audit --omit=dev --json`).
 
-The following known transitive upstream advisories currently exist in third-party ONNX Runtime / Transformers.js dependencies without upstream patch releases:
+The production dependency tree is currently clean (0 known high/critical advisories):
+`@huggingface/transformers` 4.3.x pulls `onnxruntime-node` 1.30.x (`adm-zip` ^0.6.0,
+resolving the adm-zip advisory baseline) and `sharp` 0.35.5 (resolving the
+libvips/libheif/librsvg advisory baseline). No waivers are active.
 
-| Advisory ID | Package | Upstream Parent | Exposure & Mitigation |
-|---|---|---|---|
-| `GHSA-xcpc-8h2w-3j85` | `adm-zip` (<0.6.0) | `onnxruntime-node` | mdss does not accept or extract untrusted ZIP files. |
-| `GHSA-f88m-g3jw-g9cj` | `sharp` (<0.35.0) | `@huggingface/transformers` | mdss does not decode image files. |
-
-These advisories are codified as **dated waivers** in `scripts/audit-ci.mjs`
-(issue #122): each carries a `reason` and an `expires` date; an expired waiver
-FAILS the audit gate and forces re-triage. Any new high or critical vulnerability
-outside this baseline immediately fails the CI audit build, the weekly scheduled
-audit sweep (cron in ci.yml), and blocks `npm publish`.
+Any new high or critical vulnerability immediately fails the CI audit build,
+the weekly scheduled audit sweep (cron in ci.yml), and blocks `npm publish`.
+Re-triage then either upgrades the affected dependency or codifies a **dated
+waiver** in `scripts/audit-ci.mjs` (issue #122): each waiver carries a `reason`
+and an `expires` date; an expired waiver FAILS the audit gate and forces
+conscious re-triage.
 
 ---
 

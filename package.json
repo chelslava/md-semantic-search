@@ -59,7 +59,7 @@
     "url": "https://github.com/chelslava/md-semantic-search/issues"
   },
   "dependencies": {
-    "@huggingface/transformers": "^4.2.0"
+    "@huggingface/transformers": "^4.3.2"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

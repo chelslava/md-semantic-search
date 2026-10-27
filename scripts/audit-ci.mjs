@@ -8,26 +8,18 @@ import { execSync } from 'node:child_process';
  * EXCEPT the explicitly waived ones below. This runs as a HARD gate in CI
  * (including a weekly scheduled run) and before every `npm publish`.
  *
+ * The baseline is currently clean: `@huggingface/transformers` 4.3.x resolves
+ * the former adm-zip (via onnxruntime-node 1.30.x) and sharp 0.35.x advisories,
+ * so the waiver list below is empty. Keep the mechanism ready — see SECURITY.md
+ * (Supply-Chain section) for the triage protocol.
+ *
  * Waiver rules (issue #122):
  *  - every waiver MUST carry `reason` and `expires: 'YYYY-MM-DD'`;
  *  - an EXPIRED waiver fails loudly instead of silently suppressing, forcing
  *    a conscious re-triage;
  *  - re-review dates are tracked in SECURITY.md (Supply-Chain section).
  */
-const WAIVED_ADVISORIES = [
-  {
-    id: 'GHSA-xcpc-8h2w-3j85',
-    package: 'adm-zip <0.6.0 via onnxruntime-node',
-    reason: 'mdss never accepts or extracts untrusted ZIP archives; fix requires upstream onnxruntime-node bump',
-    expires: '2027-01-31', // re-triage at next quarterly supply-chain review
-  },
-  {
-    id: 'GHSA-f88m-g3jw-g9cj',
-    package: 'sharp <0.35.0 via @huggingface/transformers',
-    reason: 'mdss does not decode image files; fixed sharp requires Node >=20.9 which would break the Node 18 contract',
-    expires: '2027-01-31',
-  },
-];
+const WAIVED_ADVISORIES = [];
 
 function expired(w) {
   return Date.parse(w.expires) < Date.now();
