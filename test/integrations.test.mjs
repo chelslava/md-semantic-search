@@ -52,7 +52,7 @@ test('integrations: VS Code extension source registers commands and unwraps sear
 // Issue #165: extract the webview's escapeHtml (a pure function inside the
 // generated HTML) and evaluate it in Node for a real behavioral check.
 function extractEscapeHtml(src) {
-  const match = src.match(/function escapeHtml\(str\) \{[\s\S]*?\n    \}/);
+  const match = src.match(/function escapeHtml\(str\) \{[\s\S]*?\n {4}\}/);
   assert.ok(match, 'escapeHtml function found in the webview script');
   const fn = new Function(`return (${match[0]})`)();
   assert.equal(typeof fn, 'function');
