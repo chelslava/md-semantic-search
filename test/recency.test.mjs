@@ -123,3 +123,40 @@ test('recency: end-to-end — fresh outranks stale with small half-life; explain
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('recency: candidate pool expands past k so fresh docs ranked > k can surface (issue #163)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-recency-starve-'));
+  try {
+    // stale.md wins raw RRF; fresh.md shares one token and lands at rank 2 —
+    // outside the pool when k=1, so the pre-fix slice dropped it before the
+    // recency rescore could ever see it.
+    fs.writeFileSync(
+      path.join(dir, 'stale.md'),
+      '---\nupdated: 2020-01-15\n---\n# Failover\n\nfailover runbook failover failover steps here\n',
+    );
+    fs.writeFileSync(
+      path.join(dir, 'fresh.md'),
+      '---\nupdated: 2026-08-22\n---\n# Fresh notes\n\nfresh coffee runbook general notes\n',
+    );
+    const idx = path.join(dir, '.mdss');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: path.join(dir, '.c'), modelName: 'e5-base', embedFn: fakeEmbed });
+    const loaded = loadIndex(idx);
+
+    // k=1, no recency: only the RRF winner survives (regression guard for
+    // the final k-truncation).
+    const base = await searchIndex({ loaded, cacheDir: path.join(dir, '.c'), query: 'failover runbook', k: 1, embedFn: fakeEmbed });
+    assert.equal(base.length, 1, 'k=1 returns exactly one hit without recency');
+    assert.equal(base[0].file, 'stale.md', 'raw RRF winner without recency');
+
+    // k=1 with recency: the expanded pool lets the fresh note be rescored,
+    // overtake the decayed winner, and the final slice still returns only k.
+    const boosted = await searchIndex({
+      loaded, cacheDir: path.join(dir, '.c'), query: 'failover runbook', k: 1,
+      embedFn: fakeEmbed, recency: 30,
+    });
+    assert.equal(boosted.length, 1, 'k=1 returns exactly one hit with recency');
+    assert.equal(boosted[0].file, 'fresh.md', `fresh doc ranked > k overtakes via recency, got ${boosted[0].file}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

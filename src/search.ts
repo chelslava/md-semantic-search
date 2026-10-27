@@ -819,9 +819,17 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
   const cosByIdx = new Map(semantic.map((s) => [s.idx, s.score]));
 
   const maxPerDoc = opts.maxPerFile || opts.maxPerDoc;
+  // Issue #127: time-decay recency boost — multiply the fused score by
+  // 0.5^(ageDays / halfLifeDays), post-RRF and pre-collapse. Age source
+  // priority: frontmatter `created` → `updated` → file mtime. Missing dates
+  // get factor 1 (evergreen content stays reachable via lexical strength).
+  const recencyHalfLife = Number(opts.recency) > 0 ? Number(opts.recency) : 0;
+  // Issue #163: recency rescores AFTER the pool slice, so the pool must be
+  // expanded like the maxPerDoc path — otherwise candidates ranked k+1..n
+  // by raw RRF are dropped before the fresh-document boost can lift them.
   const pool = rerank
     ? (rerankPool || (maxPerDoc && maxPerDoc > 0 ? Math.max(50, k * 5) : Math.max(20, k * 3)))
-    : (maxPerDoc && maxPerDoc > 0 ? Math.max(50, k * 5) : k);
+    : (maxPerDoc && maxPerDoc > 0 || recencyHalfLife > 0 ? Math.max(50, k * 5) : k);
 
   let graphRanking: Array<{ idx: number; score: number }> = [];
   let graphMap: Map<number, number> | undefined;
@@ -893,11 +901,6 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
     }
   }
 
-  // Issue #127: time-decay recency boost — multiply the fused score by
-  // 0.5^(ageDays / halfLifeDays), post-RRF and pre-collapse. Age source
-  // priority: frontmatter `created` → `updated` → file mtime. Missing dates
-  // get factor 1 (evergreen content stays reachable via lexical strength).
-  const recencyHalfLife = Number(opts.recency) > 0 ? Number(opts.recency) : 0;
   if (recencyHalfLife > 0) {
     const now = Date.now();
     const ageCache = new Map<string, number | null>();
@@ -989,7 +992,10 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
   if (maxPerDoc && maxPerDoc > 0) {
     return collapseResults(hits, (h) => h.meta?.canonicalRef || h.file, maxPerDoc).slice(0, k);
   }
-  return hits;
+  // Issue #163: with the pool expanded for recency the final k-truncation
+  // moves here (it used to be the pool slice itself). Paths that already
+  // truncate (rerank, maxPerDoc collapse) keep their behavior.
+  return hits.slice(0, k);
 }
 
 export type OneShotSearchOptions = Omit<SearchOptions, 'loaded'> & { indexDir: string };

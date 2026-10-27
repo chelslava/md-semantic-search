@@ -7,6 +7,7 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
+- **Issue #163** — Recency candidate starvation: with `--recency` the fusion pool now expands to `Math.max(50, k * 5)` (like the `--max-per-doc` path) so fresh documents ranked below `k` by raw RRF can still be rescored and surface; the final `k`-truncation moved after the recency re-sort.
 - **Issue #148** — MCP `resources/read` now rejects note paths that resolve outside the indexed note directory, including POSIX traversal and UNC-style absolute paths.
 - **Issue #149** — Reject path-traversal session IDs before chat persistence reads or writes the filesystem.
 
