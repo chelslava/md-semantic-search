@@ -212,12 +212,14 @@ export function getRuntimeGraph(runtime: RuntimeIndexState): { graph: Relationsh
 /**
  * Issue #127 pure helpers — exported for deterministic unit tests.
  */
-/** Frontmatter `created` → `updated` → file mtime; null when nothing parses. */
+/** Frontmatter `updated` → `created` → file mtime; null when nothing parses.
+ *  Issue #164: `updated` wins — long-lived notes that were recently revised
+ *  must not be penalized by their original creation date. */
 export function resolvePassageAgeMs(
   meta: { created?: unknown; updated?: unknown } | undefined,
   absFile?: string,
 ): number | null {
-  for (const v of [meta?.created, meta?.updated]) {
+  for (const v of [meta?.updated, meta?.created]) {
     if (typeof v === 'string') {
       const t = Date.parse(v);
       if (Number.isFinite(t)) return t;
@@ -821,7 +823,7 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
   const maxPerDoc = opts.maxPerFile || opts.maxPerDoc;
   // Issue #127: time-decay recency boost — multiply the fused score by
   // 0.5^(ageDays / halfLifeDays), post-RRF and pre-collapse. Age source
-  // priority: frontmatter `created` → `updated` → file mtime. Missing dates
+  // priority: frontmatter `updated` → `created` → file mtime (issue #164). Missing dates
   // get factor 1 (evergreen content stays reachable via lexical strength).
   const recencyHalfLife = Number(opts.recency) > 0 ? Number(opts.recency) : 0;
   // Issue #163: recency rescores AFTER the pool slice, so the pool must be

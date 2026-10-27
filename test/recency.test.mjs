@@ -33,7 +33,7 @@ test('recency: deterministic boost math — boundaries and clamps (issue #127)',
   assert.equal(recencyBoost(NOW - 3 * DAY, 0, NOW), 1, 'disabled (0) → 1');
 });
 
-test('recency: age source priority — created beats updated beats mtime (issue #127)', () => {
+test('recency: age source priority — updated beats created beats mtime (issue #127, #164)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-recency-'));
   try {
     const f = path.join(dir, 'a.md');
@@ -49,12 +49,12 @@ test('recency: age source priority — created beats updated beats mtime (issue 
     const updated = '2026-08-01T00:00:00Z';
     assert.equal(resolvePassageAgeMs({ updated }, f), Date.parse(updated));
 
-    // created wins over updated
+    // updated wins over created (issue #164: recently revised notes are fresh)
     const created = '2026-07-01T00:00:00Z';
     assert.equal(
       resolvePassageAgeMs({ created, updated }, f),
-      Date.parse(created),
-      'created has priority over updated',
+      Date.parse(updated),
+      'updated has priority over created',
     );
 
     // invalid strings skipped → falls to mtime
