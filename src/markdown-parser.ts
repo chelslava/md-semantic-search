@@ -226,19 +226,18 @@ export function chunkMarkdownStructural(
     if (blockText.length > maxChunk) {
       flushGroup();
       const headingPath = headingStack.map(h => h.heading);
-      const subPieces = splitOversizedBlock(blockText, maxChunk, block.type);
-      let lineCursor = block.startLine;
-      for (let idx = 0; idx < subPieces.length; idx++) {
-        const piece = subPieces[idx];
-        const pieceLineCount = piece.split('\n').length;
+      // Issue #167: pieces carry the block-relative range of REAL source
+      // lines backing them — synthetic fence/header repeats must not advance
+      // the line cursor, or every later sub-chunk drifts down the file.
+      const subPieces = splitOversizedBlockWithRanges(blockText, maxChunk, block.type);
+      for (const piece of subPieces) {
         chunks.push({
           heading: headingPath.at(-1) ?? '',
           headingPath: [...headingPath],
-          text: piece,
-          startLine: lineCursor,
-          endLine: Math.min(block.endLine, lineCursor + pieceLineCount - 1),
+          text: piece.text,
+          startLine: block.startLine + piece.startLine,
+          endLine: Math.min(block.endLine, block.startLine + piece.endLine),
         });
-        lineCursor += pieceLineCount;
       }
       continue;
     }
@@ -274,14 +273,36 @@ function splitLongLine(line: string, maxChunk: number): string[] {
   return pieces;
 }
 
+export interface OversizedPiece {
+  text: string;
+  /** 0-based block-relative range of REAL source lines backing this piece. */
+  startLine: number;
+  endLine: number;
+}
+
 export function splitOversizedBlock(
   text: string,
   maxChunk: number,
   blockType?: MarkdownBlock['type']
 ): string[] {
+  return splitOversizedBlockWithRanges(text, maxChunk, blockType).map((p) => p.text);
+}
+
+/**
+ * Issue #167: like splitOversizedBlock, but each piece also reports the
+ * block-relative range of source lines it was built from. Synthetic lines
+ * added to keep pieces self-contained (fence repeats, table header repeats)
+ * do NOT count — only the first piece's opening fence/header and a real
+ * closing fence belong to the source.
+ */
+export function splitOversizedBlockWithRanges(
+  text: string,
+  maxChunk: number,
+  blockType?: MarkdownBlock['type']
+): OversizedPiece[] {
   const lines = text.split('\n');
   if (lines.length <= 1) {
-    return splitLongLine(text, maxChunk);
+    return splitLongLine(text, maxChunk).map((piece) => ({ text: piece, startLine: 0, endLine: 0 }));
   }
 
   // If code block with opening fence
@@ -291,21 +312,35 @@ export function splitOversizedBlock(
     const closeFence = hasCloseFence ? lines[lines.length - 1] : '```';
     const innerLines = lines.slice(1, hasCloseFence ? lines.length - 1 : lines.length);
 
-    const pieces: string[] = [];
-    let currentCode: string[] = [];
+    const pieces: OversizedPiece[] = [];
+    let currentCode: Array<{ line: string; srcIdx: number }> = [];
     let currentLen = openFence.length + closeFence.length + 2;
 
-    for (const line of innerLines) {
+    // The opening fence is a real source line only in the first piece; a
+    // real closing fence only in the final one.
+    const flush = (isFinal: boolean) => {
+      const firstReal = pieces.length === 0 ? 0 : currentCode[0].srcIdx;
+      const lastReal = isFinal && hasCloseFence ? lines.length - 1 : currentCode[currentCode.length - 1].srcIdx;
+      pieces.push({
+        text: [openFence, ...currentCode.map((c) => c.line), closeFence].join('\n'),
+        startLine: firstReal,
+        endLine: lastReal,
+      });
+    };
+
+    for (let offset = 0; offset < innerLines.length; offset++) {
+      const line = innerLines[offset];
+      const srcIdx = 1 + offset;
       if (currentLen + line.length + 1 > maxChunk && currentCode.length > 0) {
-        pieces.push([openFence, ...currentCode, closeFence].join('\n'));
+        flush(false);
         currentCode = [];
         currentLen = openFence.length + closeFence.length + 2;
       }
-      currentCode.push(line);
+      currentCode.push({ line, srcIdx });
       currentLen += line.length + 1;
     }
     if (currentCode.length > 0) {
-      pieces.push([openFence, ...currentCode, closeFence].join('\n'));
+      flush(true);
     }
     if (pieces.length > 0) return pieces;
   }
@@ -316,56 +351,75 @@ export function splitOversizedBlock(
     const dataRows = lines.slice(2);
     const headerLen = headerRows[0].length + headerRows[1].length + 2;
 
-    const pieces: string[] = [];
-    let currentRows: string[] = [];
+    const pieces: OversizedPiece[] = [];
+    let currentRows: Array<{ row: string; srcIdx: number }> = [];
     let currentLen = headerLen;
 
-    for (const row of dataRows) {
+    const flush = () => {
+      const firstReal = pieces.length === 0 ? 0 : currentRows[0].srcIdx;
+      pieces.push({
+        text: [...headerRows, ...currentRows.map((r) => r.row)].join('\n'),
+        startLine: firstReal,
+        endLine: currentRows[currentRows.length - 1].srcIdx,
+      });
+    };
+
+    for (let offset = 0; offset < dataRows.length; offset++) {
+      const row = dataRows[offset];
+      const srcIdx = 2 + offset;
       if (currentLen + row.length + 1 > maxChunk && currentRows.length > 0) {
-        pieces.push([...headerRows, ...currentRows].join('\n'));
+        flush();
         currentRows = [];
         currentLen = headerLen;
       }
-      currentRows.push(row);
+      currentRows.push({ row, srcIdx });
       currentLen += row.length + 1;
     }
     if (currentRows.length > 0) {
-      pieces.push([...headerRows, ...currentRows].join('\n'));
+      flush();
     }
     if (pieces.length > 0) return pieces;
   }
 
   // Standard paragraph/list splitting
-  const pieces: string[] = [];
-  let currentLines: string[] = [];
+  const pieces: OversizedPiece[] = [];
+  let currentLines: Array<{ line: string; srcIdx: number }> = [];
   let currentLen = 0;
 
-  for (const line of lines) {
+  const flush = () => {
+    pieces.push({
+      text: currentLines.map((l) => l.line).join('\n').trim(),
+      startLine: currentLines[0].srcIdx,
+      endLine: currentLines[currentLines.length - 1].srcIdx,
+    });
+  };
+
+  for (let srcIdx = 0; srcIdx < lines.length; srcIdx++) {
+    const line = lines[srcIdx];
     if (currentLen + line.length + 1 > maxChunk && currentLines.length > 0) {
-      pieces.push(currentLines.join('\n').trim());
+      flush();
       currentLines = [];
       currentLen = 0;
     }
 
     if (line.length > maxChunk) {
       if (currentLines.length > 0) {
-        pieces.push(currentLines.join('\n').trim());
+        flush();
         currentLines = [];
       }
-      const splitLines = splitLongLine(line, maxChunk);
-      for (const piece of splitLines) {
-        pieces.push(piece);
+      for (const piece of splitLongLine(line, maxChunk)) {
+        pieces.push({ text: piece, startLine: srcIdx, endLine: srcIdx });
       }
       currentLen = 0;
       continue;
     }
 
-    currentLines.push(line);
+    currentLines.push({ line, srcIdx });
     currentLen += line.length + 1;
   }
 
   if (currentLines.length > 0) {
-    pieces.push(currentLines.join('\n').trim());
+    flush();
   }
 
   return pieces;

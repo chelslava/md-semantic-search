@@ -7,6 +7,67 @@ test('structural parser version identity', () => {
   assert.ok(PARSER_VERSION.length > 0);
 });
 
+test('split oversized code chunks keep exact source line ranges (issue #167)', () => {
+  const codeLines = Array.from({ length: 20 }, (_, i) => `line-${i + 1} ${'x'.repeat(30)}`);
+  const mdLines = ['# Drift', '', '```js', ...codeLines, '```', ''];
+  const md = mdLines.join('\n');
+  const srcLines = md.split('\n');
+
+  const chunks = chunkMarkdownStructural(md, 220).filter((c) => c.text.includes('```js'));
+  assert.ok(chunks.length > 1, 'code block splits into several chunks');
+
+  // No drift between consecutive sub-chunks and both fences stay anchored.
+  assert.equal(chunks[0].startLine, 3, 'first chunk starts at the opening fence');
+  assert.equal(chunks[chunks.length - 1].endLine, 3 + codeLines.length + 1, 'last chunk ends at the closing fence');
+  for (let i = 1; i < chunks.length; i++) {
+    assert.equal(chunks[i].startLine, chunks[i - 1].endLine + 1, `chunk ${i} continues exactly after chunk ${i - 1}`);
+  }
+
+  // Every chunk maps to its physical source lines: the opening fence is a
+  // real source line only in the first chunk, the closing fence only in the
+  // last one; middle fences are synthetic repeats.
+  for (let i = 0; i < chunks.length; i++) {
+    const c = chunks[i];
+    const textLines = c.text.split('\n');
+    const isLast = i === chunks.length - 1;
+    const sourceSlice = srcLines.slice(c.startLine - 1, c.endLine);
+    // The closing fence line in the text is real only in the last chunk.
+    const expected = i === 0
+      ? (isLast ? textLines : textLines.slice(0, -1))
+      : (isLast ? textLines.slice(1) : textLines.slice(1, -1));
+    assert.deepEqual(
+      expected,
+      sourceSlice,
+      `chunk ${i} [${c.startLine}..${c.endLine}] maps to its physical source lines`,
+    );
+  }
+});
+
+test('split oversized table chunks keep exact source line ranges (issue #167)', () => {
+  const rows = Array.from({ length: 18 }, (_, i) => `| row ${i + 1} | ${'v'.repeat(20)} |`);
+  const mdLines = ['# Table Drift', '', '| col a | col b |', '|---|---|', ...rows, ''];
+  const md = mdLines.join('\n');
+  const srcLines = md.split('\n');
+
+  const chunks = chunkMarkdownStructural(md, 200).filter((c) => c.text.includes('| col a |'));
+  assert.ok(chunks.length > 1, 'table splits into several chunks');
+
+  assert.equal(chunks[0].startLine, 3, 'first chunk starts at the table header');
+  assert.equal(chunks[chunks.length - 1].endLine, 3 + rows.length + 1, 'last chunk ends at the last data row');
+  for (let i = 1; i < chunks.length; i++) {
+    assert.equal(chunks[i].startLine, chunks[i - 1].endLine + 1, `chunk ${i} continues exactly after chunk ${i - 1}`);
+  }
+
+  // Middle chunks repeat the header synthetically — their real rows must
+  // match the physical source range exactly.
+  for (let i = 1; i < chunks.length; i++) {
+    const c = chunks[i];
+    const realRows = c.text.split('\n').slice(2);
+    const sourceSlice = srcLines.slice(c.startLine - 1, c.endLine);
+    assert.deepEqual(realRows, sourceSlice, `table chunk ${i} maps to its physical source lines`);
+  }
+});
+
 test('atx and setext headings produce equivalent structural paths', () => {
   const atx = `# Document Title
 
