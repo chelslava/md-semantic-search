@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { embed, cosine, decodeVec, globToRegExp, walkMarkdown, ModelDescriptor } from './core.js';
+import { embed, cosine, decodeVec, globToRegExp, walkMarkdown, fetchTimeoutMs, ModelDescriptor } from './core.js';
 import { validateIndexEnvelope, validateNumericVector } from './index-format.js';
 import { rerankScores } from './rerank.js';
 import { bm25Scores, matchingTerms, tokenize, fuzzyTitleAliasScores, LexicalIndex } from './lexical.js';
@@ -259,6 +259,9 @@ export async function hydePassage(
     const res = await fetchImpl(endpoint.replace(/\/$/, '') + '/chat/completions', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
+      // issue #184: HyDE must degrade fast on a hung endpoint, not hold a
+      // serve slot — failure paths return null below
+      signal: AbortSignal.timeout(fetchTimeoutMs()),
       body: JSON.stringify({
         ...(model ? { model } : {}),
         messages: [

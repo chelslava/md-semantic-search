@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { resolveExternalEmbedder } from '../dist/providers.js';
 import { embeddingAdapterFingerprint } from '../dist/models.js';
+import { isNetworkError } from '../dist/core.js';
 
 /** fetch stub scripted per-URL. */
 function stubFetch(handler) {
@@ -93,4 +94,30 @@ test('providers: provider mismatch produces DIFFERENT fingerprints; local flow u
     embedder: 'ollama', model: 'x', fetchImpl: stubFetch(() => [500, { error: 'boom' }]),
   });
   await assert.rejects(() => bad.descriptor(), /HTTP 500/);
+});
+
+test('providers: hung embedder endpoint aborts on the outbound fetch timeout (issue #184)', async () => {
+  const orig = process.env.MDSS_FETCH_TIMEOUT_MS;
+  process.env.MDSS_FETCH_TIMEOUT_MS = '50';
+  try {
+    // fetch that respects the signal but never resolves on its own
+    const never = (url, init) =>
+      new Promise((resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal.reason));
+      });
+    const emb = resolveExternalEmbedder({
+      embedder: 'ollama', model: 'm', baseUrl: 'http://blackhole.test', fetchImpl: never,
+    });
+    const t0 = Date.now();
+    await assert.rejects(
+      () => emb.embedFn(['x'], 'query', { dim: 3 }, '', false),
+      (err) => err.name === 'TimeoutError'
+    );
+    assert.ok(Date.now() - t0 < 5_000, `aborted quickly, took ${Date.now() - t0}ms`);
+    // the timeout must classify as a network error so retry/fallback paths engage
+    assert.equal(isNetworkError(new DOMException('The operation was aborted due to timeout', 'TimeoutError')), true);
+  } finally {
+    if (orig === undefined) delete process.env.MDSS_FETCH_TIMEOUT_MS;
+    else process.env.MDSS_FETCH_TIMEOUT_MS = orig;
+  }
 });

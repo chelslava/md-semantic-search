@@ -1558,6 +1558,25 @@ async function cmdServe(opts) {
     log,
   });
 
+  // issue #186: the most common serve failure (EADDRINUSE) used to surface as
+  // a raw stack trace — name the cause and the fix instead.
+  server.on('error', (err) => {
+    if (err?.code === 'EADDRINUSE') {
+      process.stderr.write(
+        `mdss serve: port ${port} is already in use — another daemon (or program) is listening on it.\n` +
+        `  Fix: pick another port, e.g. mdss serve --port ${port + 1}\n`
+      );
+    } else if (err?.code === 'EACCES') {
+      process.stderr.write(
+        `mdss serve: no permission to bind ${host}:${port}.\n` +
+        `  Fix: use an unprivileged port (1024+), e.g. mdss serve --port 8747\n`
+      );
+    } else {
+      process.stderr.write(`mdss serve: ${err?.message || err}\n`);
+    }
+    process.exit(1);
+  });
+
   server.listen(port, host, () => {
     const idx = state.loaded.index;
     log(`mdss serve listening on http://${host}:${port}` +
@@ -1579,11 +1598,17 @@ async function cmdServe(opts) {
 
   const stop = async (sig) => {
     log(`\n${sig} — shutting down.`);
-    await close();
+    try {
+      await close();
+    } catch {
+      // issue #186: a second signal (or a listen error) can make close()
+      // reject with ERR_SERVER_NOT_RUNNING — always exit, never hang
+    }
     process.exit(0);
   };
   process.on('SIGINT', () => stop('SIGINT'));
   process.on('SIGTERM', () => stop('SIGTERM'));
+  if (process.platform === 'win32') process.on('SIGBREAK', () => stop('SIGBREAK'));
 }
 
 async function cmdMcp(opts) {

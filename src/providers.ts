@@ -13,6 +13,7 @@
  */
 import { loadApiKeyFile } from './serve.js';
 import { ModelAdapter } from './models.js';
+import { fetchTimeoutMs } from './core.js';
 
 export type EmbedderRole = 'query' | 'passage';
 export type ExternalEmbedFn = (
@@ -59,6 +60,9 @@ async function postJson(fetchImpl: typeof fetch, url: string, headers: Record<st
     method: 'POST',
     headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify(body),
+    // issue #184: a hung embedder endpoint must fail into the retry path,
+    // not hold an index run / serve slot for undici's ~300s default
+    signal: AbortSignal.timeout(fetchTimeoutMs()),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -124,6 +128,10 @@ export function resolveExternalEmbedder(cfg: ProviderConfig): ResolvedEmbedder {
       family: cfg.embedder,
     };
   })();
+  // The probe starts eagerly; callers that only ever use embedFn never await
+  // it, so its rejection (e.g. the issue #184 fetch timeout) must not become
+  // an unhandled one. descriptor() re-surfaces the same rejection to awaiters.
+  descriptorPromise.catch(() => {});
 
   return {
     id: cfg.embedder,

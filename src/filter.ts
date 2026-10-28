@@ -97,6 +97,14 @@ export function tokenizeFilter(expr: string): string[] {
   return tokens;
 }
 
+/**
+ * issue #180: parseOr/parseAnd/parseNot/parsePrimary are mutually recursive
+ * (~4 stack frames per nesting level) — an unbounded `(((((…` from a 64 KiB
+ * request body would exhaust the call stack. 64 levels is far beyond any
+ * legitimate filter and keeps the parser fail-closed with a clear error.
+ */
+export const MAX_FILTER_DEPTH = 64;
+
 export function parseFilter(expr: string): FilterNode {
   const tokens = tokenizeFilter(expr);
   if (tokens.length === 0) {
@@ -104,6 +112,7 @@ export function parseFilter(expr: string): FilterNode {
   }
 
   let pos = 0;
+  let depth = 0;
 
   function peek(): string | undefined {
     return tokens[pos];
@@ -167,12 +176,17 @@ export function parseFilter(expr: string): FilterNode {
     }
 
     if (token === '(') {
+      depth += 1;
+      if (depth > MAX_FILTER_DEPTH) {
+        throw new Error(`Filter expression too deeply nested (max ${MAX_FILTER_DEPTH} levels of parentheses)`);
+      }
       consume(); // (
       const node = parseExpression();
       if (peek() !== ')') {
         throw new Error('Expected closing parenthesis ")" in filter expression');
       }
       consume(); // )
+      depth -= 1;
       return node;
     }
 

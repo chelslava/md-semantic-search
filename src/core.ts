@@ -188,6 +188,9 @@ export function getExtractorCacheKey(model: ModelDescriptor, cacheDir: string, o
 
 export function isNetworkError(err: any): boolean {
   if (!err) return false;
+  // issue #184: outbound fetch timeouts abort with TimeoutError/AbortError —
+  // they must classify as network errors so retries and fallbacks engage
+  if (err.name === 'TimeoutError' || err.name === 'AbortError') return true;
   const code = err.code || err.cause?.code;
   if (code && ['ENOTFOUND', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH', 'FETCH_ERROR'].includes(code)) {
     return true;
@@ -201,10 +204,25 @@ export function isNetworkError(err: any): boolean {
     msg.includes('etimedout') ||
     msg.includes('enotfound') ||
     msg.includes('network error') ||
+    msg.includes('aborted due to timeout') ||
     msg.includes('503 service unavailable') ||
     msg.includes('502 bad gateway') ||
     msg.includes('504 gateway timeout')
   );
+}
+
+/**
+ * Outbound fetch timeout (issue #184): undici's default ~300s lets one hung
+ * embedder/LLM endpoint hold a serve concurrency slot or stall `mdss index`
+ * for minutes. All outbound calls carry `AbortSignal.timeout(fetchTimeoutMs())`;
+ * override with `MDSS_FETCH_TIMEOUT_MS` (0/negative falls back to the default).
+ */
+export const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
+
+export function fetchTimeoutMs(envValue?: string): number {
+  const raw = envValue ?? process.env.MDSS_FETCH_TIMEOUT_MS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_FETCH_TIMEOUT_MS;
 }
 
 export async function retryWithBackoff<T>(

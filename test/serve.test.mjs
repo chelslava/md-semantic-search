@@ -6,6 +6,8 @@ import path from 'node:path';
 import http from 'node:http';
 import net from 'node:net';
 import { buildIndex } from '../dist/indexer.js';
+import { spawn, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { createServe, DEFAULT_HOST, MAX_BODY_BYTES, isLoopbackHost, validateBindSecurity, loadApiKeyFile, TokenBucket } from '../dist/serve.js';
 
 /** Fixed epoch for deterministic limiter tests. */
@@ -895,3 +897,132 @@ test('serve: POST /related & GET /related return ranked related notes (issue #14
 });
 
 
+
+// ---------------------------------------------------------------------------
+// issue #186: nothing may kill the daemon with an unhandled exception
+// ---------------------------------------------------------------------------
+
+test('serve: a handleRequest crash returns 500 JSON and the daemon keeps serving (issue #186)', async () => {
+  const dir = tempDir('serve500');
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Coffee\n\ncoffee guide beans roasted ground notes here\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const srv = await startServe({ indexDir: idx, cacheDir: dir, db: dir, embedFn: fakeEmbed });
+    try {
+      // poison the state AFTER startup: /health touches state.loaded.index
+      srv.svc.state.loaded = {
+        get index() {
+          throw new Error('boom');
+        },
+      };
+      const crashed = await post(srv.url, { query: 'coffee' }).catch((e) => ({ error: e }));
+      assert.equal(crashed.status, 500);
+      assert.match(crashed.data.error, /boom/);
+
+      // the daemon is still alive and answers new requests
+      const health = await rawRequest(srv.url, { path: '/health' });
+      assert.equal(health.status, 500); // still poisoned — but handled, not dead
+      assert.match(health.body, /boom/);
+      srv.svc.state.loaded = (await loadIndexForTest(idx));
+      const ok = await rawRequest(srv.url, { path: '/health' });
+      assert.equal(ok.status, 200);
+    } finally {
+      await srv.close();
+    }
+  } finally {
+    safeRm(dir);
+  }
+});
+
+async function loadIndexForTest(idx) {
+  const { loadIndex } = await import('../dist/search.js');
+  return loadIndex(idx);
+}
+
+test('serve: a client RST mid-POST does not kill the daemon (issue #186)', async () => {
+  const dir = tempDir('serveRST');
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Coffee\n\ncoffee guide beans roasted ground notes here\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const srv = await startServe({ indexDir: idx, cacheDir: dir, db: dir, embedFn: fakeEmbed });
+    try {
+      const { port } = new URL(srv.url);
+      await new Promise((resolve) => {
+        const s = net.connect(Number(port), '127.0.0.1', () => {
+          s.write(
+            `POST /search HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nContent-Type: application/json\r\nContent-Length: 20\r\n\r\n{"query":"coffee"}`.slice(0, 40)
+          );
+          // RST as soon as the request is on the wire — mid-handler
+          setTimeout(() => {
+            s.resetAndDestroy ? s.resetAndDestroy() : s.destroy();
+            resolve();
+          }, 10);
+        });
+        s.on('error', () => resolve());
+      });
+      await new Promise((r) => setTimeout(r, 150));
+      const health = await rawRequest(srv.url, { path: '/health' });
+      assert.equal(health.status, 200, 'daemon survived the reset connection');
+    } finally {
+      await srv.close();
+    }
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('serve: second daemon on a busy port exits 1 with an actionable message (issue #186)', async () => {
+  const dir = tempDir('serveAddr');
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Coffee\n\ncoffee guide beans roasted ground notes here\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+
+    const CLI = fileURLToPath(new URL('../bin/cli.mjs', import.meta.url));
+    // grab a concrete free port (the CLI requires a positive integer)
+    const freePort = await new Promise((resolve, reject) => {
+      const probe = net.createServer();
+      probe.listen(0, '127.0.0.1', () => {
+        const { port: p } = probe.address();
+        probe.close(() => resolve(p));
+      });
+      probe.on('error', reject);
+    });
+    const first = spawn(process.execPath, [CLI, 'serve', '--db', dir, '--port', String(freePort), '--no-ui'], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let firstErr = '';
+    first.stderr.on('data', (c) => (firstErr += String(c)));
+    const whenExited = () =>
+      first.exitCode !== null || first.signalCode !== null
+        ? Promise.resolve()
+        : new Promise((r) => first.once('exit', r));
+    try {
+      const port = await new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error(`first daemon never listened: ${firstErr}`)), 20_000);
+        first.stderr.on('data', (c) => {
+          const m = String(c).match(/listening on http:\/\/127\.0\.0\.1:(\d+)/);
+          if (m) {
+            clearTimeout(t);
+            resolve(Number(m[1]));
+          }
+        });
+      });
+
+      const second = spawnSync(process.execPath, [CLI, 'serve', '--db', dir, '--port', String(port), '--no-ui'], {
+        encoding: 'utf8',
+        timeout: 30_000,
+      });
+      assert.equal(second.status, 1, `second daemon exits 1, stderr: ${second.stderr}`);
+      assert.match(second.stderr, /already in use/);
+      assert.match(second.stderr, /--port/);
+    } finally {
+      first.kill();
+      await Promise.race([whenExited(), new Promise((r) => setTimeout(r, 5_000))]);
+    }
+  } finally {
+    safeRm(dir);
+  }
+});

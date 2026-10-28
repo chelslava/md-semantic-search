@@ -771,28 +771,75 @@ export async function startMcpServer(opts: StartMcpServerOptions): Promise<{ sta
     terminal: false,
   });
 
-  rl.on('line', async (line) => {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-    let req: any;
-    try {
-      req = JSON.parse(trimmed);
-    } catch {
-      process.stdout.write(
-        JSON.stringify({
-          jsonrpc: '2.0',
-          id: null,
-          error: { code: -32700, message: 'Parse error: invalid JSON' },
-        }) + '\n'
-      );
-      return;
-    }
-
-    const res = await handleMcpRequest(req, state);
-    if (res) {
-      process.stdout.write(JSON.stringify(res) + '\n');
-    }
+  // issue #185: an async 'line' handler drops its promise — any rejection
+  // outside the per-tool try/catch (e.g. a primitive `params` reaching
+  // prompts/get) would crash the whole process (unhandled rejection, Node ≥15),
+  // and handling lines in parallel can reorder responses. Route every line
+  // through one guarded, serialized handler.
+  let tail: Promise<void> = Promise.resolve();
+  rl.on('line', (line: string) => {
+    tail = tail
+      .then(() => handleStdioLine(line, state))
+      .catch(() => {
+        /* handleStdioLine guards everything — keep the chain alive regardless */
+      });
   });
 
   return { state, rl };
+}
+
+/**
+ * One guarded, in-order stdio JSON-RPC exchange (issues #180/#185): caps the
+ * line length, turns JSON parse failures into `-32700`, and converts ANY
+ * handler escape into a `-32603` response instead of an unhandled rejection
+ * that would kill the daemon.
+ */
+export const MAX_STDIO_LINE_CHARS = 1024 * 1024;
+
+export async function handleStdioLine(
+  line: string,
+  state: { loaded: any; cacheDir: string; offline: boolean; embedFn?: any },
+): Promise<void> {
+  if (line.length > MAX_STDIO_LINE_CHARS) {
+    process.stdout.write(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: null,
+        error: {
+          code: -32600,
+          message: `Request too large (max ${MAX_STDIO_LINE_CHARS} chars per line)`,
+        },
+      }) + '\n'
+    );
+    return;
+  }
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  let req: any;
+  try {
+    req = JSON.parse(trimmed);
+  } catch {
+    process.stdout.write(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: null,
+        error: { code: -32700, message: 'Parse error: invalid JSON' },
+      }) + '\n'
+    );
+    return;
+  }
+
+  let res: any;
+  try {
+    res = await handleMcpRequest(req, state);
+  } catch (e: any) {
+    res = {
+      jsonrpc: '2.0',
+      id: req && typeof req === 'object' && 'id' in req ? req.id : null,
+      error: { code: -32603, message: `Internal error: ${e?.message || String(e)}` },
+    };
+  }
+  if (res) {
+    process.stdout.write(JSON.stringify(res) + '\n');
+  }
 }
