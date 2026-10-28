@@ -3,7 +3,7 @@
  * Large-Scale 1M+ Chunk Retrieval Benchmark & Latency Suite (issue #105).
  * Measures throughput, query latency percentiles (P50, P95, P99), and RAM footprint.
  */
-import { quantizeToInt8, asymmetricCosineInt8 } from '../dist/quantization.js';
+import { quantizeToInt8, asymmetricCosineInt8, int8Norm, asymmetricCosineInt8CachedNorm } from '../dist/quantization.js';
 import { cosine } from '../dist/core.js';
 
 function generateRandomVector(dim) {
@@ -58,6 +58,23 @@ export function runScaleBenchmark(chunkCount = 100000, dim = 384) {
     int8Latencies.push(performance.now() - t0);
   }
 
+  // Measure INT8 + cached chunk norms (issue #190): load-time norm cache,
+  // sweep computes the dot product alone
+  const int8Norms = new Float32Array(chunkCount);
+  const normsStart = performance.now();
+  for (let i = 0; i < chunkCount; i++) int8Norms[i] = int8Norm(int8Vectors[i]);
+  const normsTimeMs = performance.now() - normsStart;
+  const int8NormLatencies = [];
+  for (let q = 0; q < 50; q++) {
+    const t0 = performance.now();
+    let maxSim = -1;
+    for (let i = 0; i < chunkCount; i++) {
+      const sim = asymmetricCosineInt8CachedNorm(queryVec, int8Vectors[i], int8Norms[i]);
+      if (sim > maxSim) maxSim = sim;
+    }
+    int8NormLatencies.push(performance.now() - t0);
+  }
+
   const percentile = (arr, p) => {
     const sorted = [...arr].sort((a, b) => a - b);
     const idx = Math.floor((p / 100) * sorted.length);
@@ -80,6 +97,13 @@ export function runScaleBenchmark(chunkCount = 100000, dim = 384) {
       latencyP50Ms: Number(percentile(int8Latencies, 50).toFixed(2)),
       latencyP95Ms: Number(percentile(int8Latencies, 95).toFixed(2)),
       latencyP99Ms: Number(percentile(int8Latencies, 99).toFixed(2)),
+    },
+    int8CachedNorms: {
+      loadTimeNormMs: Math.round(normsTimeMs),
+      latencyP50Ms: Number(percentile(int8NormLatencies, 50).toFixed(2)),
+      latencyP95Ms: Number(percentile(int8NormLatencies, 95).toFixed(2)),
+      latencyP99Ms: Number(percentile(int8NormLatencies, 99).toFixed(2)),
+      sweepSpeedupVsInt8: Number((percentile(int8Latencies, 50) / Math.max(percentile(int8NormLatencies, 50), 1e-9)).toFixed(2)),
     },
   };
 

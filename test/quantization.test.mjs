@@ -7,12 +7,14 @@ import {
   quantizeToInt8,
   dequantizeFromInt8,
   asymmetricCosineInt8,
+  asymmetricCosineInt8CachedNorm,
+  int8Norm,
   INT8_SCALE,
 } from '../dist/quantization.js';
 import { cosine } from '../dist/core.js';
 import { serializeBinaryIndex, deserializeBinaryIndex } from '../dist/binary-format.js';
 import { buildIndex } from '../dist/indexer.js';
-import { loadIndex, searchIndex } from '../dist/search.js';
+import { loadIndex, searchIndex, getRuntimeChunkNorms } from '../dist/search.js';
 
 function fakeEmbed(texts, kind, model) {
   return texts.map((t) => {
@@ -150,5 +152,77 @@ test('quantization: buildIndex and search with quantize: "int8" operates accurat
     assert.equal(hits[0].file, 'a.md');
   } finally {
     safeRm(dir);
+  }
+});
+
+test('quantization: cached-norm fast path is bitwise-equivalent to the combined sweep (issue #190)', () => {
+  const dim = 768;
+  for (let trial = 0; trial < 5; trial++) {
+    const q = new Float32Array(dim);
+    const c = new Float32Array(dim);
+    let seed = trial * 7919 + 13;
+    for (let i = 0; i < dim; i++) {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      q[i] = ((seed % 2000) - 1000) / 1000;
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      c[i] = ((seed % 2000) - 1000) / 1000;
+    }
+    const cInt8 = quantizeToInt8(c);
+    const legacy = asymmetricCosineInt8(q, cInt8);
+    const fast = asymmetricCosineInt8CachedNorm(q, cInt8, int8Norm(cInt8));
+    assert.ok(
+      Math.abs(legacy - fast) < 1e-9,
+      `trial ${trial}: legacy ${legacy} vs cached-norm ${fast}`
+    );
+  }
+  // zero vector scores 0 in both paths
+  const zero = new Int8Array(dim);
+  const anyQ = new Float32Array(dim).fill(0.5);
+  assert.equal(asymmetricCosineInt8CachedNorm(anyQ, zero, int8Norm(zero)), 0.0);
+});
+
+test('quantization: binary-loaded index populates chunkNorms and search matches the json load (issue #190)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-norms-'));
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'coffee.md'), '# Coffee Guide\n\n## Brewing\n\ncoffee guide beans roasted ground brew\n');
+    fs.writeFileSync(path.join(dir, 'travel.md'), '# Travel Plans\n\n## Japan\n\ntokyo kyoto bullet train travel guide itinerary\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed, quantize: 'int8' });
+
+    // the bin must be strictly newer than vectors.json (#187 tie-break)
+    const jsonMtime = fs.statSync(path.join(idx, 'vectors.json')).mtimeMs;
+    const binPath = path.join(idx, 'vectors.bin');
+    if (fs.statSync(binPath).mtimeMs <= jsonMtime) {
+      const t = jsonMtime + 2;
+      fs.utimesSync(binPath, new Date(t), new Date(t));
+    }
+
+    // binary load path carries the zero-copy int8 buffer -> norms populated
+    const binLoaded = loadIndex(idx);
+    const norms = getRuntimeChunkNorms(binLoaded.index);
+    assert.ok(norms instanceof Float32Array, 'chunk norms cached at load');
+    assert.equal(norms.length, binLoaded.index.chunks.length);
+
+    const binHits = await searchIndex({ loaded: binLoaded, cacheDir: dir, query: 'coffee brewing', k: 3, embedFn: fakeEmbed });
+    assert.ok(binHits.length >= 1);
+    assert.equal(binHits[0].file, 'coffee.md');
+
+    // json-only load (bin hidden -> loadIndex takes the JSON path) returns the
+    // same ranking; JSON keeps no cached norms (Float32 runtime, no int8 buffer)
+    const binFile = path.join(idx, 'vectors.bin');
+    const binHidden = `${binFile}.hidden`;
+    fs.renameSync(binFile, binHidden);
+    const jsonLoaded = loadIndex(idx);
+    fs.renameSync(binHidden, binFile);
+    const jsonOnly = { index: jsonLoaded.index, model: jsonLoaded.model };
+    assert.equal(getRuntimeChunkNorms(jsonOnly.index), undefined, 'no norms without the int8 buffer');
+    const jsonHits = await searchIndex({ loaded: jsonOnly, cacheDir: dir, query: 'coffee brewing', k: 3, embedFn: fakeEmbed });
+    assert.deepEqual(
+      jsonHits.map((h) => [h.file, h.heading]),
+      binHits.map((h) => [h.file, h.heading]),
+      'fast path ranking matches the combined path'
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
