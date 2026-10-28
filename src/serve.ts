@@ -657,6 +657,48 @@ export function splitHostHeader(hostHeader: string): string {
 }
 
 /**
+ * Cross-site POST guard (issue #178). Browsers fire "simple" POSTs without
+ * preflight (Content-Type: text/plain, form encodings) from any open page;
+ * the loopback Host check alone does not stop them. A POST counts as
+ * same-site when:
+ *  - the client sent no Origin/Sec-Fetch headers (curl, MCP and other
+ *    non-browser clients), or
+ *  - Sec-Fetch-Site is not cross-site AND the Origin's host matches the
+ *    request Host, a loopback allowlist entry, or an explicit --cors-origin.
+ * `Origin: null` (sandboxed iframe, file:// page) is always rejected.
+ */
+export function isSameSitePost(
+  req: http.IncomingMessage,
+  allowedHosts: Set<string>,
+  corsOrigins?: string[],
+): boolean {
+  const secFetchSite = req.headers['sec-fetch-site'];
+  if (typeof secFetchSite === 'string' && secFetchSite === 'cross-site') return false;
+  const origin = req.headers.origin;
+  if (typeof origin !== 'string' || origin.length === 0) return true; // non-browser client
+  if (origin === 'null') return false;
+  if (corsOrigins && corsOrigins.includes(origin)) return true;
+  const hostHeader = typeof req.headers.host === 'string' ? req.headers.host.toLowerCase() : '';
+  if (!hostHeader) return false;
+  let originUrl: URL;
+  try {
+    originUrl = new URL(origin);
+  } catch {
+    return false; // malformed Origin — fail closed
+  }
+  if (originUrl.host === hostHeader) return true; // exact same-origin (host:port)
+  // loopback aliases pass only on the SAME port — a page on localhost:3000 is
+  // a different origin even though the bare hostname is allowlisted
+  const portOf = (h: string, proto: string): string => {
+    const m = h.match(/:(\d+)$/);
+    if (m) return m[1];
+    return proto === 'https:' || proto === 'wss:' ? '443' : '80';
+  };
+  if (portOf(originUrl.host, originUrl.protocol) !== portOf(hostHeader, 'http:')) return false;
+  return allowedHosts.has(splitHostHeader(originUrl.host));
+}
+
+/**
  * Reflect CORS headers ONLY for an exact allowlisted Origin (issue #120).
  * Off entirely by default; `Vary: Origin` is set whenever CORS is configured so
  * shared caches never hand a cross-origin response to another origin.
@@ -702,6 +744,24 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       json(res, 405, { error: 'method not allowed' });
     }
     return;
+  }
+
+  // CSRF / body-safety gate for every body-parsing POST (issue #178): a "simple"
+  // cross-site browser POST (text/plain, form) sails past the Host allowlist on
+  // loopback, so reject foreign origins and non-JSON media types up front.
+  if (req.method === 'POST') {
+    const ct = req.headers['content-type'];
+    if (typeof ct === 'string') {
+      const media = ct.split(';')[0].trim().toLowerCase();
+      if (media !== 'application/json') {
+        json(res, 415, { error: `unsupported content-type "${media}" — POST bodies must be application/json` });
+        return;
+      }
+    }
+    if (!isSameSitePost(req, allowedHosts, state.corsOrigins)) {
+      json(res, 403, { error: 'cross-site request rejected' });
+      return;
+    }
   }
 
   if (state.apiKey) {
