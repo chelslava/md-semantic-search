@@ -91,3 +91,64 @@ export function asymmetricCosineInt8(queryFp32: Float32Array, chunkInt8: Int8Arr
   if (normSq <= 0) return 0.0;
   return dot / Math.sqrt(normSq);
 }
+
+/**
+ * Precomputed int8 chunk norm = sqrt(sum(c_i^2)) (issue #190): constant per
+ * chunk, so caching it at load time removes half of the asymmetric sweep.
+ * Accumulates in the same order as `asymmetricCosineInt8` so the cached-norm
+ * fast path returns bitwise-equal scores.
+ */
+export function int8Norm(chunkInt8: Int8Array): number {
+  const dim = chunkInt8.length;
+  let normSq = 0.0;
+
+  let i = 0;
+  const limit = dim - (dim % 8);
+  for (; i < limit; i += 8) {
+    normSq +=
+      chunkInt8[i] * chunkInt8[i] +
+      chunkInt8[i + 1] * chunkInt8[i + 1] +
+      chunkInt8[i + 2] * chunkInt8[i + 2] +
+      chunkInt8[i + 3] * chunkInt8[i + 3] +
+      chunkInt8[i + 4] * chunkInt8[i + 4] +
+      chunkInt8[i + 5] * chunkInt8[i + 5] +
+      chunkInt8[i + 6] * chunkInt8[i + 6] +
+      chunkInt8[i + 7] * chunkInt8[i + 7];
+  }
+  for (; i < dim; i++) {
+    normSq += chunkInt8[i] * chunkInt8[i];
+  }
+  return Math.sqrt(normSq);
+}
+
+/**
+ * Dot-only sweep fast path (issue #190): identical to `asymmetricCosineInt8`
+ * when `chunkNorm` came from `int8Norm` on the same vector.
+ */
+export function asymmetricCosineInt8CachedNorm(
+  queryFp32: Float32Array,
+  chunkInt8: Int8Array,
+  chunkNorm: number,
+): number {
+  if (!(chunkNorm > 0)) return 0.0;
+  const dim = queryFp32.length;
+  let dot = 0.0;
+
+  let i = 0;
+  const limit = dim - (dim % 8);
+  for (; i < limit; i += 8) {
+    dot +=
+      queryFp32[i] * chunkInt8[i] +
+      queryFp32[i + 1] * chunkInt8[i + 1] +
+      queryFp32[i + 2] * chunkInt8[i + 2] +
+      queryFp32[i + 3] * chunkInt8[i + 3] +
+      queryFp32[i + 4] * chunkInt8[i + 4] +
+      queryFp32[i + 5] * chunkInt8[i + 5] +
+      queryFp32[i + 6] * chunkInt8[i + 6] +
+      queryFp32[i + 7] * chunkInt8[i + 7];
+  }
+  for (; i < dim; i++) {
+    dot += queryFp32[i] * chunkInt8[i];
+  }
+  return dot / chunkNorm;
+}

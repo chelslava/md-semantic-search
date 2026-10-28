@@ -11,7 +11,7 @@ import { trainIVF, searchIVFCandidates, deserializeIVF, IVFIndex, ANN_THRESHOLD,
 import { buildRelationshipGraph, computePageRank, expandGraphNeighborhood, RelationshipGraph } from './wikilinks.js';
 import { evaluateFilter, FilterNode } from './filter.js';
 import { deserializeBinaryIndex } from './binary-format.js';
-import { dequantizeFromInt8 } from './quantization.js';
+import { dequantizeFromInt8, int8Norm, asymmetricCosineInt8CachedNorm } from './quantization.js';
 import { buildDiskKey, diskQueryGet, diskQueryPut } from './query-cache-disk.js';
 
 export { tokenize } from './lexical.js';
@@ -181,10 +181,19 @@ export interface RuntimeIndexState {
   ivf?: IVFIndex;
   graph?: RelationshipGraph;
   pageRank?: Map<string, number>;
+  /**
+   * issue #190: precomputed sqrt(sum(c^2)) for int8 vectors (zero-copy binary
+   * load only) — lets the dense sweep compute the dot product alone.
+   */
+  chunkNorms?: Float32Array;
 }
 
-export function getRuntimeGraph(runtime: RuntimeIndexState): { graph: RelationshipGraph; pageRank: Map<string, number> } {
-  if (runtime.graph && runtime.pageRank) {
+/** issue #190 tool/test seam: the cached int8 sweep norms, when present. */
+export function getRuntimeChunkNorms(index: IndexFile): Float32Array | undefined {
+  return runtimeIndexStates.get(index)?.chunkNorms;
+}
+
+export function getRuntimeGraph(runtime: RuntimeIndexState): { graph: RelationshipGraph; pageRank: Map<string, number> } {  if (runtime.graph && runtime.pageRank) {
     return { graph: runtime.graph, pageRank: runtime.pageRank };
   }
   const docsMap = new Map<string, { file: string; title?: string; meta?: DocumentMetadata; text?: string }>();
@@ -378,6 +387,18 @@ function snapshotRuntimeIndex(
       },
     };
   }
+
+  // issue #190: int8 chunk norms are constant per chunk — compute them once at
+  // load instead of inside every query's dense sweep
+  let chunkNorms: Float32Array | undefined;
+  if (validation.rawVectorsBuffer instanceof Int8Array && dim > 0 && count > 0) {
+    chunkNorms = new Float32Array(count);
+    const buffer = validation.rawVectorsBuffer;
+    for (let i = 0; i < count; i++) {
+      chunkNorms[i] = int8Norm(buffer.subarray(i * dim, (i + 1) * dim));
+    }
+  }
+
   return {
     schema: validation.schema,
     db: index.db,
@@ -387,6 +408,7 @@ function snapshotRuntimeIndex(
     model: { ...validation.model },
     queryCache: new QueryEmbeddingCache(100),
     ivf: validation.ivf,
+    chunkNorms,
   };
 }
 
@@ -829,6 +851,12 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
 
   let semantic: Array<{ idx: number; score: number }>;
   const useAnn = opts.ann ?? (runtime.ivf !== undefined && candidates.length >= ANN_THRESHOLD);
+  // issue #190: with cached int8 norms the sweep computes the dot product alone
+  const norms = runtime.chunkNorms;
+  const sweepScore = (chunk: RuntimeChunk, idx: number): number =>
+    norms && chunk.vec instanceof Int8Array
+      ? asymmetricCosineInt8CachedNorm(qVec as Float32Array, chunk.vec, norms[idx])
+      : cosine(qVec, chunk.vec);
   if (useAnn && candidates.length >= ANN_THRESHOLD) {
     if (!runtime.ivf) {
       const rawVecs = chunks.map((c) => (c.vec instanceof Float32Array ? c.vec : dequantizeFromInt8(c.vec)));
@@ -840,11 +868,11 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
       if (!probedSet.has(idx)) {
         return { idx, score: -1 };
       }
-      return { idx, score: cosine(qVec, chunk.vec) };
+      return { idx, score: sweepScore(chunk, idx) };
     });
   } else {
     semantic = candidates.map(({ chunk, idx }) => {
-      return { idx, score: cosine(qVec, chunk.vec) };
+      return { idx, score: sweepScore(chunk, idx) };
     });
   }
   const cosByIdx = new Map(semantic.map((s) => [s.idx, s.score]));
