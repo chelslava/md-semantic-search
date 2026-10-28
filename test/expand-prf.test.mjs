@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { buildIndex } from '../dist/indexer.js';
-import { loadIndex, searchIndex, extractExpansionTerms } from '../dist/search.js';
+import { loadIndex, searchIndex, extractExpansionTerms, hydePassage } from '../dist/search.js';
 
 function fakeEmbed(texts, kind, model) {
   return texts.map((t) => {
@@ -138,3 +138,21 @@ test('expand: hyde without endpoint degrades silently; with endpoint uses the pa
   }
 });
 
+
+test('expand: hydePassage degrades to null when the endpoint hangs past the fetch timeout (issue #184)', async () => {
+  const orig = process.env.MDSS_FETCH_TIMEOUT_MS;
+  process.env.MDSS_FETCH_TIMEOUT_MS = '50';
+  try {
+    const never = (url, init) =>
+      new Promise((resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal.reason));
+      });
+    const t0 = Date.now();
+    const out = await hydePassage('http://blackhole.test/v1', 'kubernetes crashloop', 'tiny', never);
+    assert.equal(out, null, 'hung endpoint degrades to null');
+    assert.ok(Date.now() - t0 < 5_000, `aborted quickly, took ${Date.now() - t0}ms`);
+  } finally {
+    if (orig === undefined) delete process.env.MDSS_FETCH_TIMEOUT_MS;
+    else process.env.MDSS_FETCH_TIMEOUT_MS = orig;
+  }
+});

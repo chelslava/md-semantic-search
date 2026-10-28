@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { searchIndex, loadIndex, LoadedIndex, SearchResultHit } from './search.js';
 import { tokenize } from './lexical.js';
+import { fetchTimeoutMs } from './core.js';
 
 export interface Citation {
   file: string;
@@ -280,6 +281,9 @@ export async function synthesizeAnswer(
       const resp = await fetch(`${options.llmEndpoint}/api/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        // issue #184: a hung Ollama endpoint must fall back to the extractive
+        // answer on the timeout, not hold the request for undici's ~300s
+        signal: AbortSignal.timeout(fetchTimeoutMs()),
         body: JSON.stringify({
           model: options.llmModel || 'llama3',
           prompt,

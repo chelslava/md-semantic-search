@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
 import { buildIndex } from '../dist/indexer.js';
 import {
   askQuestion, synthesizeAnswer, extractAnswerFallback,
@@ -318,3 +319,44 @@ test('rag: askQuestion and chatTurn propagate offline: true and custom embedFn (
 });
 
 
+
+test('rag: hung Ollama endpoint falls back to the extractive answer on the fetch timeout (issue #184)', async () => {
+  const orig = process.env.MDSS_FETCH_TIMEOUT_MS;
+  process.env.MDSS_FETCH_TIMEOUT_MS = '50';
+  const blackhole = http.createServer(() => {
+    /* accept the connection, never respond */
+  });
+  await new Promise((r) => blackhole.listen(0, '127.0.0.1', r));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-rag-hang-'));
+  const db = path.join(root, 'notes');
+  const indexDir = path.join(root, '.mdss');
+  fs.mkdirSync(db, { recursive: true });
+  try {
+    fs.writeFileSync(
+      path.join(db, 'deploy.md'),
+      '# Deployment Guide\n\n## Canary Releases\n\nCanary releases route 5 percent of traffic to the new cluster.\n'
+    );
+    await buildIndex({ db, indexDir, cacheDir: root, modelName: 'e5-base', embedFn: fakeEmbed });
+
+    const { port } = blackhole.address();
+    const t0 = Date.now();
+    const result = await askQuestion({
+      query: 'traffic canary release',
+      indexDir,
+      cacheDir: root,
+      k: 3,
+      embedFn: fakeEmbed,
+      llmEndpoint: `http://127.0.0.1:${port}`,
+      llmModel: 'llama3',
+    });
+    assert.ok(result.answer.length > 0, 'extractive fallback answered');
+    assert.ok(result.citations.length >= 1);
+    assert.ok(Date.now() - t0 < 5_000, `degraded quickly, took ${Date.now() - t0}ms`);
+  } finally {
+    if (orig === undefined) delete process.env.MDSS_FETCH_TIMEOUT_MS;
+    else process.env.MDSS_FETCH_TIMEOUT_MS = orig;
+    blackhole.close();
+    blackhole.closeAllConnections?.();
+    safeRm(root);
+  }
+});
