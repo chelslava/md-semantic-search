@@ -46,6 +46,28 @@ First run downloads the embedding model (~280 MB, quantized q8) into the cache
 dir; after that everything is offline. CI runs the same gates plus nightly
 real-model suites, so keeping local runs green is usually enough.
 
+### Retrieval quality gate (golden set, issue #198)
+
+Ranking changes (fusion weights, PRF, rerank, chunking, models) are measured
+against the committed golden baseline every night and can be checked locally
+before a PR:
+
+```bash
+node scripts/run-bench.mjs --slice dev --gate bench/fixtures/golden-baseline.json
+```
+
+The gate fails when nDCG@10 drops by more than 0.01 or Recall@10 falls below
+1.0 versus [`bench/fixtures/golden-baseline.json`](bench/fixtures/golden-baseline.json).
+Regenerate the baseline **only** after an intentional, reviewed improvement:
+
+```bash
+node scripts/run-bench.mjs --slice dev --update-baseline bench/fixtures/golden-baseline.json
+```
+
+and mention the before/after numbers in the PR description. The baseline is
+pinned to a corpus + fixture fingerprint — an unrelated corpus change fails
+the gate with a "regenerate the baseline" hint instead of a silent pass.
+
 > Windows note: this repo develops cross-platform and carries a dedicated
 > long-path/UNC hardening suite. Keep path handling portable — no hardcoded
 > separators, respect the existing path utilities.

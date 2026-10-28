@@ -13,13 +13,23 @@
  *                              [--model e5-base]
  *                              [--index-dir <path>] [--cache-dir <path>]
  *                              [--fast] [--json] [--fake]
+ *                              [--gate bench/fixtures/golden-baseline.json]
+ *                              [--update-baseline bench/fixtures/golden-baseline.json]
  *
  * --fast      smoke mode: k=3, tiny candidate pool — for CI, not for real eval.
  * --fake      deterministic hash embedder (no model download, fully offline) —
  *             for CI smoke; numbers are NOT comparable to real-model eval.
  * --json      machine-readable report (name, model, slice, k, corpusHash, mean).
+ * --gate      regression gate (issue #198): compare against a committed
+ *             baseline — fails (exit 1) when nDCG@10 drops more than 0.01 or
+ *             Recall@10 falls below 1.0.
+ * --update-baseline
+ *             (re)generate the baseline file from this run. Only meaningful
+ *             after an intentional ranking improvement.
  *
- * Exit codes: 0 = ran, 1 = fixture/corpus error, 2 = usage error.
+ * Exit codes: 0 = ran (and passed the gate when --gate given),
+ *             1 = fixture/corpus error or GATE REGRESSION,
+ *             2 = usage error.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -79,13 +89,14 @@ function sha256(data) {
 
 /**
  * @param {string[]} argv
- * @returns {{fixture:string, slice:string, k:number, model:string, indexDir:string|null, cacheDir:string|null, json:boolean, fast:boolean, fake:boolean}}
+ * @returns {{fixture:string, slice:string, k:number, model:string, indexDir:string|null, cacheDir:string|null, json:boolean, fast:boolean, fake:boolean, gate:string|null, updateBaseline:string|null}}
  */
 function parseArgs(argv) {
   const args = {
     fixture: path.join(REPO, 'bench/fixtures/dev-golden.json'),
     slice: 'dev', k: 10, model: 'e5-base',
     indexDir: null, cacheDir: null, json: false, fast: false, fake: false,
+    gate: null, updateBaseline: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -103,10 +114,21 @@ function parseArgs(argv) {
     else if (a === '--json') args.json = true;
     else if (a === '--fast') args.fast = true;
     else if (a === '--fake') args.fake = true;
+    else if (a === '--gate') args.gate = next();
+    else if (a === '--update-baseline') args.updateBaseline = next();
     else throw new Error(`unknown flag: ${a}`);
+  }
+  if (args.gate && args.updateBaseline) {
+    throw new Error('--gate and --update-baseline are mutually exclusive');
+  }
+  if ((args.gate || args.updateBaseline) && (args.fake || args.fast)) {
+    throw new Error('--gate/--update-baseline need real-model metrics — do not combine with --fake/--fast');
   }
   return args;
 }
+
+/** nDCG@10 may drop by at most this much vs the committed baseline (issue #198). */
+export const GATE_NDCG_TOLERANCE = 0.01;
 
 /** Deterministic fake embedder (no model, no network) for CI smoke runs. */
 function fakeEmbed(texts, kind, model, _cacheDir) {
@@ -193,9 +215,74 @@ async function main() {
     k,
     queries: perQuery.length,
     corpusHash,
+    fixtureHash: sha256(fs.readFileSync(args.fixture)),
     indexed: { files: build.files, chunks: build.chunks },
     mean: agg.mean,
   };
+
+  // issue #198: (re)generate the committed baseline from this run
+  if (args.updateBaseline) {
+    const baseline = {
+      name: fixture.name,
+      model: args.model,
+      slice: args.slice,
+      k,
+      corpusHash,
+      fixtureHash: report.fixtureHash,
+      metrics: {
+        ndcg: Number(agg.mean.ndcg.toFixed(4)),
+        mrr: Number(agg.mean.mrr.toFixed(4)),
+        hit: Number(agg.mean.hit.toFixed(4)),
+        recall: Number(agg.mean.recall.toFixed(4)),
+      },
+      generatedAt: new Date().toISOString().slice(0, 10),
+    };
+    fs.writeFileSync(path.resolve(REPO, args.updateBaseline), JSON.stringify(baseline, null, 2) + '\n');
+    console.log(`baseline written: ${args.updateBaseline}`);
+    console.log(`  nDCG@${k} ${baseline.metrics.ndcg} · MRR ${baseline.metrics.mrr} · Hit ${baseline.metrics.hit} · Recall ${baseline.metrics.recall}`);
+    process.exit(0);
+  }
+
+  // issue #198: regression gate — a ranking change must not ship silently
+  if (args.gate) {
+    let baseline;
+    try {
+      baseline = JSON.parse(fs.readFileSync(path.resolve(REPO, args.gate), 'utf8'));
+    } catch (err) {
+      console.error(`gate error: cannot read baseline ${args.gate}: ${err.message}`);
+      process.exit(1);
+    }
+    if (baseline.corpusHash !== corpusHash || baseline.fixtureHash !== report.fixtureHash) {
+      console.error(
+        `gate error: baseline was generated for a different corpus or fixture ` +
+        `(baseline corpus ${String(baseline.corpusHash).slice(0, 12)}… / fixture ${String(baseline.fixtureHash).slice(0, 12)}…, ` +
+        `actual corpus ${corpusHash.slice(0, 12)}… / fixture ${report.fixtureHash.slice(0, 12)}…). ` +
+        `Regenerate the baseline with --update-baseline if the change is intentional.`);
+      process.exit(1);
+    }
+    if (baseline.model !== args.model || baseline.slice !== args.slice) {
+      console.error(
+        `gate error: baseline covers model "${baseline.model}" slice "${baseline.slice}", ` +
+        `this run is "${args.model}" / "${args.slice}" — not comparable.`);
+      process.exit(1);
+    }
+
+    const ndcgDrop = baseline.metrics.ndcg - agg.mean.ndcg;
+    const recallOk = agg.mean.recall >= baseline.metrics.recall - 1e-9;
+    const ndcgOk = ndcgDrop <= GATE_NDCG_TOLERANCE + 1e-9;
+    const passed = ndcgOk && recallOk;
+
+    console.log(`gate: ${args.gate}`);
+    console.log(`  nDCG@${k}:   baseline ${baseline.metrics.ndcg.toFixed(4)} → actual ${agg.mean.ndcg.toFixed(4)}  (drop ${ndcgDrop.toFixed(4)}, allowed ≤ ${GATE_NDCG_TOLERANCE}) ${ndcgOk ? 'OK' : 'FAIL'}`);
+    console.log(`  Recall@${k}: baseline ${baseline.metrics.recall.toFixed(4)} → actual ${agg.mean.recall.toFixed(4)}  ${recallOk ? 'OK' : 'FAIL'}`);
+    if (!passed) {
+      // GitHub annotation so nightly regressions surface on the run summary
+      console.log(`::error title=Golden-set regression (issue #198)::nDCG@${k} ${agg.mean.ndcg.toFixed(4)} vs baseline ${baseline.metrics.ndcg.toFixed(4)}; Recall@${k} ${agg.mean.recall.toFixed(4)} vs ${baseline.metrics.recall.toFixed(4)} — inspect the ranking change before merging.`);
+      process.exit(1);
+    }
+    console.log('  gate PASSED');
+    process.exit(0);
+  }
 
   if (args.json) {
     console.log(JSON.stringify(report, null, 2));
