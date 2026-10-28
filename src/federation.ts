@@ -8,6 +8,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { loadIndex, searchIndex, LoadedIndex, SearchOptions, SearchResultHit } from './search.js';
+import { assertSafePath } from './core.js';
 
 export interface VaultConfig {
   name?: string;
@@ -18,6 +19,13 @@ export interface VaultConfig {
 export interface FederatedSearchOptions extends Omit<SearchOptions, 'loaded' | 'cacheDir'> {
   vaults: Array<string | VaultConfig>;
   cacheDir?: string;
+  /**
+   * issue #179: when set, every vault path (and explicit indexDir) must resolve
+   * inside one of these roots or a traversal-guard error is thrown. Callers
+   * exposing federation to remote clients (MCP) must pin this to their trust
+   * domain; direct CLI use stays guarded only by MDSS_ROOT_GUARD.
+   */
+  allowedRoots?: string[];
 }
 
 export interface FederatedSearchResultHit extends SearchResultHit {
@@ -26,20 +34,22 @@ export interface FederatedSearchResultHit extends SearchResultHit {
 }
 
 export async function searchFederated(opts: FederatedSearchOptions): Promise<FederatedSearchResultHit[]> {
-  const { vaults, k = 10, cacheDir = '', ...searchOpts } = opts;
+  const { vaults, k = 10, cacheDir = '', allowedRoots, ...searchOpts } = opts;
   if (!vaults || vaults.length === 0) {
     throw new Error('Federated search requires at least one vault specified');
   }
 
   const normalizedVaults: VaultConfig[] = vaults.map((v) => {
     if (typeof v === 'string') {
-      const absPath = path.resolve(v);
+      const absPath = assertSafePath(path.resolve(v), allowedRoots);
       const name = path.basename(absPath);
       return { name, path: absPath };
     }
-    const absPath = path.resolve(v.path);
+    const absPath = assertSafePath(path.resolve(v.path), allowedRoots);
     const name = v.name || path.basename(absPath);
-    return { name, path: absPath, indexDir: v.indexDir };
+    // indexDir is loaded from disk too — guard it with the same roots (#179)
+    const indexDir = v.indexDir ? assertSafePath(path.resolve(v.indexDir), allowedRoots) : undefined;
+    return { name, path: absPath, indexDir };
   });
 
   // Load and query each vault concurrently
@@ -60,7 +70,10 @@ export async function searchFederated(opts: FederatedSearchOptions): Promise<Fed
       try {
         // Query vault index with a slightly larger pool to ensure healthy global fusion
         const poolK = Math.max(k * 2, 20);
-        const resolvedCache = cacheDir || path.join(vault.path, '.cache');
+        // issue #179: never invent a per-vault cache location — a falsy cacheDir
+        // disables the disk layer (searchIndex semantics), so query embeddings
+        // are only ever written to a cache dir the caller explicitly owns.
+        const resolvedCache = cacheDir;
         const hits = await searchIndex({
           ...searchOpts,
           cacheDir: resolvedCache,

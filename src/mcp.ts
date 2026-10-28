@@ -568,8 +568,19 @@ export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir:
         const query = typeof args.query === 'string' ? args.query : '';
         const k = Number.isInteger(args.k) && args.k > 0 ? args.k : 6;
         if (Array.isArray(args.vaults) && args.vaults.length > 0) {
+          // issue #179: the vaults argument must never name an arbitrary
+          // directory (silent index read + query-cache write outside the
+          // vault). Pin federated roots to the daemon's own trust domain —
+          // the indexed vault root, widened only via MDSS_ROOT_GUARD.
+          const vaultRoots = [
+            state.loaded.index.db,
+            ...(process.env.MDSS_ROOT_GUARD
+              ? process.env.MDSS_ROOT_GUARD.split(path.delimiter).map((p) => p.trim()).filter(Boolean)
+              : []),
+          ].filter(Boolean);
           rawResult = await searchFederated({
             vaults: args.vaults,
+            allowedRoots: vaultRoots,
             cacheDir: state.cacheDir,
             query,
             k,
