@@ -155,6 +155,13 @@ Baseline on dev (e5-base, hybrid RRF, k=10, 2026-08-14):
 | Hit@10 | 0.9792 |
 | Recall@10 | 1.0000 |
 
+The **committed regression baseline** (issue #198) lives in
+`bench/fixtures/golden-baseline.json` (2026-10-28: nDCG@10 0.8856, Recall 1.0 —
+re-measured against the current ranking stack; the 2026-08-14 numbers above
+predate later fusion/chunking changes). The nightly workflow gates against it
+(`nDCG@10` drop ≤ 0.01, `Recall@10` = 1.0); see *Retrieval quality gate* in
+CONTRIBUTING.md for the local `--gate` / `--update-baseline` workflow.
+
 ## 8. Reproducing
 
 ```bash

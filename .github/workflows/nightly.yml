@@ -44,4 +44,7 @@ jobs:
           MDSS_NIGHTLY_CACHE_DIR: ${{ github.workspace }}/.cache/mdss-nightly
         run: node scripts/verify-pack.mjs
 
+      - name: Golden-set retrieval gate (issue #198)
+        run: node scripts/run-bench.mjs --slice dev --gate bench/fixtures/golden-baseline.json --cache-dir "$MDSS_NIGHTLY_CACHE_DIR"
+
 

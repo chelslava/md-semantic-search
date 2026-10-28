@@ -1,0 +1,15 @@
+{
+  "name": "mdss-ru-en-golden-48",
+  "model": "e5-base",
+  "slice": "dev",
+  "k": 10,
+  "corpusHash": "6327c0f0486ea332ca71e4996432595e99830351da39ec6ccac308ece177dfa5",
+  "fixtureHash": "24abe2af178164810edddf194632474b264c13050798ee2f4064d6e3c91c415f",
+  "metrics": {
+    "ndcg": 0.8856,
+    "mrr": 0.8733,
+    "hit": 0.9792,
+    "recall": 1
+  },
+  "generatedAt": "2026-10-28"
+}
