@@ -302,7 +302,22 @@ export async function createServe(opts: CreateServeOptions): Promise<{
   const sockets = new Set<import('node:net').Socket>();
   const server = http.createServer((req, res) => {
     handleRequest(req, res, state).catch((e) => {
-      json(res, 500, { error: e.message });
+      // issue #186: a client that aborted mid-body has already spent the
+      // response — writing headers again throws ERR_HTTP_HEADERS_SENT and
+      // would kill the whole daemon. Degrade to destroying the socket.
+      try {
+        if (res.headersSent) {
+          res.destroy();
+        } else {
+          json(res, 500, { error: e.message });
+        }
+      } catch {
+        try {
+          res.destroy();
+        } catch {
+          /* socket already gone */
+        }
+      }
     });
   });
   server.on('connection', (socket) => {
@@ -547,7 +562,25 @@ export async function createServe(opts: CreateServeOptions): Promise<{
       ignore,
       log,
     });
-    watchLoop();
+    // issue #186: watchLoop runs unawaited — an early rejection used to be an
+    // unhandled one and killed the daemon. Restart with backoff, give up
+    // after 5 crashes (search keeps serving the last good index either way).
+    void (async () => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await watchLoop();
+          return; // resolved → stopped normally
+        } catch (e: any) {
+          if (stopped || attempt >= 4) {
+            log(`watch loop failed permanently (search still serves the last index): ${e.message}`);
+            return;
+          }
+          log(`watch loop crashed (attempt ${attempt + 1}/5): ${e.message} — restarting in 5s…`);
+          await new Promise((r) => setTimeout(r, 5_000));
+          if (stopped) return;
+        }
+      }
+    })();
   }
 
   const close = async (): Promise<void> => {
