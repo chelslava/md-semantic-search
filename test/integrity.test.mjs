@@ -42,7 +42,7 @@ test('integrity: buildIndex writes vectors.json.sha256 manifest file', async () 
   }
 });
 
-test('integrity: loadIndex detects corrupted byte in vectors.json via SHA-256 manifest', async () => {
+test('integrity: valid payload with stale vectors.json sidecar loads with a warning; unparseable payload still fails (issue #187)', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-integrity-corrupt-'));
   const idx = path.join(dir, '.mdss');
   try {
@@ -52,19 +52,66 @@ test('integrity: loadIndex detects corrupted byte in vectors.json via SHA-256 ma
     const vectorsPath = path.join(idx, 'vectors.json');
     const originalContent = fs.readFileSync(vectorsPath, 'utf8');
 
-    // Corrupt one character in vectors.json (while keeping it valid JSON or invalid)
+    // Tamper with the payload while keeping it VALID JSON, then remove the
+    // binary cache so vectors.json is the only load path (issue #187: a valid
+    // payload with a stale sidecar loads with a warning — it is the format of
+    // record and a crash mid-publish looks exactly like this)
     const corruptedContent = originalContent.replace('Coffee', 'Tea');
     fs.writeFileSync(vectorsPath, corruptedContent);
     try {
       fs.unlinkSync(path.join(idx, 'vectors.bin'));
+      fs.unlinkSync(path.join(idx, 'vectors.bin.sha256'));
     } catch {}
 
-    // loadIndex must throw SHA-256 mismatch error
-    assert.throws(
-      () => loadIndex(idx),
-      /integrity check failed/
-    );
+    const warnings = captureStderr(() => {
+      const loaded = loadIndex(idx);
+      assert.equal(loaded.index.chunks.length, 1, 'valid payload still loads');
+    });
+    assert.match(warnings, /stale sidecar/);
+    assert.match(warnings, /check --fix/);
+
+    // an UNPARSEABLE payload must still fail hard (real corruption)
+    fs.writeFileSync(vectorsPath, '{ not json at all');
+    assert.throws(() => loadIndex(idx), /not valid JSON/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('integrity: stale vectors.bin sidecar falls back to vectors.json instead of failing (issue #187)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-integrity-bin-'));
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'test.md'), '# Coffee Guide\n\n## Brewing\n\ncoffee guide beans roasted ground\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+
+    const shaBinPath = path.join(idx, 'vectors.bin.sha256');
+    assert.equal(fs.existsSync(shaBinPath), true, 'binary sidecar exists');
+    // make the binary sidecar stale without touching vectors.json
+    fs.writeFileSync(shaBinPath, `${'a'.repeat(64)}  vectors.bin\n`);
+
+    const warnings = captureStderr(() => {
+      const loaded = loadIndex(idx);
+      assert.equal(loaded.index.chunks.length, 1, 'falls back to vectors.json');
+    });
+    assert.match(warnings, /ignoring the binary cache/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** Capture process.stderr writes made by fn. */
+function captureStderr(fn) {
+  const chunks = [];
+  const orig = process.stderr.write.bind(process.stderr);
+  process.stderr.write = (s) => {
+    chunks.push(String(s));
+    return true;
+  };
+  try {
+    fn();
+  } finally {
+    process.stderr.write = orig;
+  }
+  return chunks.join('');
+}

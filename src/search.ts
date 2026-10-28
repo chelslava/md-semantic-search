@@ -435,6 +435,12 @@ function warnIfStale(index: IndexFile): void {
   );
 }
 
+/**
+ * Sentinel (issue #187): vectors.bin failed its sidecar check — not corrupt,
+ * just unverified — so loadIndex falls back to vectors.json instead of throwing.
+ */
+const BIN_SIDECAR_STALE = Symbol('bin-sidecar-stale');
+
 export function loadIndex(indexDir: string): { index: IndexFile; model: ModelDescriptor } {
   const vectorsBinPath = path.join(indexDir, 'vectors.bin');
   const vectorsPath = path.join(indexDir, 'vectors.json');
@@ -447,7 +453,9 @@ export function loadIndex(indexDir: string): { index: IndexFile; model: ModelDes
       try {
         const binStat = fs.statSync(vectorsBinPath);
         const jsonStat = fs.statSync(vectorsPath);
-        if (binStat.mtimeMs >= jsonStat.mtimeMs) {
+        // issue #187: strict `>` — written in the same millisecond, vectors.json
+        // (the format of record) wins over a possibly half-published vectors.bin
+        if (binStat.mtimeMs > jsonStat.mtimeMs) {
           useBinary = true;
         }
       } catch {
@@ -464,7 +472,14 @@ export function loadIndex(indexDir: string): { index: IndexFile; model: ModelDes
         const expectedHash = fs.readFileSync(shaBinPath, 'utf8').trim().split(/\s+/)[0];
         const actualHash = crypto.createHash('sha256').update(binBuffer).digest('hex');
         if (expectedHash && actualHash !== expectedHash) {
-          throw new Error('vectors.bin integrity check failed (SHA-256 mismatch) — run `mdss index` to rebuild.');
+          // issue #187: vectors.bin is a derived cache of vectors.json — a
+          // stale sidecar (crash between the two renames) must not brick the
+          // daemon when the format of record is available. Fall through.
+          process.stderr.write(
+            'warning: vectors.bin.sha256 does not match vectors.bin — ignoring the binary cache and loading vectors.json. ' +
+            'Run `mdss check --fix` to rebuild the binary cache.\n'
+          );
+          throw BIN_SIDECAR_STALE;
         }
       }
       const deserialized = deserializeBinaryIndex(binBuffer);
@@ -497,8 +512,10 @@ export function loadIndex(indexDir: string): { index: IndexFile; model: ModelDes
 
       return { index, model };
     } catch (e: any) {
-      if (e.message?.includes('integrity check failed')) throw e;
-      if (!fs.existsSync(vectorsPath)) throw e;
+      if (e === BIN_SIDECAR_STALE) {
+        // fall through to vectors.json — the format of record (#187)
+      } else if (e.message?.includes('integrity check failed')) throw e;
+      else if (!fs.existsSync(vectorsPath)) throw e;
       // If vectors.bin was corrupt or unreadable, fall through to vectors.json fallback
     }
   }
@@ -523,10 +540,19 @@ export function loadIndex(indexDir: string): { index: IndexFile; model: ModelDes
       const expectedHash = shaContent.split(/\s+/)[0];
       const actualHash = crypto.createHash('sha256').update(rawBytes).digest('hex');
       if (expectedHash && actualHash !== expectedHash) {
-        throw new Error(`vectors.json integrity check failed (SHA-256 mismatch) — run \`mdss index\` to rebuild.`);
+        // issue #187: atomicWrite renames the payload and its sidecar in two
+        // separate steps, so a crash mid-publish leaves a VALID payload with a
+        // STALE sidecar. The envelope above already parsed and validated —
+        // vectors.json is the format of record, so load it with a loud
+        // warning instead of bricking search/serve/mcp until a manual fix.
+        // A payload that cannot parse or validate still fails hard (above).
+        process.stderr.write(
+          'warning: vectors.json.sha256 does not match vectors.json (stale sidecar after a crash mid-publish?) — ' +
+          'the payload itself is valid and will be loaded. Run `mdss check --fix` to refresh the sidecar.\n'
+        );
       }
     } catch (e: any) {
-      if (e.message.includes('integrity check failed')) throw e;
+      if (e.message?.includes('integrity check failed')) throw e;
     }
   }
 
