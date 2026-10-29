@@ -75,7 +75,11 @@ export function createFileWatcher(
     debounceMs = 250,
     ignore = [],
     log = () => {},
-    fallbackIntervalMs = 50,
+    // issue #195: 50 ms meant 20 full tree walks per second whenever native
+    // events were unavailable — a full-directory stat storm on big vaults.
+    // 1 s is still responsive (native events handle the snappy case) while
+    // cutting the background budget by 20x.
+    fallbackIntervalMs = 1000,
   } = options;
 
   let closed = false;
@@ -156,17 +160,26 @@ export function createFileWatcher(
 
     // Polling fallback
     let lastMtime = 0;
-    const getDirMtime = (dir: string): number => {
-      try {
-        let max = 0;
-        const entries = fs.readdirSync(dir, { withFileTypes: true });
+    // issue #195: iterative walk with an explicit stack — the recursive
+    // version risked stack overflow on deep trees and re-walked everything
+    // through the JS call frame per poll
+    const getDirMtime = (root: string): number => {
+      let max = 0;
+      const stack: string[] = [root];
+      while (stack.length > 0) {
+        const dir = stack.pop()!;
+        let entries: fs.Dirent[];
+        try {
+          entries = fs.readdirSync(dir, { withFileTypes: true });
+        } catch {
+          continue;
+        }
         for (const entry of entries) {
           if (entry.name.startsWith('.') || entry.name === '.mdss') continue;
           const full = path.join(dir, entry.name);
           if (shouldIgnore(entry.name)) continue;
           if (entry.isDirectory()) {
-            const sub = getDirMtime(full);
-            if (sub > max) max = sub;
+            stack.push(full);
           } else if (/\.(md|markdown)$/i.test(entry.name)) {
             try {
               const fileStat = fs.statSync(full);
@@ -174,10 +187,8 @@ export function createFileWatcher(
             } catch {}
           }
         }
-        return max;
-      } catch {
-        return 0;
       }
+      return max;
     };
 
     lastMtime = getDirMtime(dbPath);

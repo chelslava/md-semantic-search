@@ -162,3 +162,55 @@ test('watcher: permanent failures warn rate-limited; healthy files keep indexing
     safeRm(db);
   }
 });
+
+test('watcher: rename evicts the md5 cache entry; a backup-restore with an OLD mtime still triggers re-index (issue #195)', async () => {
+  const { db, idx } = await seedWatch();
+  try {
+    const md5Calls = new Map();
+    const realMd5 = (f) => {
+      md5Calls.set(f, (md5Calls.get(f) || 0) + 1);
+      return crypto.createHash('md5').update(fs.readFileSync(f)).digest('hex');
+    };
+    const srv = await createServe({
+      db, indexDir: idx, cacheDir: path.join(db, '.c'), embedFn: fakeEmbed,
+      watch: true, watchInterval: 50, watchDelay: 80,
+      _testFs: { hash: realMd5 },
+      log: () => {},
+    });
+    await new Promise((r) => srv.server.listen(0, r));
+    try {
+      // let the initial scan land
+      await new Promise((r) => setTimeout(r, 200));
+
+      // 1. RENAME: the old path leaves the tree — its cache entry must be evicted
+      fs.renameSync(path.join(db, 'a.md'), path.join(db, 'a-moved.md'));
+      let deadline = Date.now() + 5000;
+      while ((srv.state.reindexCount ?? 0) < 1 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 40));
+      }
+      assert.ok((srv.state.reindexCount ?? 0) >= 1, 'rename triggers a re-index');
+
+      // 2. BACKUP RESTORE: same content hash as indexed, but a new body and an
+      // OLD mtime — the size+mtime cache key must miss and re-hash
+      const target = path.join(db, 'b.md');
+      const originalStat = fs.statSync(target);
+      const oldTime = new Date(Date.now() - 10 * 60 * 1000);
+      fs.writeFileSync(target, '# Coffee\n\n## Brewing\n\nrestored body with brand new content\n');
+      fs.utimesSync(target, oldTime, oldTime); // old mtime, NEW size/content
+
+      const callsBefore = md5Calls.get(target) || 0;
+      deadline = Date.now() + 6000;
+      while ((srv.state.reindexCount ?? 0) < 2 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 40));
+      }
+      assert.ok((srv.state.reindexCount ?? 0) >= 2, 'restore with an old mtime still re-indexed');
+      const text = srv.state.loaded.index.chunks
+        .filter((c) => c.file === 'b.md').map((c) => c.text).join('');
+      assert.match(text, /restored body with brand new content/, 'new content indexed despite the old mtime');
+    } finally {
+      await srv.close();
+    }
+  } finally {
+    safeRm(db);
+  }
+});
