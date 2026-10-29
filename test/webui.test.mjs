@@ -191,7 +191,6 @@ test('webui: highlight survives regex metacharacters in the query (issue #182)',
     assert.ok(start !== -1, `function ${name} found in ui.js`);
     let depth = 0;
     let i = WEBUI_JS.indexOf('{', start);
-    const bodyStart = i;
     for (; i < WEBUI_JS.length; i++) {
       if (WEBUI_JS[i] === '{') depth++;
       else if (WEBUI_JS[i] === '}') {
