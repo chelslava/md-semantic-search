@@ -187,14 +187,18 @@ export function resolveSessionOptions(model?: ModelDescriptor): Record<string, u
   const intra = envIntra ? parseInt(envIntra, 10) : undefined;
   const inter = envInter ? parseInt(envInter, 10) : undefined;
   const opts = model?.sessionOptions || {};
-  const intraOpNumThreads = Number.isSafeInteger(intra) && intra && intra > 0 ? intra : (opts.intraOpNumThreads as number | undefined);
+  // issue #194: ONNX wasm sessions default to a single intra-op thread — the
+  // build/query sweep leaves most of the CPU idle. Default to the physical
+  // core count (measured 1.2x on a 4c/8t laptop; hyperthreads add contention,
+  // not throughput), still overridable via MDSS_INTRA_OP_THREADS.
+  const defaultIntra = Math.max(1, Math.min(4, os.cpus().length >> 1));
+  const intraOpNumThreads = Number.isSafeInteger(intra) && intra && intra > 0
+    ? intra
+    : (opts.intraOpNumThreads as number | undefined) ?? defaultIntra;
   const interOpNumThreads = Number.isSafeInteger(inter) && inter && inter > 0 ? inter : (opts.interOpNumThreads as number | undefined);
 
-  if (intraOpNumThreads === undefined && interOpNumThreads === undefined) {
-    return undefined;
-  }
   const result: Record<string, unknown> = {};
-  if (intraOpNumThreads !== undefined) result.intraOpNumThreads = intraOpNumThreads;
+  result.intraOpNumThreads = intraOpNumThreads;
   if (interOpNumThreads !== undefined) result.interOpNumThreads = interOpNumThreads;
   return result;
 }
