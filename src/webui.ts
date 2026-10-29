@@ -117,10 +117,15 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
   }
+  function escRe(s) {
+    return String(s).replace(/[.*+?^{}$()|[\\]\\\\]/g, '\\\\$&');
+  }
   function highlight(text, terms) {
     var safe = esc(text == null ? '' : text);
     if (!terms || !terms.length) return safe;
-    var re = new RegExp('(' + terms.map(esc).join('|') + ')', 'gi');
+    // terms go through BOTH escapes: HTML (to match the escaped text) and
+    // regex — a query like "(" used to throw SyntaxError and break the render
+    var re = new RegExp('(' + terms.map(function (t) { return escRe(esc(t)); }).join('|') + ')', 'gi');
     return safe.replace(re, '<mark>$1</mark>');
   }
   function askKey(msg) {
