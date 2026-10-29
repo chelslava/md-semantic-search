@@ -1193,3 +1193,25 @@ test('search: rich filter expression restricts candidates by tags and metadata (
 });
 
 
+
+test('topKByScore: identical to sort-desc + slice over randomized inputs, ties toward smaller idx (issue #191)', async () => {
+  const { topKByScore } = await import('../dist/search.js');
+  let seed = 7;
+  const rnd = (n) => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed % n;
+  };
+  for (let trial = 0; trial < 300; trial++) {
+    const n = rnd(200);
+    const k = rnd(n + 5) + 1;
+    // heavy tie mass: only a few distinct score values
+    const items = Array.from({ length: n }, (_, i) => ({ idx: i, score: rnd(5) / 4 }));
+    const reference = [...items]
+      .sort((a, b) => b.score - a.score || a.idx - b.idx)
+      .slice(0, k);
+    const got = topKByScore(n, (i) => items[i].score, k);
+    assert.deepEqual(got, reference, `trial ${trial}: n=${n} k=${k}`);
+  }
+  assert.deepEqual(topKByScore(0, () => 1, 5), []);
+  assert.deepEqual(topKByScore(10, () => 1, 0), []);
+});
