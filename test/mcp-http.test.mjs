@@ -97,7 +97,7 @@ test('mcp-http: initialize → tools/list → tools/call over Streamable HTTP be
     assert.equal(call.status, 200);
     const text = call.body.result.content?.[0]?.text || '';
     assert.ok(/coffee/i.test(text), 'tool returned search content');
-    assert.ok(Array.isArray(call.body.result.structuredContent), 'tool returned structuredContent');
+    assert.ok(Array.isArray(call.body.result.structuredContent?.results), 'tool returned object structuredContent (issue #205)');
     assert.equal(call.body.result.isError ?? false, false);
 
     // resources/list and resources/read over HTTP

@@ -227,18 +227,18 @@ test('handleMcpRequest: handles tools/call with structuredContent alongside text
     const statusData = JSON.parse(statusRes.result.content[0].text);
     assert.equal(statusData.chunks, 2);
 
-    // list_files
+    // list_files (issue #205: arrays are wrapped — structuredContent must be an object)
     const filesRes = await handleMcpRequest({
       jsonrpc: '2.0', id: 11, method: 'tools/call', params: { name: 'list_files' },
     }, state);
-    assert.equal(filesRes.result.structuredContent.length, 2);
+    assert.equal(filesRes.result.structuredContent.files.length, 2);
 
     // get_chunk
     const chunkRes = await handleMcpRequest({
       jsonrpc: '2.0', id: 12, method: 'tools/call', params: { name: 'get_chunk', arguments: { file: 'guide.md', heading: 'Intro' } },
     }, state);
-    assert.equal(chunkRes.result.structuredContent.length, 1);
-    assert.equal(chunkRes.result.structuredContent[0].heading, 'Intro');
+    assert.equal(chunkRes.result.structuredContent.chunks.length, 1);
+    assert.equal(chunkRes.result.structuredContent.chunks[0].heading, 'Intro');
 
     // get_lines (issue #140)
     const linesRes = await handleMcpRequest({
@@ -255,12 +255,14 @@ test('handleMcpRequest: handles tools/call with structuredContent alongside text
     assert.equal(relRes.result.structuredContent.resolvedFile, 'guide.md');
     assert.ok(Array.isArray(relRes.result.structuredContent.results));
 
-    // search_markdown
+    // search_markdown (issue #205: hits wrapped as { results })
     const searchRes = await handleMcpRequest({
       jsonrpc: '2.0', id: 16, method: 'tools/call', params: { name: 'search_markdown', arguments: { query: 'guide' } },
     }, state);
-    assert.equal(Array.isArray(searchRes.result.structuredContent), true);
-    assert.equal(searchRes.result.structuredContent.length > 0, true);
+    assert.equal(Array.isArray(searchRes.result.structuredContent.results), true);
+    assert.equal(searchRes.result.structuredContent.results.length > 0, true);
+    // text content keeps the raw (unwrapped) result for compatibility
+    assert.equal(Array.isArray(JSON.parse(searchRes.result.content[0].text)), true);
 
     // ask_knowledge_base with sessionId (issue #147)
     const askSess1 = await handleMcpRequest({
@@ -276,6 +278,34 @@ test('handleMcpRequest: handles tools/call with structuredContent alongside text
       jsonrpc: '2.0', id: 19, method: 'tools/call', params: { name: 'ask_knowledge_base', arguments: { query: 'intro', sessionId: 'mcp-sess-1' } },
     }, state);
     assert.equal(askSess2.result.structuredContent.turnsCount, 2);
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('handleMcpRequest: every tool returns an OBJECT structuredContent (MCP spec, issue #205)', async () => {
+  const { loaded, dir } = await makeIndex();
+  try {
+    const state = { loaded, cacheDir: dir, offline: true, embedFn: fakeEmbed };
+    const calls = [
+      { name: 'search_markdown', arguments: { query: 'guide' } },
+      { name: 'get_chunk', arguments: { file: 'guide.md', heading: 'Intro' } },
+      { name: 'get_lines', arguments: { file: 'guide.md', fromLine: 1, maxLines: 3 } },
+      { name: 'related_notes', arguments: { file: 'guide.md' } },
+      { name: 'list_files', arguments: {} },
+      { name: 'index_status', arguments: {} },
+      { name: 'ask_knowledge_base', arguments: { query: 'guide' } },
+    ];
+    for (let i = 0; i < calls.length; i++) {
+      const res = await handleMcpRequest(
+        { jsonrpc: '2.0', id: 40 + i, method: 'tools/call', params: calls[i] },
+        state,
+      );
+      const sc = res.result.structuredContent;
+      assert.ok(sc !== null && typeof sc === 'object', `${calls[i].name}: structuredContent is an object`);
+      assert.equal(Array.isArray(sc), false, `${calls[i].name}: structuredContent is NOT an array`);
+      assert.equal(res.result.isError, undefined, `${calls[i].name}: no error`);
+    }
   } finally {
     safeRm(dir);
   }
