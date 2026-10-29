@@ -46,6 +46,11 @@
         "command": "mdss.index",
         "title": "MDSS: Rebuild Semantic Index",
         "category": "MDSS"
+      },
+      {
+        "command": "mdss.setApiKey",
+        "title": "MDSS: Set API Key (SecretStorage)",
+        "category": "MDSS"
       }
     ],
     "viewsContainers": {
@@ -82,7 +87,8 @@
         "mdss.apiKey": {
           "type": "string",
           "default": "",
-          "description": "Optional API key (Bearer token) sent with search requests when the daemon runs with --api-key"
+          "description": "Fallback API key (Bearer token) used only when no key is stored in SecretStorage",
+          "deprecationMessage": "Prefer the \"MDSS: Set API Key\" command — the key is stored encrypted in SecretStorage, not in (commit-prone) settings files."
         }
       }
     }

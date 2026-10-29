@@ -913,17 +913,19 @@ test('serve: a handleRequest crash returns 500 JSON and the daemon keeps serving
       // poison the state AFTER startup: /health touches state.loaded.index
       srv.svc.state.loaded = {
         get index() {
-          throw new Error('boom');
+          throw new Error('boom at C:\\Users\\secret\\notes');
         },
       };
       const crashed = await post(srv.url, { query: 'coffee' }).catch((e) => ({ error: e }));
       assert.equal(crashed.status, 500);
-      assert.match(crashed.data.error, /boom/);
+      // issue #182: 5xx replies are generic — no exception text, no fs paths
+      assert.equal(crashed.data.error, 'internal server error');
+      assert.doesNotMatch(crashed.data.error, /boom|secret/);
 
       // the daemon is still alive and answers new requests
       const health = await rawRequest(srv.url, { path: '/health' });
       assert.equal(health.status, 500); // still poisoned — but handled, not dead
-      assert.match(health.body, /boom/);
+      assert.doesNotMatch(health.body, /boom|secret/, 'no exception details leak in 5xx');
       srv.svc.state.loaded = (await loadIndexForTest(idx));
       const ok = await rawRequest(srv.url, { path: '/health' });
       assert.equal(ok.status, 200);

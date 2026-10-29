@@ -181,3 +181,36 @@ test('webui: /ui.js includes AbortController and sequence counter guards for /se
   }
 });
 
+
+test('webui: highlight survives regex metacharacters in the query (issue #182)', async () => {
+  const { WEBUI_JS } = await import('../dist/webui.js');
+
+  // extract the pure helper functions from the IIFE bundle and evaluate them
+  const extract = (name) => {
+    const start = WEBUI_JS.indexOf(`function ${name}(`);
+    assert.ok(start !== -1, `function ${name} found in ui.js`);
+    let depth = 0;
+    let i = WEBUI_JS.indexOf('{', start);
+    for (; i < WEBUI_JS.length; i++) {
+      if (WEBUI_JS[i] === '{') depth++;
+      else if (WEBUI_JS[i] === '}') {
+        depth--;
+        if (depth === 0) break;
+      }
+    }
+    return WEBUI_JS.slice(start, i + 1);
+  };
+  const sandbox = new Function(
+    `${extract('esc')}\n${extract('escRe')}\n${extract('highlight')}\nreturn { esc, escRe, highlight };`
+  )();
+  const { highlight } = sandbox;
+
+  // a "(" query used to throw SyntaxError and leave the UI broken
+  assert.equal(highlight('coffee (beans) guide', ['(']), 'coffee <mark>(</mark>beans) guide');
+  // metachar terms still match literal text
+  assert.equal(highlight('a.b*c + d', ['.b*']), 'a<mark>.b*</mark>c + d');
+  // HTML escaping still applies before highlighting
+  assert.equal(highlight('<b>bold</b> guide', ['bold']), '&lt;b&gt;<mark>bold</mark>&lt;/b&gt; guide');
+  // no terms → unchanged
+  assert.equal(highlight('plain text', []), 'plain text');
+});

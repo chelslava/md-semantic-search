@@ -96,7 +96,7 @@ test('integrations: VS Code sidebar search goes through the Extension Host with 
   assert.ok(!webviewScript.includes('fetch('), 'webview script must not call fetch');
 
   // Shared client reads settings and sends the Bearer token when configured.
-  assert.ok(src.includes("config.get<string>('apiKey', '')"), 'apiKey read from settings');
+  assert.ok(src.includes('resolveApiKey('), 'apiKey resolved via SecretStorage-first helper (issue #182)');
   assert.ok(src.includes('headers.Authorization = `Bearer ${apiKey}`'), 'Authorization header on daemon requests');
   assert.ok(src.includes("config.get<string>('daemonUrl'"), 'daemonUrl read from settings');
 
@@ -136,4 +136,32 @@ test('integrations: Alfred script filter outputs valid Alfred JSON schema on emp
   const outQuery = JSON.parse(procQuery.stdout);
   assert.ok(Array.isArray(outQuery.items));
   assert.ok(outQuery.items[0].title.includes('Error'));
+});
+
+test('integrations: VS Code webview ships a strict CSP with per-render nonce; key lives in SecretStorage (issue #182)', () => {
+  const extSrcPath = path.join(ROOT, 'integrations', 'vscode', 'src', 'extension.ts');
+  const src = fs.readFileSync(extSrcPath, 'utf8');
+
+  // CSP meta with a per-render nonce, applied to the only script tag
+  assert.ok(src.includes('Content-Security-Policy'), 'webview HTML carries a CSP meta');
+  assert.ok(src.includes("default-src 'none'"), 'CSP default-src none');
+  assert.ok(src.includes("script-src 'nonce-${nonce}'"), 'scripts restricted to the per-render nonce');
+  assert.ok(src.includes('<script nonce="${nonce}">'), 'the inline script is nonce-tagged');
+  const scriptTags = (src.match(/<script/g) || []).length;
+  const nonceTags = (src.match(/<script nonce=/g) || []).length;
+  assert.equal(scriptTags, nonceTags, 'every script tag carries the nonce');
+
+  // API key resolution: SecretStorage first, settings only as fallback
+  assert.ok(src.includes("secrets?.get(API_KEY_SECRET)"), 'SecretStorage consulted first');
+  assert.ok(src.includes('context.secrets.store(API_KEY_SECRET'), 'setApiKey command stores into SecretStorage');
+  assert.ok(src.includes('resolveApiKey(context.secrets, config)'), 'QuickPick flow resolves via SecretStorage');
+
+  // Manifest declares the command and deprecates the raw setting
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'integrations', 'vscode', 'package.json'), 'utf8'));
+  const cmds = (pkg.contributes?.commands || []).map((c) => c.command);
+  assert.ok(cmds.includes('mdss.setApiKey'), 'MDSS: Set API Key command declared');
+  assert.ok(
+    pkg.contributes.configuration.properties['mdss.apiKey'].deprecationMessage,
+    'raw mdss.apiKey setting is marked deprecated',
+  );
 });
