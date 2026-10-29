@@ -129,6 +129,85 @@ export function editDistance(a: string, b: string): number {
   return matrix[alen][blen];
 }
 
+/**
+ * Damerau-Levenshtein distance with a threshold (issue #193): banded DP that
+ * never leaves the |i-j| <= maxDist diagonal and aborts as soon as the whole
+ * row exceeds the threshold — O(maxDist × min(alen, blen)) instead of the
+ * full O(alen × blen) matrix. Returns the EXACT distance when it is
+ * <= maxDist and null otherwise; decisions are identical to
+ * `editDistance(a, b) <= maxDist` (optimal paths within the threshold never
+ * leave the band).
+ */
+export function editDistanceAtMost(a: string, b: string, maxDist: number): number | null {
+  if (a === b) return 0;
+  const alen = a.length;
+  const blen = b.length;
+  if (Math.abs(alen - blen) > maxDist) return null;
+  if (alen === 0) return blen <= maxDist ? blen : null;
+  if (blen === 0) return alen <= maxDist ? alen : null;
+  if (maxDist < 0) return null;
+
+  const INF = maxDist + 1;
+  // rows are padded with an INF sentinel column on each side so band-edge
+  // lookups (j-1 / j+1) never read a real out-of-band value
+  const width = blen + 3;
+  const rowA = new Int32Array(width);
+  const rowB = new Int32Array(width);
+  const rowC = new Int32Array(width);
+  let prev2: Int32Array<ArrayBuffer> | null = null; // row i-2 (for transpositions)
+  let prev: Int32Array<ArrayBuffer> = rowA;
+  let cur: Int32Array<ArrayBuffer> = rowB;
+  const scratch: Int32Array<ArrayBuffer> = rowC;
+  for (let j = 1; j <= blen + 1; j++) prev[j] = j; // row 0: dp[0][j] = j (col 0 unused sentinel)
+  prev[0] = 0;
+
+  for (let i = 1; i <= alen; i++) {
+    const jLo = Math.max(1, i - maxDist);
+    const jHi = Math.min(blen, i + maxDist);
+    cur[0] = i; // dp[i][0] = i (column 0 inside the band only when i <= maxDist)
+    if (i > maxDist) cur[0] = INF;
+    let rowMin = cur[0];
+    for (let j = jLo; j <= jHi; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      let v = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1] && prev2 !== null) {
+        v = Math.min(v, prev2[j - 2] + cost);
+      }
+      cur[j] = v;
+      if (v < rowMin) rowMin = v;
+    }
+    // band-out cells stay INF for this row
+    for (let j = 1; j <= blen; j++) {
+      if (j < jLo || j > jHi) cur[j] = INF;
+    }
+    if (rowMin > maxDist) return null;
+    // three-row rotation: prev2 <- row(i-1), prev <- row(i), cur <- freed row
+    const free = prev2 ?? scratch;
+    prev2 = prev;
+    prev = cur;
+    cur = free;
+  }
+  const d = prev[blen];
+  return d <= maxDist ? d : null;
+}
+
+/**
+ * issue #193: target tokenization memoized per chunk object — the fuzzy scan
+ * runs on every query, but a chunk's title/aliases tokenize to the same tokens
+ * every time. WeakMap so runtime chunks (stable objects in serve) pay once.
+ */
+const fuzzyTargetTokens = new WeakMap<object, string[]>();
+
+function targetTokens(chunk: { title: string; meta?: DocumentMetadata }): string[] {
+  let tokens = fuzzyTargetTokens.get(chunk);
+  if (!tokens) {
+    const targets = [chunk.title, ...(chunk.meta?.aliases || [])].filter(Boolean);
+    tokens = targets.flatMap((t) => tokenize(t));
+    fuzzyTargetTokens.set(chunk, tokens);
+  }
+  return tokens;
+}
+
 export function fuzzyTitleAliasScores(
   chunks: Array<{ file?: string; title: string; meta?: DocumentMetadata }>,
   query: string
@@ -139,21 +218,20 @@ export function fuzzyTitleAliasScores(
 
   for (let docId = 0; docId < chunks.length; docId++) {
     const c = chunks[docId];
-    const targets = [c.title, ...(c.meta?.aliases || [])].filter(Boolean);
+    const tTerms = targetTokens(c);
     let maxScore = 0;
 
-    for (const target of targets) {
-      const tTerms = tokenize(target);
-      for (const qt of qTerms) {
-        if (qt.length < 3) continue;
-        for (const tt of tTerms) {
-          if (tt.length < 3) continue;
-          const maxDist = Math.min(2, Math.floor(qt.length / 3));
-          const dist = editDistance(qt, tt);
-          if (dist <= maxDist) {
-            const similarity = 1 - dist / Math.max(qt.length, tt.length);
-            if (similarity > maxScore) maxScore = similarity;
-          }
+    for (const qt of qTerms) {
+      if (qt.length < 3) continue;
+      const maxDist = Math.min(2, Math.floor(qt.length / 3));
+      for (const tt of tTerms) {
+        if (tt.length < 3) continue;
+        // exact same decision as editDistance(qt, tt) <= maxDist, without the
+        // full O(len²) matrix (issue #193)
+        const dist = editDistanceAtMost(qt, tt, maxDist);
+        if (dist !== null) {
+          const similarity = 1 - dist / Math.max(qt.length, tt.length);
+          if (similarity > maxScore) maxScore = similarity;
         }
       }
     }

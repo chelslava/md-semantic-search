@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  editDistance,
+  editDistanceAtMost,
   analyzeLexicalDocument,
   bm25Scores,
   buildLexicalIndex,
@@ -128,4 +130,31 @@ test('lexical validation rejects unsafe integers and checked TF-sum overflow', (
   assert.throws(() => bm25Scores({
     format: 'bm25-v1', documentLengths: [Infinity], postings: { term: [[0, 1]] },
   }, ['term']), /finite BM25/);
+});
+
+test('lexical: editDistanceAtMost agrees with editDistance on every threshold decision (issue #193)', () => {
+  // randomized cross-check: banded thresholded DP must make EXACTLY the same
+  // accept/reject decisions and return the exact distance when accepted
+  let seed = 42;
+  const rnd = (n) => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed % n;
+  };
+  const alphabet = 'abcde';
+  for (let trial = 0; trial < 4000; trial++) {
+    const a = Array.from({ length: rnd(9) }, () => alphabet[rnd(alphabet.length)]).join('');
+    const b = Array.from({ length: rnd(9) }, () => alphabet[rnd(alphabet.length)]).join('');
+    const maxDist = rnd(4);
+    const exact = editDistance(a, b);
+    const banded = editDistanceAtMost(a, b, maxDist);
+    if (exact <= maxDist) {
+      assert.equal(banded, exact, `"${a}" vs "${b}" k=${maxDist}: expected ${exact}`);
+    } else {
+      assert.equal(banded, null, `"${a}" vs "${b}" k=${maxDist}: expected rejection (exact ${exact})`);
+    }
+  }
+  // transposition-heavy cases (Damerau extension must stay exact)
+  assert.equal(editDistanceAtMost('abcdef', 'abcfde', 2), 2); // cyclic rotation of 'def' = 2 ops
+  assert.equal(editDistanceAtMost('abcd', 'badc', 2), 2);
+  assert.equal(editDistanceAtMost('ca', 'abc', 3), 3);
 });
