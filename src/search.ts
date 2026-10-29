@@ -374,16 +374,17 @@ function snapshotRuntimeIndex(
 
   let lexicalState: LexicalState = { kind: 'legacy-overlap' };
   if (validation.schema >= 3 && index.lexical) {
-    const postings: Record<string, Array<[number, number]>> = Object.create(null);
-    for (const [term, posting] of Object.entries(index.lexical.postings)) {
-      postings[term] = posting.map(([docId, frequency]) => [docId, frequency]);
-    }
+    // issue #192: the per-term [docId, tf] pairs are treated as immutable
+    // everywhere (bm25Scores/matchingTerms only read), so sharing them skips
+    // the O(terms × postings) deep copy on every load/reindex. The two mutable
+    // top levels are still copied so caller-side mutations of the loaded index
+    // cannot reach the runtime state.
     lexicalState = {
       kind: 'persisted-bm25',
       lexical: {
         format: index.lexical.format,
         documentLengths: [...index.lexical.documentLengths],
-        postings,
+        postings: { ...index.lexical.postings },
       },
     };
   }
@@ -463,7 +464,8 @@ function warnIfStale(index: IndexFile): void {
  */
 const BIN_SIDECAR_STALE = Symbol('bin-sidecar-stale');
 
-export function loadIndex(indexDir: string): { index: IndexFile; model: ModelDescriptor } {
+export function loadIndex(indexDir: string, opts: { /** skip the (expensive) whole-tree staleness walk — deferred to search() */ checkStale?: boolean } = {}): { index: IndexFile; model: ModelDescriptor } {
+  const { checkStale = true } = opts;
   const vectorsBinPath = path.join(indexDir, 'vectors.bin');
   const vectorsPath = path.join(indexDir, 'vectors.json');
 
@@ -510,7 +512,9 @@ export function loadIndex(indexDir: string): { index: IndexFile; model: ModelDes
       const { model, dim: validatedDim } = validated;
       const expectedDim = validatedDim ?? deserialized.dim;
 
-      warnIfStale(index);
+      // issue #192: the staleness walk is a synchronous whole-tree traversal —
+      // when the caller defers it (search()), it runs AFTER results exist
+      if (checkStale) warnIfStale(index);
 
       const ivfPath = path.join(indexDir, 'ivf.json');
       let ivf: IVFIndex | undefined;
@@ -610,7 +614,7 @@ export function loadIndex(indexDir: string): { index: IndexFile; model: ModelDes
     }
   }
 
-  warnIfStale(index);
+  if (checkStale) warnIfStale(index);
 
   const ivfPath = path.join(indexDir, 'ivf.json');
   let ivf: IVFIndex | undefined;
@@ -1061,7 +1065,11 @@ export type OneShotSearchOptions = Omit<SearchOptions, 'loaded'> & { indexDir: s
 
 export async function search(opts: OneShotSearchOptions): Promise<SearchResultHit[]> {
   const { indexDir, ...rest } = opts;
-  const loaded = loadIndex(indexDir);
-  return searchIndex({ ...rest, loaded });
+  // issue #192: the staleness check walks the entire tree synchronously —
+  // defer it until AFTER the results are computed so it never delays them
+  const loaded = loadIndex(indexDir, { checkStale: false });
+  const hits = await searchIndex({ ...rest, loaded });
+  warnIfStale(loaded.index);
+  return hits;
 }
 
