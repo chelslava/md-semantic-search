@@ -78,7 +78,17 @@ export const _stats = {
   embedCount: 0,
 };
 
-const BATCH = 32;
+// issue #194: batch size is tunable — 64-128 often feeds ONNX noticeably
+// better on short passages; overridable for experiments (clamped 1..512).
+const BATCH = (() => {
+  const raw = parseInt(process.env.MDSS_BATCH || '', 10);
+  return Number.isSafeInteger(raw) && raw > 0 ? Math.min(raw, 512) : 32;
+})();
+// issue #194: mid-run checkpoints serialize the WHOLE index so far — with
+// faster embedding that cost scales up. Time-budget them (~every 30 s) in
+// addition to the batch cadence, so at most ~30 s of embedding is lost on a
+// crash while serialization stays a small slice of wall time.
+const CHECKPOINT_MIN_INTERVAL_MS = 30_000;
 const CHECKPOINT_BATCHES = 8;
 const INDEX_FORMAT = 'binary-v1';
 
@@ -239,6 +249,7 @@ async function _buildIndexInner({
   const vectorsPath = path.join(indexDir, 'vectors.json');
   const hashesPath = path.join(indexDir, '.hashes.json');
   const checkpointPath = path.join(indexDir, '.checkpoint.json');
+  let lastCheckpointAt = 0;
 
   fs.mkdirSync(indexDir, { recursive: true });
 
@@ -501,7 +512,8 @@ async function _buildIndexInner({
           c.vec = vecs[j];
         });
         completedBatches++;
-        if (completedBatches % CHECKPOINT_BATCHES === 0) {
+        if (completedBatches % CHECKPOINT_BATCHES === 0 && Date.now() - lastCheckpointAt >= CHECKPOINT_MIN_INTERVAL_MS) {
+          lastCheckpointAt = Date.now();
           atomicWrite(checkpointPath, JSON.stringify(checkpointSnapshot(false)));
         }
         const done = Math.min(i + BATCH, toEmbed.length);
@@ -547,7 +559,8 @@ async function _buildIndexInner({
           });
           completedBatches++;
           embeddedCount += slice.length;
-          if (completedBatches % CHECKPOINT_BATCHES === 0) {
+          if (completedBatches % CHECKPOINT_BATCHES === 0 && Date.now() - lastCheckpointAt >= CHECKPOINT_MIN_INTERVAL_MS) {
+            lastCheckpointAt = Date.now();
             atomicWrite(checkpointPath, JSON.stringify(checkpointSnapshot(false)));
           }
           const elapsedSec = (Date.now() - embedStartTime) / 1000;

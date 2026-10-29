@@ -1,6 +1,7 @@
 // @ts-check
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import os from 'node:os';
 import { resolveSessionOptions, getExtractorCacheKey } from '../dist/core.js';
 
 test('resolveSessionOptions reads environment variables and adapter properties', () => {
@@ -13,8 +14,10 @@ test('resolveSessionOptions reads environment variables and adapter properties',
     delete process.env.MDSS_NUM_THREADS;
     delete process.env.MDSS_INTER_OP_THREADS;
 
-    // No env and no adapter sessionOptions -> undefined
-    assert.equal(resolveSessionOptions(), undefined);
+    // No env and no adapter sessionOptions -> the issue #194 default:
+    // intraOpNumThreads = physical-ish cores (max(1, min(4, logical/2)))
+    const expectedDefault = Math.max(1, Math.min(4, os.cpus().length >> 1));
+    assert.deepEqual(resolveSessionOptions(), { intraOpNumThreads: expectedDefault });
 
     // Adapter sessionOptions -> returned
     const opts1 = resolveSessionOptions({
@@ -37,7 +40,9 @@ test('resolveSessionOptions reads environment variables and adapter properties',
 
 test('getExtractorCacheKey includes session options in cache identity', () => {
   const model1 = { id: 'test-model', nativeDim: 4, dim: 4, queryPrefix: '', passagePrefix: '', pooling: /** @type {const} */ ('mean') };
-  const model2 = { ...model1, sessionOptions: { intraOpNumThreads: 4 } };
+  // a DIFFERENT thread count from the issue #194 default — same options must
+  // share an extractor, different ones must not
+  const model2 = { ...model1, sessionOptions: { intraOpNumThreads: 1 } };
 
   const key1 = getExtractorCacheKey(model1, '.cache', true);
   const key2 = getExtractorCacheKey(model2, '.cache', true);
