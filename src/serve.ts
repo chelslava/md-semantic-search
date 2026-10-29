@@ -305,14 +305,14 @@ export async function createServe(opts: CreateServeOptions): Promise<{
   const sockets = new Set<import('node:net').Socket>();
   const server = http.createServer((req, res) => {
     handleRequest(req, res, state).catch((e) => {
-      // issue #186: a client that aborted mid-body has already spent the
-      // response — writing headers again throws ERR_HTTP_HEADERS_SENT and
-      // would kill the whole daemon. Degrade to destroying the socket.
+      // issue #182: raw exception text can carry absolute filesystem paths —
+      // reply generically, log the details server-side
+      process.stderr.write(`serve: unhandled request error: ${e?.stack || e}\n`);
       try {
         if (res.headersSent) {
           res.destroy();
         } else {
-          json(res, 500, { error: e.message });
+          json(res, 500, { error: 'internal server error' });
         }
       } catch {
         try {
@@ -907,7 +907,10 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       });
       json(res, 200, { query, k, count: results.length, results });
     } catch (e: any) {
-      json(res, 500, { error: e.message });
+      // issue #182: search errors can name absolute paths — keep the reply
+      // generic, log the details server-side
+      process.stderr.write(`serve: /search failed: ${e?.stack || e}\n`);
+      json(res, 500, { error: 'internal server error' });
     } finally {
       release();
     }
@@ -1149,6 +1152,20 @@ async function handleMcpHttp(req: http.IncomingMessage, res: http.ServerResponse
     return;
   }
 
+  // issue #182: session binding before any work — the server mints its own id
+  // and rejects mismatching client ids with 404 instead of adopting them
+  // (session fixation) or feeding them to res.setHeader (500 on bad headers)
+  const requested = req.headers['mcp-session-id'];
+  if (
+    typeof requested === 'string' &&
+    requested &&
+    state.mcpSessionId &&
+    requested !== state.mcpSessionId
+  ) {
+    json(res, 404, { error: 'session not found — re-initialize' });
+    return;
+  }
+
   // Same fairness gate as /search — tools/call can trigger embedding work.
   const limited = state.limiter?.gate(req.socket.remoteAddress || 'unknown');
   if (limited) {
@@ -1196,9 +1213,8 @@ async function handleMcpHttp(req: http.IncomingMessage, res: http.ServerResponse
       else if (!isNotification && msg.method === undefined) continue;
     }
 
-    // session id: mint on first contact, echo afterwards
-    const requested = req.headers['mcp-session-id'];
-    if (typeof requested === 'string' && requested) state.mcpSessionId = requested;
+    // session id: server-minted only (issue #182 — see the 404 gate above);
+    // mint on first contact, echo ours afterwards
     if (!state.mcpSessionId) state.mcpSessionId = crypto.randomUUID();
     res.setHeader('mcp-session-id', state.mcpSessionId);
 

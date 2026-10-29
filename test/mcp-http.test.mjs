@@ -183,3 +183,43 @@ test('mcp-http: transport is opt-in — /mcp is 404 without --mcp; stdio untouch
     safeRm(dir);
   }
 });
+
+test('mcp-http: session ids are server-minted; a foreign id is 404 before any tool runs (issue #182)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-mcph-sess-'));
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Coffee\n\ncoffee beans roasted ground notes here\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: path.join(dir, '.c'), modelName: 'e5-base', embedFn: fakeEmbed });
+    const svc = await createServe({
+      indexDir: idx, cacheDir: path.join(dir, '.c'), embedFn: fakeEmbed,
+      mcp: true, apiKey: 'sekret', ui: false,
+    });
+    await new Promise((r) => svc.server.listen(0, r));
+    const url = `http://127.0.0.1:${svc.server.address().port}`;
+    try {
+      const init = await mcpPost(url, {
+        jsonrpc: '2.0', id: 1, method: 'initialize',
+        params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 't', version: '0' } },
+      });
+      const sid = init.headers['mcp-session-id'];
+      assert.ok(sid, 'server mints the session id');
+
+      // foreign (attacker-chosen) id → 404, and NOT echoed back
+      const foreign = await mcpPost(url, {
+        jsonrpc: '2.0', id: 2, method: 'tools/list',
+      }, 'attacker-controlled-session-id');
+      assert.equal(foreign.status, 404, 'foreign session id rejected with 404');
+      assert.notEqual(foreign.headers['mcp-session-id'], 'attacker-controlled-session-id', 'foreign id is never adopted');
+
+      // the server's own id still works
+      const own = await mcpPost(url, { jsonrpc: '2.0', id: 3, method: 'tools/list' }, sid);
+      assert.equal(own.status, 200);
+      assert.equal(own.headers['mcp-session-id'], sid, 'own id echoed');
+    } finally {
+      await svc.close();
+      safeRm(dir);
+    }
+  } finally {
+    safeRm(dir);
+  }
+});
