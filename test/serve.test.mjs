@@ -1026,3 +1026,144 @@ test('serve: second daemon on a busy port exits 1 with an actionable message (is
     safeRm(dir);
   }
 });
+
+// ---------------------------------------------------------------------------
+// issue #181: fairness gates on every route, no fs paths in public /health
+// ---------------------------------------------------------------------------
+
+test('serve: public /health hides indexDir, authenticated /health keeps it (issue #181)', async () => {
+  const dir = tempDir('serveHealth');
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Coffee\n\ncoffee guide beans roasted ground notes here\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+
+    // unauthenticated daemon (no key): /health is public by definition
+    const open = await startServe({ indexDir: idx, cacheDir: dir, db: dir, embedFn: fakeEmbed });
+    try {
+      const h = await rawRequest(open.url, { path: '/health' });
+      assert.equal(h.status, 200);
+      assert.equal(JSON.parse(h.body).indexDir, undefined, 'no indexDir without auth');
+    } finally {
+      await open.close();
+    }
+
+    // with a key + healthPublic: unauthenticated /health hides the path too
+    const pub = await startServe({ indexDir: idx, cacheDir: dir, db: dir, embedFn: fakeEmbed, apiKey: 'k', healthPublic: true });
+    try {
+      const unauth = await rawRequest(pub.url, { path: '/health' });
+      assert.equal(unauth.status, 200);
+      assert.equal(JSON.parse(unauth.body).indexDir, undefined, 'no indexDir in public health');
+
+      const authed = await rawRequest(pub.url, { path: '/health', headers: { authorization: 'Bearer k' } });
+      assert.equal(JSON.parse(authed.body).indexDir, idx, 'authenticated health keeps the path');
+    } finally {
+      await pub.close();
+    }
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('serve: /doc and /related go through the rate limit (issue #181)', async () => {
+  const dir = tempDir('serveDocGate');
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Coffee\n\ncoffee guide beans roasted ground notes here\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const srv = await startServe({ indexDir: idx, cacheDir: dir, db: dir, embedFn: fakeEmbed, rateLimit: 2 });
+    try {
+      const statuses = [];
+      for (let i = 0; i < 6; i++) {
+        const r = await rawRequest(srv.url, { path: `/doc?file=a.md` });
+        statuses.push(r.status);
+      }
+      assert.ok(statuses.includes(429), `doc storm hits 429, got ${statuses.join(',')}`);
+      assert.ok(statuses.includes(200), `legit doc reads still served, got ${statuses.join(',')}`);
+
+      const relStatuses = [];
+      for (let i = 0; i < 5; i++) {
+        const r = await rawRequest(srv.url, { method: 'POST', path: '/related', headers: { 'content-type': 'application/json' }, });
+        // no body → missing-target 400 still consumes budget; storm ends in 429
+        relStatuses.push(r.status);
+      }
+      assert.ok(relStatuses.includes(429), `related storm hits 429, got ${relStatuses.join(',')}`);
+    } finally {
+      await srv.close();
+    }
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('serve: /related rejects oversized POST bodies with 413 (issue #181)', async () => {
+  const dir = tempDir('serveRel413');
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Coffee\n\ncoffee guide beans roasted ground notes here\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const srv = await startServe({ indexDir: idx, cacheDir: dir, db: dir, embedFn: fakeEmbed, rateLimit: 0 });
+    try {
+      const big = JSON.stringify({ file: 'a.md', junk: 'x'.repeat(MAX_BODY_BYTES * 2) });
+      const r = await fetch(`${srv.url}/related`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', connection: 'close' },
+        body: big,
+      });
+      assert.equal(r.status, 413);
+    } finally {
+      await srv.close();
+    }
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('serve: SSE /mcp connections are capped at maxConcurrency (issue #181)', async () => {
+  const dir = tempDir('serveSSE');
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Coffee\n\ncoffee guide beans roasted ground notes here\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const svc = await createServe({ indexDir: idx, cacheDir: dir, db: dir, embedFn: fakeEmbed, mcp: true, maxConcurrency: 1, rateLimit: 0 });
+    await new Promise((resolve) => svc.server.listen(0, resolve));
+    const { port } = svc.server.address();
+    try {
+      const openStream = (pathName) => new Promise((resolve, reject) => {
+        const rq = http.request({ hostname: '127.0.0.1', port, path: pathName, method: 'GET' }, (res) => {
+          res.resume();
+          resolve({ status: res.statusCode, res });
+        });
+        rq.on('error', reject);
+        rq.end();
+      });
+
+      const first = await openStream('/mcp');
+      assert.equal(first.status, 200, 'first SSE stream accepted');
+      const second = await openStream('/mcp');
+      assert.equal(second.status, 503, 'second SSE stream shed with 503');
+      second.res.destroy();
+
+      // release the FIRST stream (it holds the only slot), wait for the
+      // server to process the close, then the cap has room again
+      first.res.destroy();
+      let freed = false;
+      for (let i = 0; i < 20; i++) {
+        if ((svc.state.sseConnections ?? 0) === 0) {
+          freed = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      assert.ok(freed, 'server decremented the SSE counter on close');
+      const third = await openStream('/mcp');
+      assert.equal(third.status, 200, 'slot is freed after the stream closes');
+      third.res.destroy();
+      await new Promise((r) => setTimeout(r, 100));
+    } finally {
+      await svc.close();
+    }
+  } finally {
+    safeRm(dir);
+  }
+});

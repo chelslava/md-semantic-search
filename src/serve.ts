@@ -41,6 +41,8 @@ export interface ServeState {
   reindexCount?: number;
   apiKey?: string;
   healthPublic?: boolean;
+  /** issue #181: live count of open SSE /mcp streams (capped by maxConcurrency). */
+  sseConnections?: number;
   /** issue #111: serve the built-in web UI at `/` (default on). */
   ui?: boolean;
   /** issue #123: mount the Streamable HTTP MCP transport at /mcp (default off). */
@@ -297,6 +299,7 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     allowedHosts,
     corsOrigins,
     limiter: new ServeLimiter(rateLimit, DEFAULT_RATE_BURST, maxConcurrency),
+    sseConnections: 0,
   };
 
   const sockets = new Set<import('node:net').Socket>();
@@ -797,17 +800,20 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     }
   }
 
+  // issue #181: /health path disclosure depends on whether THIS request is
+  // authenticated — an unauthenticated daemon or public health hides indexDir
+  let requestAuthenticated = false;
   if (state.apiKey) {
+    const authHeader = req.headers['authorization'];
+    const match = typeof authHeader === 'string' ? authHeader.match(/^Bearer\s+(.+)$/i) : null;
+    const token = match ? match[1].trim() : null;
+    const valid = !!token && isAuthorizedToken(token, state.apiKey);
     const isPublicHealth = url.pathname === '/health' && req.method === 'GET' && state.healthPublic;
-    if (!isPublicHealth) {
-      const authHeader = req.headers['authorization'];
-      const match = typeof authHeader === 'string' ? authHeader.match(/^Bearer\s+(.+)$/i) : null;
-      const token = match ? match[1].trim() : null;
-      if (!token || !isAuthorizedToken(token, state.apiKey)) {
-        json(res, 401, { error: 'unauthorized' });
-        return;
-      }
+    if (!valid && !isPublicHealth) {
+      json(res, 401, { error: 'unauthorized' });
+      return;
     }
+    requestAuthenticated = valid;
   }
 
   // Streamable HTTP MCP transport (issue #123): same auth/host/rate-limit
@@ -914,6 +920,20 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       json(res, 400, { error: 'missing "file" query parameter' });
       return;
     }
+    // issue #181: /doc does synchronous disk IO per request — it goes through
+    // the same fairness gates as /search so a local storm cannot starve it
+    const limited = state.limiter?.gate(req.socket.remoteAddress || 'unknown');
+    if (limited) {
+      res.setHeader('retry-after', String(limited.retryAfterSec));
+      json(res, 429, { error: 'rate limit exceeded — slow down', retryAfterSec: limited.retryAfterSec });
+      return;
+    }
+    const release = state.limiter ? await state.limiter.acquireSlot() : null;
+    if (!release) {
+      res.setHeader('retry-after', '1');
+      json(res, 503, { error: 'server busy — concurrency cap reached, queue full' });
+      return;
+    }
     const fromLineParam = url.searchParams.get('fromLine') || url.searchParams.get('from');
     const maxLinesParam = url.searchParams.get('maxLines') || url.searchParams.get('lines') || url.searchParams.get('limit');
     const fromLine = fromLineParam ? parseInt(fromLineParam, 10) : 1;
@@ -934,11 +954,17 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       } else {
         json(res, 400, { error: e.message });
       }
+    } finally {
+      release();
     }
     return;
   }
 
   if (req.method === 'GET' && url.pathname === '/health') {
+    // issue #181: an unauthenticated /health must not disclose filesystem
+    // locations — the path comes back only to an authenticated caller on a
+    // daemon that also requires auth for /health
+    const hideIndexDir = !state.apiKey || !requestAuthenticated;
     json(res, 200, {
       ok: true,
       chunks: state.loaded.index.chunks.length,
@@ -946,7 +972,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       dim: state.loaded.index.dim || state.loaded.model.dim || 0,
       built: state.loaded.index.built || null,
       watching: state.watching,
-      indexDir: state.indexDir,
+      indexDir: hideIndexDir ? undefined : state.indexDir,
       // fairness counters (issue #119)
       in_flight: state.limiter?.inFlight ?? 0,
       queued: state.limiter?.queued ?? 0,
@@ -972,6 +998,14 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   }
 
   if (url.pathname === '/related' && (req.method === 'POST' || req.method === 'GET')) {
+    // issue #181: /related runs the (semantic) relatedness sweep — same rate
+    // gate as /search, before any body parsing
+    const limited = state.limiter?.gate(req.socket.remoteAddress || 'unknown');
+    if (limited) {
+      res.setHeader('retry-after', String(limited.retryAfterSec));
+      json(res, 429, { error: 'rate limit exceeded — slow down', retryAfterSec: limited.retryAfterSec });
+      return;
+    }
     let target = '';
     let k = 10;
     let direction: 'both' | 'outgoing' | 'backlinks' = 'both';
@@ -985,10 +1019,20 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       if (dirParam === 'outgoing' || dirParam === 'backlinks' || dirParam === 'both') direction = dirParam;
       if (url.searchParams.has('semantic')) semantic = url.searchParams.get('semantic') !== 'false';
     } else {
+      // issue #181: an overflowing body is a 413, not a silently truncated parse
       let body = '';
+      let tooLarge = false;
       for await (const chunk of req) {
         body += chunk;
-        if (body.length > MAX_BODY_BYTES) break;
+        if (body.length > MAX_BODY_BYTES) {
+          tooLarge = true;
+          break;
+        }
+      }
+      if (tooLarge) {
+        json(res, 413, { error: `payload too large (limit ${MAX_BODY_BYTES} bytes)` });
+        req.resume();
+        return;
       }
       try {
         const payload = body ? JSON.parse(body) : {};
@@ -1009,6 +1053,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       return;
     }
 
+    const release = state.limiter ? await state.limiter.acquireSlot() : null;
+    if (!release) {
+      res.setHeader('retry-after', '1');
+      json(res, 503, { error: 'server busy — concurrency cap reached, queue full' });
+      return;
+    }
     try {
       const relatedResult = findRelatedNotes({
         loaded: state.loaded,
@@ -1024,6 +1074,8 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       } else {
         json(res, 400, { error: e.message });
       }
+    } finally {
+      release();
     }
     return;
   }
@@ -1061,6 +1113,14 @@ async function handleMcpHttp(req: http.IncomingMessage, res: http.ServerResponse
   if (req.method === 'GET') {
     // Server-initiated channel: we have nothing to push today, so keep the
     // stream alive with comments until the client goes away.
+    // issue #181: each stream holds a socket + a heartbeat interval — cap the
+    // number of concurrent SSE connections at the fairness concurrency limit.
+    const sseCap = state.limiter?.concurrencyEnabled ? state.limiter.maxConcurrency : DEFAULT_MAX_CONCURRENCY;
+    if ((state.sseConnections ?? 0) >= sseCap) {
+      json(res, 503, { error: 'server busy — SSE connection cap reached' });
+      return;
+    }
+    state.sseConnections = (state.sseConnections ?? 0) + 1;
     res.writeHead(200, {
       'content-type': 'text/event-stream',
       'cache-control': 'no-store',
@@ -1075,7 +1135,12 @@ async function handleMcpHttp(req: http.IncomingMessage, res: http.ServerResponse
       }
     }, 15_000);
     hb.unref?.();
-    req.on('close', () => clearInterval(hb));
+    // res 'close' fires on client abort mid-stream too — req may never close
+    // while the response stream is still open
+    res.on('close', () => {
+      clearInterval(hb);
+      state.sseConnections = Math.max(0, (state.sseConnections ?? 1) - 1);
+    });
     return;
   }
 
