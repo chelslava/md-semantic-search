@@ -438,3 +438,42 @@ test('issue #60: an explicit adapter descriptor is usable and validated', async 
   const passage = prepareEmbeddingRequest(m, ['hello'], 'passage');
   assert.deepEqual(passage.input, ['p: hello']);
 });
+
+test('walkMarkdown: an unreadable directory is surfaced, never silently skipped (issue #189)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-walk-err-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'visible.md'), '# Visible\n\nvisible note body text here\n');
+
+    const chunks = [];
+    const origErr = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (s) => {
+      chunks.push(String(s));
+      return true;
+    };
+    let errors;
+    try {
+      if (process.platform === 'win32') {
+        // readdirSync on a FILE throws cross-platform — deterministic trigger
+        errors = [];
+        const files = walkMarkdown(path.join(dir, 'visible.md'), [], errors);
+        assert.equal(files.length, 0);
+      } else {
+        const locked = path.join(dir, 'locked');
+        fs.mkdirSync(locked);
+        fs.writeFileSync(path.join(locked, 'secret.md'), '# Secret\n\nshould not be indexed silently\n');
+        fs.chmodSync(locked, 0o000);
+        errors = [];
+        const files = walkMarkdown(dir, [], errors);
+        assert.equal(files.length, 1, 'visible file still walked');
+        fs.chmodSync(locked, 0o755);
+      }
+    } finally {
+      process.stderr.write = origErr;
+    }
+    assert.equal(errors.length, 1, 'error collected');
+    assert.match(errors[0], /cannot read directory/);
+    assert.match(chunks.join(''), /cannot read directory/, 'stderr warning emitted');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});

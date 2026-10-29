@@ -148,7 +148,20 @@ export function readBinaryHeader(buffer: Buffer): BinaryIndexHeader {
     throw new Error(`Invalid binary index magic: expected "${BINARY_MAGIC}", got "${magic}"`);
   }
   const version = buffer.readUInt32LE(8);
+  // issue #189: version was parsed but never checked — a future-format file
+  // would silently decode as garbage vectors
+  if (version !== BINARY_VERSION) {
+    throw new Error(
+      `Invalid binary index: unsupported version ${version} (expected ${BINARY_VERSION}) — run \`mdss index\` to rebuild`,
+    );
+  }
   const flags = buffer.readUInt32LE(12);
+  // issue #189: unknown flag bits silently decoded as fp32 garbage
+  if (flags !== BINARY_FLAG_FP32 && flags !== BINARY_FLAG_INT8) {
+    throw new Error(
+      `Invalid binary index: unknown flags 0x${flags.toString(16)} (expected 0 or 1) — run \`mdss index\` to rebuild`,
+    );
+  }
   const dim = buffer.readUInt32LE(16);
   const chunkCount = buffer.readUInt32LE(20);
   const vectorsOffset = Number(buffer.readBigUInt64LE(24));

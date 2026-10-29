@@ -167,3 +167,53 @@ test('lock: buildIndex leaves NO lock file behind on success (clean exit)', asyn
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('lock: a lock swapped by another writer during reclaim is never unlinked (issue #188)', () => {
+  const dir = tempDir('locktoctou');
+  const lockPath = path.join(dir, LOCK_FILENAME);
+  try {
+    // the stale lock we classify as reclaimable
+    const staleOwner = { pid: aDeadPid(), since: '2026-01-01T00:00:00.000Z' };
+    fs.writeFileSync(lockPath, JSON.stringify(staleOwner) + '\n');
+
+    // the other writer wins the race INSIDE the classify→unlink window:
+    // it unlinks the stale lock and creates a fresh, live one
+    const freshOwner = { pid: process.pid, since: new Date().toISOString() };
+    const freshPayload = JSON.stringify(freshOwner) + '\n';
+    const r = acquireIndexLock(dir, {
+      onClassified: () => {
+        fs.unlinkSync(lockPath);
+        fs.writeFileSync(lockPath, freshPayload);
+      },
+    });
+
+    assert.equal(r.acquired, false, 'yield to the fresh lock');
+    assert.match(r.reason, /changed while reclaiming/);
+    assert.equal(fs.readFileSync(lockPath, 'utf8'), freshPayload, 'the live lock is intact — not unlinked');
+    assert.equal(r.pid, freshOwner.pid);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});
+
+test('lock: a stale lock with unchanged identity is still reclaimed after re-verify (issue #188)', () => {
+  const dir = tempDir('locktoctou-ok');
+  const lockPath = path.join(dir, LOCK_FILENAME);
+  try {
+    const staleOwner = { pid: aDeadPid(), since: '2026-01-01T00:00:00.000Z' };
+    const stalePayload = JSON.stringify(staleOwner) + '\n';
+    fs.writeFileSync(lockPath, stalePayload);
+
+    const r = acquireIndexLock(dir, {
+      onClassified: () => {
+        /* no interleave — identity still matches at re-verify */
+      },
+    });
+    assert.equal(r.acquired, true, 'genuinely stale lock is still reclaimed');
+    assert.equal(pidAlive(process.pid), true);
+    assert.equal(JSON.parse(fs.readFileSync(lockPath, 'utf8')).pid, process.pid, 'our lock now owns it');
+    releaseIndexLock(dir);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});

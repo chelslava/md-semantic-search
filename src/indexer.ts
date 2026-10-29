@@ -242,7 +242,11 @@ async function _buildIndexInner({
 
   fs.mkdirSync(indexDir, { recursive: true });
 
-  const files = walkMarkdown(db, ignore);
+  // issue #189: unreadable directories shrink the corpus — collect and log
+  // them so a "shrinking" index is never published silently
+  const walkErrors: string[] = [];
+  const files = walkMarkdown(db, ignore, walkErrors);
+  for (const we of walkErrors) log(we);
   const canonicalHashes = loadJSON<Record<string, string>>(hashesPath, {}, log);
   let canonicalIndex = loadJSON<PersistedIndex>(vectorsPath, { chunks: [] }, log);
   let canonicalSchema = 0;
