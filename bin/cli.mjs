@@ -492,6 +492,9 @@ async function resolveEmbedderOverrides(opts) {
     baseUrl: opts.embedderBaseUrl,
     keyFile: opts.embedderKeyFile,
   });
+  const egressUrl = opts.embedderBaseUrl ||
+    (opts.embedder === 'ollama' ? process.env.OLLAMA_HOST || 'http://127.0.0.1:11434' : 'https://api.openai.com/v1');
+  warnDataEgress(`--embedder ${opts.embedder}`, egressUrl);
   const descriptor = await emb.descriptor();
   logErr(`embedder: ${emb.id}/${emb.model} (dim ${descriptor.dim} via ${opts.embedderBaseUrl || 'default endpoint'})`);
   return { modelName: descriptor, embedFn: emb.embedFn };
@@ -499,6 +502,36 @@ async function resolveEmbedderOverrides(opts) {
 
 function logErr(s) {
   process.stderr.write(s + '\n');
+}
+
+// ---------------------------------------------------------------------------
+// Data egress notice (issue #183): two opt-in paths send PRIVATE note content
+// to non-loopback destinations — external embedders and the RAG LLM bridge.
+// The default local pipeline never transmits anything; the notice fires once
+// per process before the first send and can be silenced via env.
+// ---------------------------------------------------------------------------
+
+export function isLoopbackEndpoint(url) {
+  try {
+    const u = new URL(url);
+    const h = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    return h === 'localhost' || h === '127.0.0.1' || h === '::1';
+  } catch {
+    return false;
+  }
+}
+
+let egressWarned = false;
+
+export function warnDataEgress(kind, destination, write = (m) => process.stderr.write(m + '\n')) {
+  if (egressWarned || process.env.MDSS_NO_EGRESS_WARNING === '1') return;
+  if (isLoopbackEndpoint(destination)) return; // local Ollama/llama.cpp — nothing leaves the machine
+  egressWarned = true;
+  write(
+    `⚠ data egress: ${kind} sends NOTE CONTENT to ${destination} (an external service).\n` +
+    `  Everything stays local with --offline, a loopback endpoint, or the default local embedder.\n` +
+    `  Set MDSS_NO_EGRESS_WARNING=1 to silence this notice. See SECURITY.md "Data egress".`
+  );
 }
 
 async function cmdIndex(opts) {
@@ -1149,6 +1182,7 @@ async function cmdAsk(opts) {
   const offline = resolveOffline(opts);
   const embedderOverrides = await resolveEmbedderOverrides(opts);
 
+  if (opts.llmEndpoint) warnDataEgress('--llm-endpoint', opts.llmEndpoint);
   const { askQuestion } = await import('../dist/rag.js');
   const result = await askQuestion({
     query,
@@ -1191,6 +1225,7 @@ async function cmdChat(opts) {
     die(`No index at ${vectorsPath}. Run \`mdss index --db ${db}\` first.`);
   }
 
+  if (opts.llmEndpoint) warnDataEgress('--llm-endpoint', opts.llmEndpoint);
   const { chatTurn, loadChatSession, listChatSessions } = await import('../dist/rag.js');
   const loaded = loadIndex(indexDir);
 

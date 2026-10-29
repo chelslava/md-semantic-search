@@ -824,3 +824,30 @@ test('cli: mdss chat executes one-shot turn and persists session (issue #147)', 
 
 
 
+
+test('cli: data egress notice fires for remote endpoints, never for loopback (issue #183)', async () => {
+  const { isLoopbackEndpoint, warnDataEgress } = await import('../bin/cli.mjs');
+
+  assert.equal(isLoopbackEndpoint('http://127.0.0.1:11434'), true);
+  assert.equal(isLoopbackEndpoint('http://localhost:8080'), true);
+  assert.equal(isLoopbackEndpoint('http://[::1]:8747'), true);
+  assert.equal(isLoopbackEndpoint('https://api.openai.com/v1'), false);
+  assert.equal(isLoopbackEndpoint('not a url'), false);
+
+  const lines = [];
+  const sink = (m) => lines.push(m);
+  const orig = process.env.MDSS_NO_EGRESS_WARNING;
+  delete process.env.MDSS_NO_EGRESS_WARNING;
+  try {
+    warnDataEgress('--embedder openai', 'https://api.openai.com/v1', sink);
+    assert.match(lines.join('\n'), /sends NOTE CONTENT to https:\/\/api\.openai\.com\/v1/);
+    assert.match(lines.join('\n'), /MDSS_NO_EGRESS_WARNING/);
+    // once per process
+    lines.length = 0;
+    warnDataEgress('--llm-endpoint', 'https://llm.example.com', sink);
+    assert.equal(lines.length, 0, 'second call in the same process is silent');
+  } finally {
+    if (orig === undefined) delete process.env.MDSS_NO_EGRESS_WARNING;
+    else process.env.MDSS_NO_EGRESS_WARNING = orig;
+  }
+});
