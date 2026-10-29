@@ -62,6 +62,73 @@ export function rrf(
   return fused;
 }
 
+/**
+ * issue #191: bounded top-k selection over a dense sweep — a capped min-heap
+ * instead of materializing one object per chunk and fully sorting. Ties break
+ * toward the smaller idx, which is exactly what a stable sort by
+ * (score desc) over idx-ordered input produces, so the selected pool and its
+ * order are identical to `[...items].sort((a, b) => b.score - a.score).slice(0, k)`.
+ */
+export function topKByScore(
+  n: number,
+  scoreAt: (i: number) => number,
+  k: number,
+): Array<{ idx: number; score: number }> {
+  if (k <= 0 || n <= 0) return [];
+  const cap = Math.min(k, n);
+  const scores = new Array<number>(cap);
+  const idxs = new Array<number>(cap);
+  let size = 0;
+
+  /** true when (aScore, aIdx) is a WORSE keeper than (bScore, bIdx). */
+  const worse = (aScore: number, aIdx: number, bScore: number, bIdx: number): boolean =>
+    aScore < bScore || (aScore === bScore && aIdx > bIdx);
+
+  const siftDown = (pos: number): void => {
+    for (;;) {
+      const left = pos * 2 + 1;
+      if (left >= size) return;
+      const right = left + 1;
+      const child = right < size && worse(scores[right], idxs[right], scores[left], idxs[left]) ? right : left;
+      if (!worse(scores[child], idxs[child], scores[pos], idxs[pos])) return;
+      const ts = scores[pos]; scores[pos] = scores[child]; scores[child] = ts;
+      const ti = idxs[pos]; idxs[pos] = idxs[child]; idxs[child] = ti;
+      pos = child;
+    }
+  };
+
+  for (let i = 0; i < n; i++) {
+    const s = scoreAt(i);
+    if (size < cap) {
+      let pos = size++;
+      scores[pos] = s;
+      idxs[pos] = i;
+      while (pos > 0) {
+        const parent = (pos - 1) >> 1;
+        if (!worse(scores[pos], idxs[pos], scores[parent], idxs[parent])) break;
+        const ts = scores[pos]; scores[pos] = scores[parent]; scores[parent] = ts;
+        const ti = idxs[pos]; idxs[pos] = idxs[parent]; idxs[parent] = ti;
+        pos = parent;
+      }
+    } else if (worse(scores[0], idxs[0], s, i)) {
+      scores[0] = s;
+      idxs[0] = i;
+      siftDown(0);
+    }
+  }
+
+  const out: Array<{ idx: number; score: number }> = [];
+  while (size > 0) {
+    out.push({ idx: idxs[0], score: scores[0] });
+    size--;
+    scores[0] = scores[size];
+    idxs[0] = idxs[size];
+    siftDown(0);
+  }
+  out.sort((a, b) => b.score - a.score || a.idx - b.idx);
+  return out;
+}
+
 export interface IndexChunk {
   file: string;
   title: string;
@@ -853,34 +920,6 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
   }
   const queryTerms = [...new Set(tokenize(query))];
 
-  let semantic: Array<{ idx: number; score: number }>;
-  const useAnn = opts.ann ?? (runtime.ivf !== undefined && candidates.length >= ANN_THRESHOLD);
-  // issue #190: with cached int8 norms the sweep computes the dot product alone
-  const norms = runtime.chunkNorms;
-  const sweepScore = (chunk: RuntimeChunk, idx: number): number =>
-    norms && chunk.vec instanceof Int8Array
-      ? asymmetricCosineInt8CachedNorm(qVec as Float32Array, chunk.vec, norms[idx])
-      : cosine(qVec, chunk.vec);
-  if (useAnn && candidates.length >= ANN_THRESHOLD) {
-    if (!runtime.ivf) {
-      const rawVecs = chunks.map((c) => (c.vec instanceof Float32Array ? c.vec : dequantizeFromInt8(c.vec)));
-      runtime.ivf = trainIVF(rawVecs);
-    }
-    const qVecF32 = qVec instanceof Float32Array ? qVec : Float32Array.from(qVec);
-    const probedSet = new Set(searchIVFCandidates(qVecF32, runtime.ivf, opts.nprobe ?? DEFAULT_NPROBE));
-    semantic = candidates.map(({ chunk, idx }) => {
-      if (!probedSet.has(idx)) {
-        return { idx, score: -1 };
-      }
-      return { idx, score: sweepScore(chunk, idx) };
-    });
-  } else {
-    semantic = candidates.map(({ chunk, idx }) => {
-      return { idx, score: sweepScore(chunk, idx) };
-    });
-  }
-  const cosByIdx = new Map(semantic.map((s) => [s.idx, s.score]));
-
   const maxPerDoc = opts.maxPerFile || opts.maxPerDoc;
   // Issue #127: time-decay recency boost — multiply the fused score by
   // 0.5^(ageDays / halfLifeDays), post-RRF and pre-collapse. Age source
@@ -890,9 +929,53 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
   // Issue #163: recency rescores AFTER the pool slice, so the pool must be
   // expanded like the maxPerDoc path — otherwise candidates ranked k+1..n
   // by raw RRF are dropped before the fresh-document boost can lift them.
+  // issue #191: the pool must be known BEFORE the sweep for the bounded top-k.
   const pool = rerank
     ? (rerankPool || (maxPerDoc && maxPerDoc > 0 ? Math.max(50, k * 5) : Math.max(20, k * 3)))
     : (maxPerDoc && maxPerDoc > 0 || recencyHalfLife > 0 ? Math.max(50, k * 5) : k);
+
+  let semantic: Array<{ idx: number; score: number }>;
+  let cosByIdx: Map<number, number> | undefined;
+  const useAnn = opts.ann ?? (runtime.ivf !== undefined && candidates.length >= ANN_THRESHOLD);
+  // issue #190: with cached int8 norms the sweep computes the dot product alone
+  const norms = runtime.chunkNorms;
+  const sweepScore = (chunk: RuntimeChunk, idx: number): number =>
+    norms && chunk.vec instanceof Int8Array
+      ? asymmetricCosineInt8CachedNorm(qVec as Float32Array, chunk.vec, norms[idx])
+      : cosine(qVec, chunk.vec);
+  const probed = useAnn && candidates.length >= ANN_THRESHOLD
+    ? (() => {
+        if (!runtime.ivf) {
+          const rawVecs = chunks.map((c) => (c.vec instanceof Float32Array ? c.vec : dequantizeFromInt8(c.vec)));
+          runtime.ivf = trainIVF(rawVecs);
+        }
+        const qVecF32 = qVec instanceof Float32Array ? qVec : Float32Array.from(qVec);
+        return new Set(searchIVFCandidates(qVecF32, runtime.ivf, opts.nprobe ?? DEFAULT_NPROBE));
+      })()
+    : null;
+  if (semanticOnly && !(graphBoost > 0)) {
+    // issue #191: the pure-semantic ranking only needs the top pool — select
+    // it with a bounded min-heap in one pass (no per-chunk objects, no full
+    // sort). Equivalent to [...candidates].map(score).sort(desc).slice(0, pool)
+    // with the stable tie-break toward the smaller idx.
+    semantic = topKByScore(
+      candidates.length,
+      (i) => {
+        const { chunk, idx } = candidates[i];
+        if (probed && !probed.has(idx)) return -1;
+        return sweepScore(chunk, idx);
+      },
+      pool,
+    );
+  } else {
+    semantic = candidates.map(({ chunk, idx }) => {
+      if (probed && !probed.has(idx)) {
+        return { idx, score: -1 };
+      }
+      return { idx, score: sweepScore(chunk, idx) };
+    });
+    cosByIdx = new Map(semantic.map((s) => [s.idx, s.score]));
+  }
 
   let graphRanking: Array<{ idx: number; score: number }> = [];
   let graphMap: Map<number, number> | undefined;
@@ -924,14 +1007,12 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
     if (graphBoost > 0) {
       const fused = rrf([semantic, graphRanking], 60, [1, graphBoost]);
       ranked = [...fused.entries()]
-        .map(([idx, fscore]) => ({ idx, fscore, cos: cosByIdx.get(idx)! }))
+        .map(([idx, fscore]) => ({ idx, fscore, cos: cosByIdx!.get(idx)! }))
         .sort((a, b) => b.fscore - a.fscore)
         .slice(0, pool);
     } else {
-      ranked = [...semantic]
-        .sort((a, b) => b.score - a.score)
-        .slice(0, pool)
-        .map((s) => ({ idx: s.idx, fscore: s.score, cos: s.score }));
+      // issue #191: `semantic` is already the top pool, ordered (score desc, idx asc)
+      ranked = semantic.map((s) => ({ idx: s.idx, fscore: s.score, cos: s.score }));
     }
   } else {
     const kw =
@@ -952,13 +1033,13 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
     if (graphBoost > 0) {
       const fused = rrf([semantic, kw, fuzzy, graphRanking], 60, [1, 1, 1, graphBoost]);
       ranked = [...fused.entries()]
-        .map(([idx, fscore]) => ({ idx, fscore, cos: cosByIdx.get(idx)! }))
+        .map(([idx, fscore]) => ({ idx, fscore, cos: cosByIdx!.get(idx)! }))
         .sort((a, b) => b.fscore - a.fscore)
         .slice(0, pool);
     } else {
       const fused = rrf([semantic, kw, fuzzy]);
       ranked = [...fused.entries()]
-        .map(([idx, fscore]) => ({ idx, fscore, cos: cosByIdx.get(idx)! }))
+        .map(([idx, fscore]) => ({ idx, fscore, cos: cosByIdx!.get(idx)! }))
         .sort((a, b) => b.fscore - a.fscore)
         .slice(0, pool);
     }
