@@ -33,7 +33,16 @@ export interface FederatedSearchResultHit extends SearchResultHit {
   vaultPath: string;
 }
 
-export async function searchFederated(opts: FederatedSearchOptions): Promise<FederatedSearchResultHit[]> {
+export interface FederatedSearchResult {
+  hits: FederatedSearchResultHit[];
+  /**
+   * issue #189: per-vault load/query failures surfaced to the caller — a
+   * broken vault must not silently look like "0 results".
+   */
+  vaultErrors: string[];
+}
+
+export async function searchFederated(opts: FederatedSearchOptions): Promise<FederatedSearchResult> {
   const { vaults, k = 10, cacheDir = '', allowedRoots, ...searchOpts } = opts;
   if (!vaults || vaults.length === 0) {
     throw new Error('Federated search requires at least one vault specified');
@@ -87,14 +96,23 @@ export async function searchFederated(opts: FederatedSearchOptions): Promise<Fed
     })
   );
 
+  // issue #189: surface per-vault failures — a broken vault must not look
+  // like a vault with simply no matching notes
+  const vaultErrors = perVaultResults
+    .filter((r): r is { vault: VaultConfig; hits: SearchResultHit[]; error: string } => r.error !== null)
+    .map((r) => `vault "${r.vault.name || path.basename(r.vault.path)}" (${r.vault.path}): ${r.error}`);
+
   // If single vault, return directly with attribution
   if (normalizedVaults.length === 1) {
     const { vault, hits } = perVaultResults[0];
-    return hits.slice(0, k).map((h) => ({
-      ...h,
-      vault: vault.name || path.basename(vault.path),
-      vaultPath: vault.path,
-    }));
+    return {
+      hits: hits.slice(0, k).map((h) => ({
+        ...h,
+        vault: vault.name || path.basename(vault.path),
+        vaultPath: vault.path,
+      })),
+      vaultErrors,
+    };
   }
 
   // Multi-vault reciprocal rank fusion (RRF)
@@ -122,10 +140,13 @@ export async function searchFederated(opts: FederatedSearchOptions): Promise<Fed
     })
     .slice(0, k);
 
-  return fused.map(({ hit, vault, rrfSum }) => ({
-    ...hit,
-    score: rrfSum,
-    vault: vault.name || path.basename(vault.path),
-    vaultPath: vault.path,
-  }));
+  return {
+    hits: fused.map(({ hit, vault, rrfSum }) => ({
+      ...hit,
+      score: rrfSum,
+      vault: vault.name || path.basename(vault.path),
+      vaultPath: vault.path,
+    })),
+    vaultErrors,
+  };
 }

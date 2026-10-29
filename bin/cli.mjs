@@ -1339,7 +1339,7 @@ async function cmdSearch(opts) {
   const isFederated = Array.isArray(opts.vaults) && opts.vaults.length > 0;
 
   if (isFederated) {
-    results = await searchFederated({
+    const fed = await searchFederated({
       ...(embedderOverrides.embedFn ? { embedFn: embedderOverrides.embedFn } : {}),
       vaults: opts.vaults,
       cacheDir,
@@ -1366,6 +1366,9 @@ async function cmdSearch(opts) {
       graphBoost: opts.graphBoost,
       filter: opts.filter,
     });
+    // issue #189: a broken vault must not look like "no results"
+    for (const ve of fed.vaultErrors) process.stderr.write(`warning: ${ve}\n`);
+    results = fed.hits;
   } else {
     const db = resolveDb(opts);
     const indexDir = resolveIndexDir(opts, db);

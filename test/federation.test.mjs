@@ -64,7 +64,7 @@ test('federation: searchFederated searches across multiple independent vaults an
       embedFn: fakeEmbed,
     });
 
-    const results = await searchFederated({
+    const { hits: results } = await searchFederated({
       vaults: [vault1, vault2],
       cacheDir: root,
       query: 'kubernetes deployment and tokyo travel',
@@ -105,7 +105,7 @@ test('federation: searchFederated handles missing or non-indexed vaults graceful
       embedFn: fakeEmbed,
     });
 
-    const results = await searchFederated({
+    const { hits: results } = await searchFederated({
       vaults: [vault1, vault2],
       cacheDir: root,
       query: 'binary search algorithms',
@@ -148,7 +148,7 @@ test('federation: MCP search_markdown handles vaults array for federated search'
       embedFn: fakeEmbed,
     });
 
-    const results = await searchFederated({
+    const { hits: results } = await searchFederated({
       vaults: [vaultA, vaultB],
       cacheDir: root,
       query: 'microservices database event stream',
@@ -159,6 +159,34 @@ test('federation: MCP search_markdown handles vaults array for federated search'
     assert.ok(results.length >= 2);
     assert.ok(results.some((r) => r.vault === 'vaultA'));
     assert.ok(results.some((r) => r.vault === 'vaultB'));
+  } finally {
+    safeRm(root);
+  }
+});
+
+test('federation: broken vault surfaces vaultErrors instead of silent zero results (issue #189)', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-fed-err-'));
+  const good = path.join(root, 'good-vault');
+  const broken = path.join(root, 'broken-vault');
+  fs.mkdirSync(good, { recursive: true });
+  fs.mkdirSync(path.join(broken, '.mdss'), { recursive: true });
+  try {
+    fs.writeFileSync(path.join(good, 'note.md'), '# Notes\n\n## Algorithms\n\nbinary search dynamic programming trees\n');
+    await buildIndex({ db: good, indexDir: path.join(good, '.mdss'), cacheDir: root, modelName: 'e5-base', embedFn: fakeEmbed });
+
+    // a vault whose index exists but is garbage
+    fs.writeFileSync(path.join(broken, '.mdss', 'vectors.json'), '{ truncated json');
+
+    const { hits, vaultErrors } = await searchFederated({
+      vaults: [good, broken],
+      cacheDir: root,
+      query: 'binary search algorithms',
+      k: 3,
+      embedFn: fakeEmbed,
+    });
+    assert.ok(hits.length >= 1, 'good vault still returns hits');
+    assert.equal(vaultErrors.length, 1, `one broken vault reported, got: ${JSON.stringify(vaultErrors)}`);
+    assert.match(vaultErrors[0], /broken-vault/);
   } finally {
     safeRm(root);
   }

@@ -160,9 +160,11 @@ test('MCP search_markdown: vaults argument is root-guarded (issue #179)', async 
     });
     const okRes = await callVaults([dir, sub]);
     assert.equal(okRes.result.isError, undefined);
-    const hits = JSON.parse(okRes.result.content[0].text);
-    assert.ok(Array.isArray(hits) && hits.length > 0, 'federated hits returned');
-    for (const h of hits) {
+    const fedPayload = JSON.parse(okRes.result.content[0].text);
+    assert.ok(fedPayload && typeof fedPayload === 'object', 'federated payload is an object');
+    assert.ok(Array.isArray(fedPayload.results) && fedPayload.results.length > 0, 'federated hits returned');
+    assert.deepEqual(fedPayload.vaultErrors, [], 'no vault errors for healthy vaults (issue #189)');
+    for (const h of fedPayload.results) {
       assert.ok(['vault', 'subvault'].includes(h.vault), `vault attribution present, got ${h.vault}`);
     }
 

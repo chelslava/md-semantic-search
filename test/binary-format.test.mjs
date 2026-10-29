@@ -152,3 +152,31 @@ test('buildIndex & loadIndex: automatically creates and loads vectors.bin with z
     safeRm(dir);
   }
 });
+
+test('binary: unknown version or flags byte is a clear error, not garbage vectors (issue #189)', () => {
+  // reuse the roundtrip fixture shape, then flip the header fields
+  const index = {
+    schemaVersion: 4,
+    format: 'binary-v1',
+    model: 'Xenova/multilingual-e5-base',
+    dim: 3,
+    db: '/path/to/docs',
+    built: '2026-01-01T00:00:00.000Z',
+    complete: true,
+    chunkCount: 1,
+    chunks: [{ file: 'a.md', title: 'A', heading: '', headingPath: [], text: 'x', chunkHash: 'h', vec: [1, 0, 0] }],
+    quantized: 'fp32',
+  };
+  const valid = serializeBinaryIndex(index, 3, { quantize: 'fp32' });
+
+  const badVersion = Buffer.from(valid);
+  badVersion.writeUInt32LE(999, 8);
+  assert.throws(() => deserializeBinaryIndex(badVersion), /unsupported version 999/);
+
+  const badFlags = Buffer.from(valid);
+  badFlags.writeUInt32LE(0xdeadbeef, 12);
+  assert.throws(() => deserializeBinaryIndex(badFlags), /unknown flags 0xdeadbeef/);
+
+  // known flags still load
+  assert.doesNotThrow(() => deserializeBinaryIndex(valid));
+});

@@ -578,7 +578,7 @@ export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir:
               ? process.env.MDSS_ROOT_GUARD.split(path.delimiter).map((p) => p.trim()).filter(Boolean)
               : []),
           ].filter(Boolean);
-          rawResult = await searchFederated({
+          const fed = await searchFederated({
             vaults: args.vaults,
             allowedRoots: vaultRoots,
             cacheDir: state.cacheDir,
@@ -591,6 +591,9 @@ export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir:
             offline: state.offline,
             embedFn: state.embedFn,
           });
+          // issue #189: broken vaults surface in the tool payload instead of
+          // masquerading as "no results"
+          rawResult = { results: fed.hits, vaultErrors: fed.vaultErrors };
         } else {
           rawResult = await searchIndex({
             loaded: state.loaded,
