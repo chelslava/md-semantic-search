@@ -701,12 +701,24 @@ export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir:
         };
       }
 
+      // issue #205: the MCP spec requires structuredContent to be an OBJECT
+      // when present — strict clients reject bare arrays outright. Text content
+      // keeps the raw result verbatim for clients reading content[0].text.
+      const structured =
+        Array.isArray(rawResult)
+          ? name === 'list_files'
+            ? { files: rawResult }
+            : name === 'get_chunk'
+              ? { chunks: rawResult }
+              : { results: rawResult }
+          : rawResult;
+
       return {
         jsonrpc: '2.0',
         id,
         result: {
           content: [{ type: 'text', text: JSON.stringify(rawResult, null, 2) }],
-          structuredContent: rawResult,
+          structuredContent: structured,
         },
       };
     } catch (e: any) {
