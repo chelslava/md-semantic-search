@@ -78,7 +78,10 @@ export type LockAcquireResult =
   | { acquired: true; lockPath: string }
   | { acquired: false; reason: string; pid: number | null; heldSince: string | null };
 
-export function acquireIndexLock(indexDir: string): LockAcquireResult {
+export function acquireIndexLock(
+  indexDir: string,
+  _testHooks?: { onClassified?: () => void },
+): LockAcquireResult {
   const lockPath = path.join(indexDir, LOCK_FILENAME);
   const payload = JSON.stringify({ pid: process.pid, since: new Date().toISOString() }) + '\n';
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -104,6 +107,24 @@ export function acquireIndexLock(indexDir: string): LockAcquireResult {
       const dead = pid !== null && !pidAlive(pid);
       const staleMs = stat ? Date.now() - stat.mtimeMs : 0;
       if ((garbage || dead || staleMs > LOCK_STALE_MS) && stat) {
+        // issue #188: between the stat/read above and the unlink below another
+        // writer may reclaim the lock and write a fresh, live one. Re-read and
+        // unlink only when the owner identity (pid + since) still matches what
+        // was classified — never unlink a lock we did not classify.
+        _testHooks?.onClassified?.();
+        if (!fs.existsSync(lockPath)) continue;
+        const current = readLock(lockPath);
+        const sameOwner = garbage
+          ? current === null
+          : current !== null && current.pid === pid && current.since === heldSince;
+        if (!sameOwner) {
+          return {
+            acquired: false,
+            reason: 'lock changed while reclaiming — another writer got here first',
+            pid: current?.pid ?? pid,
+            heldSince: current?.since ?? heldSince,
+          };
+        }
         try {
           fs.unlinkSync(lockPath);
         } catch {
@@ -477,14 +498,20 @@ export const SCHEMA_MIGRATIONS: Record<number, (index: any) => void> = {
   3: migrateToSchemaV3,
 };
 
-export function walkMarkdown(dir: string, ignore: string[] = []): string[] {
+export function walkMarkdown(dir: string, ignore: string[] = [], errors?: string[]): string[] {
   const out: string[] = [];
   const ignoreRe = ignore.map(globToRegExp);
   const walk = (cur: string) => {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(cur, { withFileTypes: true });
-    } catch {
+    } catch (e: any) {
+      // issue #189: an unreadable directory (permissions, OneDrive eviction)
+      // used to silently shrink the corpus; surface it when a collector is
+      // given, always at least as a stderr warning
+      const msg = `walkMarkdown: cannot read directory ${cur}: ${e?.message || e}`;
+      if (errors) errors.push(msg);
+      process.stderr.write(`warning: ${msg}\n`);
       return;
     }
     for (const e of entries) {
