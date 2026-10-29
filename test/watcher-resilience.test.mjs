@@ -193,12 +193,10 @@ test('watcher: rename evicts the md5 cache entry; a backup-restore with an OLD m
       // 2. BACKUP RESTORE: same content hash as indexed, but a new body and an
       // OLD mtime — the size+mtime cache key must miss and re-hash
       const target = path.join(db, 'b.md');
-      const originalStat = fs.statSync(target);
       const oldTime = new Date(Date.now() - 10 * 60 * 1000);
       fs.writeFileSync(target, '# Coffee\n\n## Brewing\n\nrestored body with brand new content\n');
       fs.utimesSync(target, oldTime, oldTime); // old mtime, NEW size/content
 
-      const callsBefore = md5Calls.get(target) || 0;
       deadline = Date.now() + 6000;
       while ((srv.state.reindexCount ?? 0) < 2 && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 40));
