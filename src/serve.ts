@@ -77,7 +77,7 @@ export interface CreateServeOptions {
   /** issue #116 test seam: override hashing/stat so fault-injection needs no real locks. */
   _testFs?: {
     hash?: (absPath: string) => string;
-    stat?: (absPath: string) => { mtimeMs: number };
+    stat?: (absPath: string) => { mtimeMs: number; size?: number };
   };
   ui?: boolean;
   /** issue #123: mount Streamable HTTP MCP at /mcp (default off; stdio stays default). */
@@ -352,14 +352,19 @@ export async function createServe(opts: CreateServeOptions): Promise<{
 
   const fileMd5 = (f: string): string =>
     _testFs?.hash ? _testFs.hash(f) : crypto.createHash('md5').update(fs.readFileSync(f)).digest('hex');
-  const statFile = (f: string): { mtimeMs: number } =>
-    _testFs?.stat ? _testFs.stat(f) : { mtimeMs: fs.statSync(f).mtimeMs };
+  const statFile = (f: string): { mtimeMs: number; size?: number } => {
+    if (_testFs?.stat) return _testFs.stat(f);
+    const st = fs.statSync(f);
+    return { mtimeMs: st.mtimeMs, size: st.size };
+  };
   const relOf = (f: string) => path.relative(db!, f).split(path.sep).join('/');
   const dbg = (msg: string) => {
     if (watchDebug) log(`watch-debug: ${msg}`);
   };
 
-  const md5Cache = new Map<string, { mtime: number; md5: string }>();
+  // issue #195: cache identity is size+mtimeMs — a file restored from a
+  // backup with an OLD mtime but new content no longer masks its change
+  const md5Cache = new Map<string, { mtime: number; size?: number; md5: string }>();
   // issue #116: files whose hash currently fails (AV/sync contention) — they
   // are EXCLUDED from fingerprints instead of becoming stable 'unreadable'
   // ones, so a transiently locked file can never mask a real change.
@@ -372,9 +377,9 @@ export async function createServe(opts: CreateServeOptions): Promise<{
    * Returns null when the file must be excluded this cycle: vanished (deleted),
    * or still unreadable after retries (changed-pending, warned rate-limited).
    */
-  const hashWithRetry = async (f: string, m: number): Promise<string | null> => {
+  const hashWithRetry = async (f: string, st: { mtimeMs: number; size?: number }): Promise<string | null> => {
     const hit = md5Cache.get(f);
-    if (hit && hit.mtime === m) {
+    if (hit && hit.mtime === st.mtimeMs && hit.size === st.size) {
       unreadable.delete(f);
       return hit.md5;
     }
@@ -384,7 +389,7 @@ export async function createServe(opts: CreateServeOptions): Promise<{
       onRetry: (attempt, err) => dbg(`retry ${attempt} ${path.basename(f)}: ${(err as any)?.code ?? (err as any)?.message}`),
     });
     if (r.ok) {
-      md5Cache.set(f, { mtime: m, md5: r.value });
+      md5Cache.set(f, { mtime: st.mtimeMs, size: st.size, md5: r.value });
       unreadable.delete(f);
       dbg(`hashed ${path.basename(f)}`);
       return r.value;
@@ -407,24 +412,45 @@ export async function createServe(opts: CreateServeOptions): Promise<{
    * One probe pass: hash every tree file (with retry). Returns per-file hashes
    * where null = vanished-or-unreadable this cycle (excluded from comparison).
    */
-  const probeTree = async (tree: Map<string, { m: number; rel: string }>) => {
+  const probeTree = async (tree: Map<string, { m: number; s?: number; rel: string }>) => {
     const hashes = new Map<string, string | null>();
-    for (const [f, { m }] of tree) {
-      hashes.set(f, await hashWithRetry(f, m));
+    for (const [f, { m, s }] of tree) {
+      hashes.set(f, await hashWithRetry(f, { mtimeMs: m, size: s }));
     }
     return hashes;
   };
 
-  const fingerprintOf = (
-    tree: Map<string, { m: number; rel: string }>,
+  /**
+   * issue #195: tree state as a rel→hash map — compared map-to-map with no
+   * O(n log n) string build + sort per poll. null means "unknown" (initial
+   * load or a native event forced a re-probe).
+   */
+  const stateOf = (
+    tree: Map<string, { m: number; s?: number; rel: string }>,
     fileHashes: Map<string, string | null>,
-  ): string => {
-    const parts: string[] = [];
+  ): Map<string, string> => {
+    const out = new Map<string, string>();
     for (const [f, { rel }] of tree) {
       const h = fileHashes.get(f);
-      if (h !== null && h !== undefined) parts.push(`${rel}:${h}`);
+      if (h !== null && h !== undefined) out.set(rel, h);
     }
-    return parts.sort().join('|');
+    return out;
+  };
+
+  const statesEqual = (a: Map<string, string> | null, b: Map<string, string>): boolean => {
+    if (!a || a.size !== b.size) return false;
+    for (const [rel, hash] of b) {
+      if (a.get(rel) !== hash) return false;
+    }
+    return true;
+  };
+
+  /** issue #195: evict cache entries for files that left the tree. */
+  const evictStaleCacheEntries = (tree: Map<string, { m: number; s?: number; rel: string }>): void => {
+    if (md5Cache.size <= tree.size) return;
+    for (const f of md5Cache.keys()) {
+      if (!tree.has(f)) md5Cache.delete(f);
+    }
   };
 
   const readIndexedHashes = (): Record<string, string> => {
@@ -436,13 +462,14 @@ export async function createServe(opts: CreateServeOptions): Promise<{
   };
 
   /** issue #116: stat failures are classified — only ENOENT vanishes silently. */
-  const scanTree = (): { tree: Map<string, { m: number; rel: string }>; problems: Map<string, 'transient' | 'permanent'> } => {
-    const tree = new Map<string, { m: number; rel: string }>();
+  const scanTree = (): { tree: Map<string, { m: number; s?: number; rel: string }>; problems: Map<string, 'transient' | 'permanent'> } => {
+    const tree = new Map<string, { m: number; s?: number; rel: string }>();
     const problems = new Map<string, 'transient' | 'permanent'>();
     if (!db) return { tree, problems };
     for (const f of walkMarkdown(db, ignore)) {
       try {
-        tree.set(f, { m: statFile(f).mtimeMs, rel: relOf(f) });
+        const st = statFile(f);
+        tree.set(f, { m: st.mtimeMs, s: st.size, rel: relOf(f) });
       } catch (e) {
         const cls = classifyFsError(e);
         if (cls !== 'vanished') problems.set(f, cls as 'transient' | 'permanent');
@@ -475,7 +502,9 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     return out;
   };
 
-  let lastFingerprint = '';
+  // issue #195: null = "state unknown" (startup or a native event forced a
+  // re-probe); otherwise the rel→hash map of the last observed tree
+  let lastState: Map<string, string> | null = null;
 
   /** issue #116: one combined warning per cooldown, ≤5 files named + "+k more". */
   const warnUnreadableRateLimited = (now: number): void => {
@@ -493,7 +522,7 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     {
       const { tree } = scanTree();
       const hashes = await probeTree(tree);
-      lastFingerprint = fingerprintOf(tree, hashes);
+      lastState = stateOf(tree, hashes);
     }
     let lastChangeAt = 0;
     let pending = false;
@@ -513,15 +542,16 @@ export async function createServe(opts: CreateServeOptions): Promise<{
       for (const [f, cls] of problems) {
         if (!unreadable.has(f)) unreadable.set(f, { cls, code: `stat:${cls}`, firstAt: t0 });
       }
+      evictStaleCacheEntries(tree);
       dbg(`poll: ${tree.size} file(s), ${unreadable.size} pending-unreadable`);
       const fileHashes = await probeTree(tree);
       warnUnreadableRateLimited(Date.now());
-      const fingerprint = fingerprintOf(tree, fileHashes);
+      const currentState = stateOf(tree, fileHashes);
       const changed = contentChangedPaths(tree, fileHashes, indexedHashes);
-      if (fingerprint !== lastFingerprint) {
+      if (!statesEqual(lastState, currentState)) {
         if (!pending) log(`watch: change in ${changed.length} file(s) — waiting ${watchDelay} ms for the tree to settle…`);
         pending = true;
-        lastFingerprint = fingerprint;
+        lastState = currentState;
         lastChangeAt = Date.now();
       } else if (pending && changed.length > 0 && Date.now() - lastChangeAt >= watchDelay) {
         pending = false;
@@ -531,14 +561,14 @@ export async function createServe(opts: CreateServeOptions): Promise<{
           const fresh = scanTree();
           const freshHashes = await probeTree(fresh.tree);
           // seed the md5 cache from the authoritative post-build state so the
-          // next fingerprint is IO-free for unchanged files
-          for (const [f, { m, rel }] of fresh.tree) {
+          // next poll is IO-free for unchanged files
+          for (const [f, { m, s }] of fresh.tree) {
             const h = freshHashes.get(f);
-            if (h !== null && h !== undefined && !md5Cache.has(f)) md5Cache.set(f, { mtime: m, md5: h });
+            if (h !== null && h !== undefined && !md5Cache.has(f)) md5Cache.set(f, { mtime: m, size: s, md5: h });
           }
-          lastFingerprint = fingerprintOf(fresh.tree, freshHashes);
+          lastState = stateOf(fresh.tree, freshHashes);
         }
-      } else if (!pending && changed.length > 0 && fingerprint === lastFingerprint) {
+      } else if (!pending && changed.length > 0 && statesEqual(lastState, currentState)) {
         pending = true;
         lastChangeAt = Date.now();
         log(`watch: tree differs from index (no motion) — settling then re-index…`);
@@ -548,7 +578,7 @@ export async function createServe(opts: CreateServeOptions): Promise<{
         // settled but nothing actually differs (e.g. a locked file became
         // readable again with unchanged content) — resync the baseline
         pending = false;
-        lastFingerprint = fingerprint;
+        lastState = currentState;
       }
     }
   };
@@ -558,8 +588,9 @@ export async function createServe(opts: CreateServeOptions): Promise<{
   if (watch) {
     if (!db) throw new Error('serve --watch requires --db');
     nativeWatcher = createFileWatcher(db, () => {
-      // Prompt watchLoop settle trigger on native event
-      lastFingerprint = '';
+      // Prompt watchLoop settle trigger on native event: state becomes
+      // "unknown", so the next poll re-probes and enters the settle path
+      lastState = null;
     }, {
       debounceMs: watchDelay,
       ignore,
