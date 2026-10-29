@@ -7,7 +7,10 @@
  * escaped to prevent stored XSS from note content.
  */
 import * as vscode from 'vscode';
+import * as crypto from 'node:crypto';
 import * as path from 'node:path';
+
+export const API_KEY_SECRET = 'mdss.apiKey';
 
 export interface SearchResultItem {
   file: string;
@@ -50,6 +53,19 @@ export async function searchDaemon({ daemonUrl, apiKey, query, k }: DaemonSearch
   return unwrapSearchEnvelope(await resp.json());
 }
 
+/**
+ * issue #182: the API key lives in SecretStorage (encrypted per-account by VS
+ * Code), NOT in workspace settings — a literal `mdss.apiKey` in
+ * `.vscode/settings.json` tends to end up committed. Resolution order:
+ * SecretStorage first, then the (deprecated) config setting for backcompat.
+ */
+export async function resolveApiKey(secrets: vscode.SecretStorage | undefined, config: vscode.WorkspaceConfiguration): Promise<string | undefined> {
+  const fromSecret = await secrets?.get(API_KEY_SECRET);
+  if (fromSecret) return fromSecret;
+  const fromConfig = config.get<string>('apiKey', '');
+  return fromConfig || undefined;
+}
+
 export function activate(context: vscode.ExtensionContext) {
   // Command 1: QuickPick semantic search across workspace
   const searchCommand = vscode.commands.registerCommand('mdss.search', async () => {
@@ -68,7 +84,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     const config = vscode.workspace.getConfiguration('mdss');
     const daemonUrl = config.get<string>('daemonUrl', 'http://127.0.0.1:8747');
-    const apiKey = config.get<string>('apiKey', '');
+    const apiKey = await resolveApiKey(context.secrets, config);
     const k = config.get<number>('k', 10);
 
     try {
@@ -133,16 +149,37 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   // Register Webview View Provider for sidebar
-  const sidebarProvider = new MdssSidebarProvider(context.extensionUri);
+  const sidebarProvider = new MdssSidebarProvider(context.extensionUri, context.secrets);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('mdss-search-view', sidebarProvider),
     searchCommand,
     indexCommand
   );
+
+  // issue #182: store/clear the API key in SecretStorage instead of settings
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mdss.setApiKey', async () => {
+      const key = await vscode.window.showInputBox({
+        prompt: 'API key for the mdss daemon (stored encrypted in SecretStorage)',
+        password: true,
+      });
+      if (key === undefined) return;
+      if (!key.trim()) {
+        await context.secrets.delete(API_KEY_SECRET);
+        vscode.window.showInformationMessage('MDSS: API key cleared.');
+        return;
+      }
+      await context.secrets.store(API_KEY_SECRET, key.trim());
+      vscode.window.showInformationMessage('MDSS: API key stored in SecretStorage.');
+    })
+  );
 }
 
 export class MdssSidebarProvider implements vscode.WebviewViewProvider {
-  constructor(private readonly _extensionUri: vscode.Uri) {}
+  constructor(
+    private readonly _extensionUri: vscode.Uri,
+    private readonly _secrets?: vscode.SecretStorage,
+  ) {}
 
   public resolveWebviewView(
     webviewView: vscode.WebviewView,
@@ -163,7 +200,7 @@ export class MdssSidebarProvider implements vscode.WebviewViewProvider {
       try {
         const results = await searchDaemon({
           daemonUrl: config.get<string>('daemonUrl', 'http://127.0.0.1:8747'),
-          apiKey: config.get<string>('apiKey', ''),
+          apiKey: await resolveApiKey(this._secrets, config),
           query: msg.query.trim(),
           k: config.get<number>('k', 8),
         });
@@ -178,10 +215,14 @@ export class MdssSidebarProvider implements vscode.WebviewViewProvider {
   }
 
   private _getHtmlForWebview(): string {
+    // issue #182: per-render nonce + strict CSP — the webview loads only its
+    // own inline script and local inline styles, nothing else
+    const nonce = crypto.randomUUID().replace(/-/g, '');
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <style>
     body { font-family: var(--vscode-font-family); padding: 10px; color: var(--vscode-foreground); }
     input { width: 100%; box-sizing: border-box; padding: 6px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 2px; }
@@ -197,7 +238,7 @@ export class MdssSidebarProvider implements vscode.WebviewViewProvider {
   <input id="query" type="text" placeholder="Search Markdown notes by meaning..." />
   <button class="btn" onclick="doSearch()">Search</button>
   <div id="results"></div>
-  <script>
+  <script nonce="${nonce}">
     var vscode = acquireVsCodeApi();
 
     // Issue #165: every dynamic field is HTML-escaped before it reaches
