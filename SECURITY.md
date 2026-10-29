@@ -8,7 +8,21 @@ If you discover a security vulnerability in `md-semantic-search`, please report 
 
 ## Supply-Chain & Dependency Hygiene
 
-`md-semantic-search` runs fully locally on your machine with no external cloud API calls or remote data transmission.
+`md-semantic-search` runs fully locally on your machine: the default pipeline (local transformers.js embedder, no LLM bridge) makes **no external cloud API calls and transmits no data**. Two explicit opt-in paths can send note content off-machine — see [Data egress](#data-egress-issue-183) below.
+
+### Data egress (issue #183)
+
+| Opt-in | What leaves the machine | Where to | How to stay local |
+|---|---|---|---|
+| `--embedder openai` (or a non-loopback `--embedder-base-url`, incl. `OLLAMA_HOST`) | request texts — queries and note passages — as embedding input | the configured embeddings endpoint (default `https://api.openai.com/v1/embeddings`) | omit `--embedder` (local transformers.js), or point the embedder at a loopback URL (`http://127.0.0.1:11434` Ollama) |
+| `mdss ask --llm-endpoint` / `mdss chat --llm-endpoint` / `--expand hyde` | full RAG context blocks (note contents) + the question, assembled into one prompt; note the documented prompt-injection surface — the LLM receives note text verbatim | the configured chat endpoint (Ollama `/api/generate` or any OpenAI-compatible endpoint) | omit `--llm-endpoint` (extractive answers), or use a loopback endpoint (local Ollama/llama.cpp) |
+
+Behavior:
+
+- The CLI prints a **one-time stderr notice** before the first send naming the destination (`⚠ data egress: … sends NOTE CONTENT to <endpoint>`). Loopback endpoints never trigger it.
+- Suppress the notice with `MDSS_NO_EGRESS_WARNING=1` (for scripted/CI use where you have already made the choice).
+- Model *downloads* (the local embedder from the Hugging Face hub on first use) are separate: only model files flow in, **no note content ever flows out** on that path.
+- `--offline` disables all remote model fetches; combined with the defaults it makes the tool fully air-gapped.
 
 ### Transitive Production Advisories & Baseline
 

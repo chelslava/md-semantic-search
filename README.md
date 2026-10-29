@@ -391,6 +391,8 @@ mdss search --db /path/to/your/markdown "how do I rotate the api token" --rerank
 
 `md-semantic-search` includes a grounded RAG QA engine that operates fully offline by default with zero external dependencies, or connects optionally to local/remote LLMs (Ollama, OpenAI-compatible APIs).
 
+> ⚠️ **Data egress**: a non-loopback `--llm-endpoint` (or `--embedder openai`) sends **note content** to that external service. The CLI prints a one-time warning before the first send; see [SECURITY.md → Data egress](./SECURITY.md#data-egress-issue-183). Loopback endpoints (local Ollama/llama.cpp) and the default extractive/local-embedder paths keep everything on your machine.
+
 ```bash
 # One-shot grounded QA with citations:
 mdss ask --db ./notes "What is the token expiration policy?"
@@ -630,7 +632,7 @@ Add to your `claude_desktop_config.json`:
 | `--watch` | `serve`: re-index incrementally when files change. |
 | `--watch-debug` | `serve --watch`: verbose trace of polls, FS-error classifications and retries (issue #116). |
 | `--recency <days>` | `search`: time-decay half-life — passages get a `0.5^(age/halfLife)` boost after fusion; age from frontmatter `created`/`updated`, then file mtime; surfaced in `explain` (issue #127). |
-| `--embedder <name>` | Use an external embedding provider (`ollama` or `openai`) instead of local transformers.js, together with `--embedder-model` (+ `--embedder-base-url`, `--embedder-key-file`). The provider id/model/dim are recorded in the index — switching providers invalidates vectors with the usual full re-embed. Local remains the zero-config default and the only fully-offline path (issue #124). |
+| `--embedder <name>` | Use an external embedding provider (`ollama` or `openai`) instead of local transformers.js, together with `--embedder-model` (+ `--embedder-base-url`, `--embedder-key-file`). The provider id/model/dim are recorded in the index — switching providers invalidates vectors with the usual full re-embed. Local remains the zero-config default and the only fully-offline path (issue #124). ⚠️ A non-loopback endpoint receives note content as embedding input — see [SECURITY.md → Data egress](./SECURITY.md#data-egress-issue-183). |
 | `--no-query-cache` | `search`: skip the persistent query-embedding cache — repeated queries in fresh processes re-embed otherwise (issue #114). |
 | `--no-ui` | `serve`: disable the built-in web UI at `/` — restores JSON API help there (issue #111). |
 | `--watch-interval <ms>` | `serve --watch`: poll every N ms (default 3000). |
