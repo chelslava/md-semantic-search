@@ -539,10 +539,30 @@ mdss mcp --db /path/to/your/markdown
 
 **Streamable HTTP transport (issue #123):** a long-running daemon can expose
 the same tools over HTTP — `mdss serve --db ./notes --mcp` mounts `/mcp`
-(POST JSON-RPC, SSE channel on GET, `Mcp-Session-Id` sessions, protocol
-`2025-03-26`). It sits behind the exact same auth, Host-allowlist and
-rate-limit gates as `/search`, so remote agents inherit the hardening. stdio
-via `mdss mcp` remains the default transport.
+(POST JSON-RPC, SSE channel on GET, `Mcp-Session-Id` sessions). It sits behind
+the exact same auth, Host-allowlist and rate-limit gates as `/search`, so
+remote agents inherit the hardening. stdio via `mdss mcp` remains the default
+transport.
+
+**Protocol negotiation & `ping` (issue #197):** `initialize` speaks
+`2025-11-25`, `2025-06-18`, `2025-03-26`, and `2024-11-05` — the client's
+requested version is echoed when supported, otherwise the server answers with
+its newest (`2025-11-25`), so modern clients never warn about an outdated
+protocol and older clients keep working. `ping` is answered promptly with an
+empty result on both transports.
+
+**Sampling — LLM answers via the client (issue #197):** when the client
+declares the `sampling` capability at `initialize`, `ask_knowledge_base` hands
+the synthesis to the client's own model with a server→client
+`sampling/createMessage` request — grounded passages go out, a cited answer
+comes back — with **no local LLM and no extra user configuration** (Claude
+Desktop sampling, for example). Over stdio the exchange rides the same
+stdin/stdout JSON-RPC lines; over HTTP it rides the GET `/mcp` SSE stream with
+the answer POSTed back. Sampling is strictly best-effort: a client without the
+capability, a refusal, or a timeout (default 60 s, override with
+`MDSS_SAMPLING_TIMEOUT_MS`) degrades to the built-in extractive answer. The
+tool payload reports which path produced the result in `answerMode`
+(`sampling` / `extractive`).
 
 #### Available MCP Tools:
 - **`search_markdown`**: Hybrid semantic vector + BM25 search with optional `path` glob, `tag`, rich `filter`, and `graphBoost`.
@@ -551,7 +571,7 @@ via `mdss mcp` remains the default transport.
 - **`related_notes`**: Find graph-connected (outgoing, backlinks, 2-hop) and semantically related notes for a document.
 - **`list_files`**: List indexed Markdown files with chunk counts.
 - **`index_status`**: Inspect index health, chunk counts, and model metadata.
-- **`ask_knowledge_base`**: Grounded direct Q&A synthesis with citations.
+- **`ask_knowledge_base`**: Grounded direct Q&A synthesis with citations; uses the client's own LLM via MCP sampling when available (see below), else the built-in extractive answerer — `answerMode` in the payload tells which.
 - *All tools return `structuredContent` alongside text and include `readOnly: true, idempotent: true` annotations.*
 
 #### Available MCP Resources & Templates:

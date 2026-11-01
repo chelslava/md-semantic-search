@@ -50,6 +50,55 @@ function mcpPost(url, body, sessionId, key = 'sekret') {
   });
 }
 
+/**
+ * Opens the GET /mcp SSE stream (issue #197: it doubles as the server→client
+ * downlink) and exposes parsed JSON frames plus a small polling wait helper.
+ */
+function openSse(url, sessionId) {
+  const frames = [];
+  let buf = '';
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const req = http.request({
+      hostname: u.hostname,
+      port: u.port,
+      path: '/mcp',
+      method: 'GET',
+      headers: { 'mcp-session-id': sessionId, authorization: 'Bearer sekret', accept: 'text/event-stream' },
+    }, (res) => {
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => {
+        buf += chunk;
+        let idx;
+        while ((idx = buf.indexOf('\n\n')) !== -1) {
+          const frame = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          const dataLine = frame.split('\n').find((l) => l.startsWith('data:'));
+          if (dataLine) {
+            try { frames.push(JSON.parse(dataLine.slice(5).trim())); } catch { /* keep-alive comment frames etc. */ }
+          }
+        }
+      });
+      resolve({ res, frames });
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function waitForFrame(frames, predicate, what, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const tick = () => {
+      const found = frames.find(predicate);
+      if (found) return resolve(found);
+      if (Date.now() - started > timeoutMs) return reject(new Error(`timed out waiting for ${what}`));
+      setTimeout(tick, 20);
+    };
+    tick();
+  });
+}
+
 test('mcp-http: initialize → tools/list → tools/call over Streamable HTTP behind auth (issue #123)', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-mcph-'));
   const idx = path.join(dir, '.mdss');
@@ -59,6 +108,9 @@ test('mcp-http: initialize → tools/list → tools/call over Streamable HTTP be
     const svc = await createServe({
       indexDir: idx, cacheDir: path.join(dir, '.c'), embedFn: fakeEmbed,
       mcp: true, apiKey: 'sekret', ui: false,
+      // issue #197: the negotiation matrix below fires a dozen+ POSTs from
+      // one client — this test is about protocol behavior, not rate limiting
+      rateLimit: 0,
     });
     await new Promise((r) => svc.server.listen(0, r));
     const url = `http://127.0.0.1:${svc.server.address().port}`;
@@ -77,12 +129,26 @@ test('mcp-http: initialize → tools/list → tools/call over Streamable HTTP be
     const sid = init.headers['mcp-session-id'];
     assert.ok(sid, 'session id minted');
 
-    // unsupported version falls back to latest we support
+    // unsupported version falls back to the newest we support (issue #197)
     const init2 = await mcpPost(url, {
       jsonrpc: '2.0', id: 2, method: 'initialize',
       params: { protocolVersion: '1999-01-01' },
     }, sid);
-    assert.equal(init2.body.result.protocolVersion, '2025-03-26');
+    assert.equal(init2.body.result.protocolVersion, '2025-11-25');
+
+    // negotiation matrix over the wire: every supported version echoes…
+    for (const [i, v] of ['2025-06-18', '2025-03-26', '2024-11-05'].entries()) {
+      const r = await mcpPost(url, {
+        jsonrpc: '2.0', id: 20 + i, method: 'initialize',
+        params: { protocolVersion: v },
+      }, sid);
+      assert.equal(r.body.result.protocolVersion, v, `${v} echoed`);
+    }
+
+    // …and ping answers an empty result (issue #197)
+    const ping = await mcpPost(url, { jsonrpc: '2.0', id: 30, method: 'ping' }, sid);
+    assert.equal(ping.status, 200);
+    assert.deepEqual(ping.body.result, {});
 
     // tools/list over the session
     const list = await mcpPost(url, { jsonrpc: '2.0', id: 3, method: 'tools/list' }, sid);
@@ -220,6 +286,111 @@ test('mcp-http: session ids are server-minted; a foreign id is 404 before any to
       safeRm(dir);
     }
   } finally {
+    safeRm(dir);
+  }
+});
+
+test('mcp-http: sampling round-trip — server drives client LLM over the SSE downlink (issue #197)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-mcph-smp-'));
+  const idx = path.join(dir, '.mdss');
+  const prevTimeout = process.env.MDSS_SAMPLING_TIMEOUT_MS;
+  process.env.MDSS_SAMPLING_TIMEOUT_MS = '8000';
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Coffee\n\ncoffee beans roasted ground notes here\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: path.join(dir, '.c'), modelName: 'e5-base', embedFn: fakeEmbed });
+    const svc = await createServe({
+      indexDir: idx, cacheDir: path.join(dir, '.c'), embedFn: fakeEmbed,
+      mcp: true, apiKey: 'sekret', ui: false,
+    });
+    await new Promise((r) => svc.server.listen(0, r));
+    const url = `http://127.0.0.1:${svc.server.address().port}`;
+    try {
+      const init = await mcpPost(url, {
+        jsonrpc: '2.0', id: 1, method: 'initialize',
+        params: { protocolVersion: '2025-11-25', capabilities: { sampling: {} }, clientInfo: { name: 't', version: '0' } },
+      });
+      assert.equal(init.body.result.protocolVersion, '2025-11-25');
+      const sid = init.headers['mcp-session-id'];
+
+      // the GET stream is the server→client downlink
+      const sse = await openSse(url, sid);
+
+      // tools/call blocks server-side until the sampled answer comes back
+      const callPromise = mcpPost(url, {
+        jsonrpc: '2.0', id: 2, method: 'tools/call',
+        params: { name: 'ask_knowledge_base', arguments: { query: 'coffee' } },
+      }, sid);
+
+      const sampleReq = await waitForFrame(sse.frames, (f) => f.method === 'sampling/createMessage', 'sampling request frame');
+      assert.ok(sampleReq.id, 'sampling request carries an id');
+      assert.match(sampleReq.params.systemPrompt, /Markdown notes/);
+      assert.equal(sampleReq.params.includeContext, 'thisServer');
+      assert.ok(sampleReq.params.maxTokens >= 1);
+      assert.equal(sampleReq.params.messages[0].role, 'user');
+      assert.ok(sampleReq.params.messages[0].content.text.includes('coffee'), 'context + question in the user message');
+
+      // client answers via plain POST carrying the sampling request id
+      await mcpPost(url, {
+        jsonrpc: '2.0',
+        id: sampleReq.id,
+        result: { role: 'assistant', content: { type: 'text', text: 'SAMPLED-HTTP: coffee is roasted beans' }, model: 'client-fake' },
+      }, sid);
+
+      const call = await callPromise;
+      assert.equal(call.status, 200);
+      assert.equal(call.body.result.structuredContent.answerMode, 'sampling');
+      assert.ok(call.body.result.structuredContent.answer.includes('SAMPLED-HTTP'), 'client LLM answer surfaces over HTTP');
+
+      sse.res.destroy();
+    } finally {
+      await svc.close();
+      safeRm(dir);
+    }
+  } finally {
+    if (prevTimeout === undefined) delete process.env.MDSS_SAMPLING_TIMEOUT_MS;
+    else process.env.MDSS_SAMPLING_TIMEOUT_MS = prevTimeout;
+    safeRm(dir);
+  }
+});
+
+test('mcp-http: sampling stays best-effort — no SSE stream → extractive answer, no hang (issue #197)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-mcph-fb-'));
+  const idx = path.join(dir, '.mdss');
+  const prevTimeout = process.env.MDSS_SAMPLING_TIMEOUT_MS;
+  process.env.MDSS_SAMPLING_TIMEOUT_MS = '1000';
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Tea\n\ntea leaves steeped notes\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: path.join(dir, '.c'), modelName: 'e5-base', embedFn: fakeEmbed });
+    const svc = await createServe({
+      indexDir: idx, cacheDir: path.join(dir, '.c'), embedFn: fakeEmbed,
+      mcp: true, apiKey: 'sekret', ui: false,
+    });
+    await new Promise((r) => svc.server.listen(0, r));
+    const url = `http://127.0.0.1:${svc.server.address().port}`;
+    try {
+      // client declares sampling but never opens the GET /mcp downlink —
+      // the server's send throws, the tool degrades, nothing hangs
+      const init = await mcpPost(url, {
+        jsonrpc: '2.0', id: 1, method: 'initialize',
+        params: { protocolVersion: '2025-11-25', capabilities: { sampling: {} }, clientInfo: { name: 't', version: '0' } },
+      });
+      const sid = init.headers['mcp-session-id'];
+
+      const call = await mcpPost(url, {
+        jsonrpc: '2.0', id: 2, method: 'tools/call',
+        params: { name: 'ask_knowledge_base', arguments: { query: 'tea' } },
+      }, sid);
+      assert.equal(call.status, 200);
+      assert.equal(call.body.result.isError ?? false, false);
+      assert.equal(call.body.result.structuredContent.answerMode, 'extractive');
+      assert.ok(call.body.result.structuredContent.answer.length > 0);
+    } finally {
+      await svc.close();
+      safeRm(dir);
+    }
+  } finally {
+    if (prevTimeout === undefined) delete process.env.MDSS_SAMPLING_TIMEOUT_MS;
+    else process.env.MDSS_SAMPLING_TIMEOUT_MS = prevTimeout;
     safeRm(dir);
   }
 });

@@ -163,9 +163,10 @@ if native events are unavailable the watcher degrades to interval polling.
  ┌────────────────────────────────────┐   ┌───────────────────────────────────┐
  │ stdio (default): `mdss mcp`        │   │ Streamable HTTP (issue #123):     │
  │ startMcpServer(): JSON-RPC 2.0     │   │ `mdss serve --mcp` mounts /mcp    │
- │ over stdin/stdout via readline     │   │ POST JSON-RPC + GET SSE channel,  │
- │                                    │   │ Mcp-Session-Id, protocol          │
- │                                    │   │ 2025-03-26                        │
+ │ over stdin/stdout via readline;    │   │ POST JSON-RPC + GET SSE channel,  │
+ │ the same pipes carry server→client │   │ Mcp-Session-Id; responses to      │
+ │ sampling requests (issue #197)     │   │ server→client sampling requests   │
+ │                                    │   │ POST back over the SSE downlink   │
  └─────────────────┬──────────────────┘   └─────────────────┬─────────────────┘
                    │                                        │
                    │   both sit behind the serve request    │
@@ -175,8 +176,9 @@ if native events are unavailable the watcher degrades to interval polling.
                    ▼                                        ▼
  ┌──────────────────────────────────────────────────────────────────────────┐
  │ shared tool brain: MCP_TOOLS registry + handleMcpRequest()               │
+ │   version negotiation (2025-11-25 … 2024-11-05, issue #197) + ping ·     │
  │   search_markdown · get_chunk · list_files · index_status ·              │
- │   ask_knowledge_base                                                     │
+ │   ask_knowledge_base (sampling → client LLM, extractive fallback)        │
  │   (implemented over loadIndex/searchIndex/searchFederated/askQuestion)   │
  └──────────────────────────────────────────────────────────────────────────┘
 ```

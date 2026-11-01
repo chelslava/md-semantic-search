@@ -3,9 +3,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import readline from 'node:readline';
+import { PassThrough } from 'node:stream';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { MCP_TOOLS, MCP_RESOURCE_TEMPLATES, MCP_PROMPTS, handleMcpRequest } from '../dist/mcp.js';
+import {
+  MCP_TOOLS, MCP_RESOURCE_TEMPLATES, MCP_PROMPTS, handleMcpRequest, startMcpServer,
+  negotiateProtocolVersion, MCP_SUPPORTED_VERSIONS, createClientChannel,
+} from '../dist/mcp.js';
 import { buildIndex } from '../dist/indexer.js';
 import { loadIndex } from '../dist/search.js';
 
@@ -321,4 +326,274 @@ test('cli: mdss mcp --list-tools outputs tool JSON definitions', () => {
   assert.equal(json.some(t => t.name === 'related_notes'), true);
   assert.equal(json.some(t => t.name === 'ask_knowledge_base'), true);
 });
+
+// ---------------------------------------------------------------------------
+// issue #197: protocol 2025-11-25 — negotiation, ping, sampling
+// ---------------------------------------------------------------------------
+
+test('negotiation: supported versions echo, unknown/absent → latest (issue #197)', async () => {
+  const { loaded, dir } = await makeIndex();
+  try {
+    const state = { loaded, cacheDir: dir, offline: true, embedFn: fakeEmbed };
+    const matrix = [
+      ['2025-11-25', '2025-11-25'],
+      ['2025-06-18', '2025-06-18'],
+      ['2025-03-26', '2025-03-26'],
+      ['2024-11-05', '2024-11-05'],
+      ['1999-01-01', '2025-11-25'],
+      [undefined, '2025-11-25'],
+      ['', '2025-11-25'],
+      [42, '2025-11-25'],
+    ];
+    for (let i = 0; i < matrix.length; i++) {
+      const [requested, expected] = matrix[i];
+      const res = await handleMcpRequest({
+        jsonrpc: '2.0', id: 50 + i, method: 'initialize',
+        params: { protocolVersion: requested, capabilities: {} },
+      }, state);
+      assert.equal(res.result.protocolVersion, expected, `requested=${JSON.stringify(requested)}`);
+    }
+
+    // the shared decision both transports rely on
+    for (const v of MCP_SUPPORTED_VERSIONS) {
+      assert.equal(negotiateProtocolVersion(v), v);
+    }
+    assert.equal(negotiateProtocolVersion('not-a-version'), '2025-11-25');
+    assert.equal(negotiateProtocolVersion(), '2025-11-25');
+    assert.equal(MCP_SUPPORTED_VERSIONS[0], '2025-11-25', 'fallback answers with our newest');
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('ping: answers promptly with an empty result, even before initialize (issue #197)', async () => {
+  const { loaded, dir } = await makeIndex();
+  try {
+    const state = { loaded, cacheDir: dir, offline: true, embedFn: fakeEmbed };
+    const res = await handleMcpRequest({ jsonrpc: '2.0', id: 60, method: 'ping' }, state);
+    assert.equal(res.id, 60);
+    assert.deepEqual(res.result, {});
+    assert.equal(res.error, undefined);
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('initialize records client capabilities; stray JSON-RPC responses are ignored (issue #197)', async () => {
+  const { loaded, dir } = await makeIndex();
+  try {
+    const state = { loaded, cacheDir: dir, offline: true, embedFn: fakeEmbed };
+    await handleMcpRequest({
+      jsonrpc: '2.0', id: 61, method: 'initialize',
+      params: { protocolVersion: '2025-11-25', capabilities: { sampling: {}, roots: { listChanged: true } } },
+    }, state);
+    assert.deepEqual(state.clientCapabilities, { sampling: {}, roots: { listChanged: true } });
+
+    // a response line (id + result, no method) that matches no pending
+    // request must not produce a reply
+    const stray = await handleMcpRequest({ jsonrpc: '2.0', id: 62, result: {} }, state);
+    assert.equal(stray, null);
+    const strayErr = await handleMcpRequest({ jsonrpc: '2.0', id: 63, error: { code: -1, message: 'x' } }, state);
+    assert.equal(strayErr, null);
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('ask_knowledge_base: sampling-capable client gets the client-LLM answer (issue #197)', async () => {
+  const { loaded, dir } = await makeIndex();
+  try {
+    const sent = [];
+    const channel = createClientChannel((msg) => {
+      sent.push(msg);
+      setTimeout(() => channel.handleResponse({
+        jsonrpc: '2.0',
+        id: msg.id,
+        result: { role: 'assistant', content: { type: 'text', text: 'SAMPLED: guide intro is the answer' }, model: 'client-fake' },
+      }), 0);
+    });
+    const state = {
+      loaded, cacheDir: dir, offline: true, embedFn: fakeEmbed,
+      channel, clientCapabilities: { sampling: {} },
+    };
+
+    const res = await handleMcpRequest({
+      jsonrpc: '2.0', id: 80, method: 'tools/call',
+      params: { name: 'ask_knowledge_base', arguments: { query: 'guide' } },
+    }, state);
+
+    assert.equal(res.result.isError, undefined);
+    assert.equal(res.result.structuredContent.answerMode, 'sampling');
+    assert.ok(res.result.structuredContent.answer.includes('SAMPLED'), 'client LLM answer surfaces');
+    assert.ok(Array.isArray(res.result.structuredContent.citations));
+
+    // exactly one sampling request with a spec-shaped payload
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].method, 'sampling/createMessage');
+    assert.match(sent[0].params.systemPrompt, /Markdown notes/);
+    assert.equal(sent[0].params.includeContext, 'thisServer');
+    assert.ok(sent[0].params.maxTokens >= 1);
+    assert.equal(sent[0].params.messages[0].role, 'user');
+    assert.equal(sent[0].params.messages[0].content.type, 'text');
+    assert.ok(sent[0].params.messages[0].content.text.includes('guide'), 'context + question in the user message');
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('ask_knowledge_base: sampling refusal and timeout degrade to extractive (issue #197)', async () => {
+  const { loaded, dir } = await makeIndex();
+  try {
+    // a) client answers the sampling request with a JSON-RPC error
+    const refusing = createClientChannel((msg) => {
+      setTimeout(() => refusing.handleResponse({
+        jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'method not found' },
+      }), 0);
+    });
+    const stateA = {
+      loaded, cacheDir: dir, offline: true, embedFn: fakeEmbed,
+      channel: refusing, clientCapabilities: { sampling: {} },
+    };
+    const resA = await handleMcpRequest({
+      jsonrpc: '2.0', id: 81, method: 'tools/call',
+      params: { name: 'ask_knowledge_base', arguments: { query: 'guide' } },
+    }, stateA);
+    assert.equal(resA.result.isError, undefined, 'fallback is a success-shaped answer');
+    assert.equal(resA.result.structuredContent.answerMode, 'extractive');
+    assert.ok(resA.result.structuredContent.answer.length > 0);
+
+    // b) client never declared sampling → no reverse request at all
+    const sent = [];
+    const silent = createClientChannel((msg) => sent.push(msg));
+    const stateB = {
+      loaded, cacheDir: dir, offline: true, embedFn: fakeEmbed,
+      channel: silent, clientCapabilities: {},
+    };
+    const resB = await handleMcpRequest({
+      jsonrpc: '2.0', id: 82, method: 'tools/call',
+      params: { name: 'ask_knowledge_base', arguments: { query: 'guide' } },
+    }, stateB);
+    assert.equal(resB.result.structuredContent.answerMode, 'extractive');
+    assert.equal(sent.length, 0, 'no sampling/createMessage without the capability');
+
+    // c) client goes silent → bounded wait, then extractive
+    const prevTimeout = process.env.MDSS_SAMPLING_TIMEOUT_MS;
+    process.env.MDSS_SAMPLING_TIMEOUT_MS = '150';
+    try {
+      const hanging = createClientChannel(() => {});
+      const stateC = {
+        loaded, cacheDir: dir, offline: true, embedFn: fakeEmbed,
+        channel: hanging, clientCapabilities: { sampling: {} },
+      };
+      const resC = await handleMcpRequest({
+        jsonrpc: '2.0', id: 83, method: 'tools/call',
+        params: { name: 'ask_knowledge_base', arguments: { query: 'guide' } },
+      }, stateC);
+      assert.equal(resC.result.isError, undefined);
+      assert.equal(resC.result.structuredContent.answerMode, 'extractive');
+      assert.ok(resC.result.structuredContent.answer.length > 0);
+    } finally {
+      if (prevTimeout === undefined) delete process.env.MDSS_SAMPLING_TIMEOUT_MS;
+      else process.env.MDSS_SAMPLING_TIMEOUT_MS = prevTimeout;
+    }
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('ask_knowledge_base: sampling flows through session chat turns too (issue #197)', async () => {
+  const { loaded, dir } = await makeIndex();
+  try {
+    const channel = createClientChannel((msg) => {
+      setTimeout(() => channel.handleResponse({
+        jsonrpc: '2.0',
+        id: msg.id,
+        result: { role: 'assistant', content: { type: 'text', text: 'SAMPLED-SESSION answer' } },
+      }), 0);
+    });
+    const state = {
+      loaded, cacheDir: dir, offline: true, embedFn: fakeEmbed,
+      channel, clientCapabilities: { sampling: {} },
+    };
+    const res = await handleMcpRequest({
+      jsonrpc: '2.0', id: 84, method: 'tools/call',
+      params: { name: 'ask_knowledge_base', arguments: { query: 'guide', sessionId: 'issue197' } },
+    }, state);
+    assert.equal(res.result.structuredContent.sessionId, 'issue197');
+    assert.equal(res.result.structuredContent.turnsCount, 1);
+    assert.equal(res.result.structuredContent.answerMode, 'sampling');
+    assert.ok(res.result.structuredContent.answer.includes('SAMPLED-SESSION'));
+    assert.ok(Array.isArray(res.result.structuredContent.manifest));
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('stdio e2e: negotiate → ping → sampling round-trip through the real line protocol (issue #197)', async () => {
+  const { dir, idx } = await makeIndex();
+  const input = new PassThrough();
+  const wire = new PassThrough();
+  const messages = [];
+  const rlOut = readline.createInterface({ input: wire });
+  rlOut.on('line', (l) => {
+    try { messages.push(JSON.parse(l)); } catch { /* ignore */ }
+  });
+
+  const prevTimeout = process.env.MDSS_SAMPLING_TIMEOUT_MS;
+  process.env.MDSS_SAMPLING_TIMEOUT_MS = '4000';
+  try {
+    const { rl } = await startMcpServer({ indexDir: idx, cacheDir: dir, embedFn: fakeEmbed, offline: true, input, output: wire });
+
+    const send = (obj) => input.write(JSON.stringify(obj) + '\n');
+    const waitFor = (pred, what, timeoutMs = 4000) => new Promise((resolve, reject) => {
+      const started = Date.now();
+      const tick = () => {
+        const found = messages.find(pred);
+        if (found) return resolve(found);
+        if (Date.now() - started > timeoutMs) return reject(new Error(`timed out waiting for ${what}`));
+        setTimeout(tick, 20);
+      };
+      tick();
+    });
+
+    // 1. initialize: negotiated echo + capabilities advertised
+    send({
+      jsonrpc: '2.0', id: 1, method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: { sampling: {} }, clientInfo: { name: 't', version: '0' } },
+    });
+    const init = await waitFor((m) => m.id === 1 && m.result, 'initialize response');
+    assert.equal(init.result.protocolVersion, '2025-06-18', 'supported client version echoed over stdio');
+    assert.ok(init.result.serverInfo.version);
+
+    // 2. ping
+    send({ jsonrpc: '2.0', id: 2, method: 'ping' });
+    const pong = await waitFor((m) => m.id === 2 && m.result, 'pong');
+    assert.deepEqual(pong.result, {});
+
+    // 3. tools/call → server drives sampling/createMessage OUT over stdout,
+    //    the client answer comes back IN as a plain response line
+    send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'ask_knowledge_base', arguments: { query: 'guide' } } });
+    const sampleReq = await waitFor((m) => m.method === 'sampling/createMessage', 'sampling request');
+    assert.match(sampleReq.params.systemPrompt, /Markdown notes/);
+    assert.ok(sampleReq.id, 'sampling request carries its own id');
+    send({
+      jsonrpc: '2.0',
+      id: sampleReq.id,
+      result: { role: 'assistant', content: { type: 'text', text: 'SAMPLED-STDIO: the guide intro' } },
+    });
+
+    const call = await waitFor((m) => m.id === 3 && m.result, 'tools/call response');
+    assert.equal(call.result.structuredContent.answerMode, 'sampling');
+    assert.ok(call.result.structuredContent.answer.includes('SAMPLED-STDIO'));
+
+    rl.close();
+    input.destroy();
+    wire.destroy();
+  } finally {
+    if (prevTimeout === undefined) delete process.env.MDSS_SAMPLING_TIMEOUT_MS;
+    else process.env.MDSS_SAMPLING_TIMEOUT_MS = prevTimeout;
+    safeRm(dir);
+  }
+});
+
 
