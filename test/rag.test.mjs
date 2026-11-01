@@ -74,6 +74,54 @@ test('rag: synthesizeAnswer uses custom llmFn when supplied', async () => {
   assert.equal(result.answer, 'The connection pool size is 25 [config.md#Database].');
   assert.equal(result.citations.length, 1);
   assert.equal(result.citations[0].file, 'config.md');
+  assert.equal(result.mode, 'llm');
+});
+
+test('rag: synthesizeAnswer llmRequestFn gets a system/user split and degrades on failure (issue #197)', async () => {
+  const passages = [
+    {
+      file: 'config.md',
+      heading: 'Database',
+      title: 'Database Setup',
+      score: 0.88,
+      cosine: 0.88,
+      snippet: 'The database connection pool maximum size is 25.',
+    },
+  ];
+
+  let received;
+  const result = await synthesizeAnswer('What is the pool size?', passages, {
+    systemPrompt: 'SYS-PROMPT-MARKER',
+    conversationHistory: 'User: hi\nAssistant: hello',
+    llmRequestFn: async (req) => {
+      received = req;
+      return 'Structured answer 25.';
+    },
+  });
+
+  assert.ok(received.system.includes('SYS-PROMPT-MARKER'), 'system prompt rides the system field');
+  assert.equal(received.system.includes('connection pool'), false, 'context stays out of system');
+  assert.ok(received.user.includes('Conversation History:'), 'history rides the user field');
+  assert.ok(received.user.includes('The database connection pool maximum size is 25.'));
+  assert.ok(received.user.includes('What is the pool size?'));
+  assert.equal(result.answer, 'Structured answer 25.');
+  assert.equal(result.mode, 'llm');
+
+  // system+user concatenation reproduces the historical single-string prompt
+  let flat = '';
+  await synthesizeAnswer('What is the pool size?', passages, {
+    systemPrompt: 'SYS-PROMPT-MARKER',
+    conversationHistory: 'User: hi\nAssistant: hello',
+    llmFn: async (prompt) => { flat = prompt; return 'x'; },
+  });
+  assert.equal(flat, received.system + received.user, 'llmFn prompt unchanged by the refactor');
+
+  // a failing structured hook falls through to the extractive answer
+  const degraded = await synthesizeAnswer('What is the pool size?', passages, {
+    llmRequestFn: async () => { throw new Error('client refused'); },
+  });
+  assert.equal(degraded.mode, 'extractive');
+  assert.ok(degraded.answer.includes('Based on your notes:'));
 });
 
 test('rag: askQuestion executes full retrieval and grounded synthesis', async () => {

@@ -13,7 +13,7 @@ import { loadIndex, searchIndex } from './search.js';
 import { walkMarkdown, assertSafePath, getDocLines, ModelDescriptor } from './core.js';
 import { createFileWatcher, FileWatcher, classifyFsError, readWithRetry } from './watcher.js';
 import { WEBUI_HTML, WEBUI_JS, WEBUI_CSS } from './webui.js';
-import { handleMcpRequest } from './mcp.js';
+import { handleMcpRequest, createClientChannel } from './mcp.js';
 import { findRelatedNotes } from './wikilinks.js';
 
 const DEFAULT_PORT = 8747;
@@ -48,6 +48,12 @@ export interface ServeState {
   /** issue #123: mount the Streamable HTTP MCP transport at /mcp (default off). */
   mcp?: boolean;
   mcpSessionId?: string;
+  /** issue #197: reverse channel for server→client requests (MCP sampling). */
+  mcpChannel?: ReturnType<typeof createClientChannel>;
+  /** issue #197: capabilities the client declared at initialize. */
+  mcpClientCapabilities?: any;
+  /** issue #197: the open GET /mcp SSE stream doubling as the downlink (newest wins). */
+  mcpSseRes?: http.ServerResponse;
   /** Extra Host-header values accepted beyond the loopback defaults (issue #120). */
   allowedHosts?: string[];
   /** Exact origins reflected as `Access-Control-Allow-Origin`; absent → CORS off (issue #120). */
@@ -301,6 +307,18 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     limiter: new ServeLimiter(rateLimit, DEFAULT_RATE_BURST, maxConcurrency),
     sseConnections: 0,
   };
+
+  // issue #197: server→client requests (sampling) ride the GET /mcp SSE
+  // stream as `event: message` frames. With no stream open the send throws
+  // synchronously, the request rejects, and ask_knowledge_base degrades to
+  // its extractive answer — sampling stays strictly best-effort.
+  state.mcpChannel = createClientChannel((msg) => {
+    const sse = state.mcpSseRes;
+    if (!sse) {
+      throw new Error('sampling unavailable: client has no open GET /mcp stream');
+    }
+    sse.write(`event: message\ndata: ${JSON.stringify(msg)}\n\n`);
+  });
 
   const sockets = new Set<import('node:net').Socket>();
   const server = http.createServer((req, res) => {
@@ -1161,6 +1179,9 @@ async function handleMcpHttp(req: http.IncomingMessage, res: http.ServerResponse
       'connection': 'keep-alive',
     });
     res.write(':ok\n\n');
+    // issue #197: this stream doubles as the server→client downlink for
+    // sampling/createMessage. One client realistically; newest stream wins.
+    state.mcpSseRes = res;
     const hb = setInterval(() => {
       try {
         res.write(':hb\n\n');
@@ -1173,6 +1194,7 @@ async function handleMcpHttp(req: http.IncomingMessage, res: http.ServerResponse
     // while the response stream is still open
     res.on('close', () => {
       clearInterval(hb);
+      if (state.mcpSseRes === res) state.mcpSseRes = undefined;
       state.sseConnections = Math.max(0, (state.sseConnections ?? 1) - 1);
     });
     return;
@@ -1198,6 +1220,8 @@ async function handleMcpHttp(req: http.IncomingMessage, res: http.ServerResponse
   }
 
   // Same fairness gate as /search — tools/call can trigger embedding work.
+  // (The gates run AFTER body parse below: responses to server→client
+  // requests must bypass them, see issue #197.)
   const limited = state.limiter?.gate(req.socket.remoteAddress || 'unknown');
   if (limited) {
     res.setHeader('retry-after', String(limited.retryAfterSec));
@@ -1230,33 +1254,56 @@ async function handleMcpHttp(req: http.IncomingMessage, res: http.ServerResponse
     const batch = Array.isArray(messages);
     const items = batch ? messages : [messages];
 
+    // issue #197: answers to server→client requests (sampling) arrive as
+    // plain POSTs. Resolve them BEFORE the fairness gates — the tools/call
+    // waiting on this response may hold the only concurrency slot, so
+    // queueing it behind itself would self-deadlock at max_concurrency 1.
+    let sawResponseOnly = items.length > 0;
+    for (const msg of items) {
+      if (!msg || typeof msg !== 'object') {
+        continue;
+      }
+      const isResponse = msg.method === undefined && (msg.result !== undefined || msg.error !== undefined);
+      if (isResponse) {
+        state.mcpChannel?.handleResponse(msg);
+      } else {
+        sawResponseOnly = false;
+      }
+    }
+    if (sawResponseOnly) {
+      res.writeHead(202);
+      res.end();
+      return;
+    }
+
     const responses: any[] = [];
     for (const msg of items) {
       if (!msg || typeof msg !== 'object') continue;
+      if (msg.method === undefined) continue; // response — correlated above
       const isNotification = msg.id === undefined || msg.id === null;
       const result = isNotification ? null : await handleMcpRequest(msg, {
         loaded: state.loaded,
         cacheDir: state.cacheDir,
         offline: state.offline,
         embedFn: state.embedFn,
+        channel: state.mcpChannel,
+        clientCapabilities: state.mcpClientCapabilities,
       });
       if (result) responses.push(result);
       else if (!isNotification && msg.method === undefined) continue;
+      // issue #197: remember the client's declared capabilities (sampling
+      // gates the ask_knowledge_base LLM path on later tools/call).
+      if (msg.method === 'initialize') {
+        state.mcpClientCapabilities = msg.params?.capabilities ?? {};
+      }
     }
 
     // session id: server-minted only (issue #182 — see the 404 gate above);
-    // mint on first contact, echo ours afterwards
+    // mint on first contact, echo ours afterwards. Protocol negotiation
+    // itself moved into the shared brain (issue #197) so stdio and HTTP
+    // speak identical version logic.
     if (!state.mcpSessionId) state.mcpSessionId = crypto.randomUUID();
     res.setHeader('mcp-session-id', state.mcpSessionId);
-
-    // protocol negotiation: honour a supported requested version, else latest
-    for (const resp of responses) {
-      if (resp?.result?.protocolVersion && msg0(items)?.params?.protocolVersion) {
-        const wanted = String(msg0(items).params.protocolVersion);
-        const SUPPORTED = ['2025-03-26', '2024-11-05'];
-        resp.result.protocolVersion = SUPPORTED.includes(wanted) ? wanted : SUPPORTED[0];
-      }
-    }
 
     if (responses.length === 0) {
       res.writeHead(202);
@@ -1267,11 +1314,6 @@ async function handleMcpHttp(req: http.IncomingMessage, res: http.ServerResponse
   } finally {
     release();
   }
-}
-
-/** First object of a (possibly single-message) payload — for init negotiation. */
-function msg0(items: any[]): any | null {
-  return items.length > 0 ? items[0] : null;
 }
 
 function json(res: http.ServerResponse, status: number, data: object): void {

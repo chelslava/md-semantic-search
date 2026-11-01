@@ -6,6 +6,9 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Issue #197** — MCP protocol `2025-11-25`: version negotiation across `2025-11-25`/`2025-06-18`/`2025-03-26`/`2024-11-05` (supported client versions echoed verbatim, unknown ones answered with the server's newest — both transports share one negotiation path), a `ping` responder, and client-side **sampling** for `ask_knowledge_base`: when the client declares the `sampling` capability, synthesis runs on the client's own LLM via a server→client `sampling/createMessage` request (stdio: JSON-RPC lines on the same pipes; Streamable HTTP: the GET `/mcp` SSE downlink with the answer POSTed back) with no local LLM and no user configuration. Any failure — capability absent, client refusal, timeout (`MDSS_SAMPLING_TIMEOUT_MS`, default 60 s) — degrades to the built-in extractive answer, and the tool payload reports the path taken via the new `answerMode` (`sampling`/`extractive`).
+
 ### Security
 - **Issue #165** — VS Code extension: eliminated a stored-XSS vector in the sidebar webview (note `title`/`heading`/`snippet` were interpolated into `innerHTML` unescaped — now HTML-escaped, with error messages escaped too); sidebar search moved behind the Extension Host via `postMessage` and the shared daemon client, honoring `mdss.daemonUrl` and the new `mdss.apiKey` setting (`Authorization: Bearer`) instead of a hardcoded `http://127.0.0.1:8747/search`.
 

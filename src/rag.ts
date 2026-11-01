@@ -15,6 +15,18 @@ export interface SynthesisResult {
   answer: string;
   citations: Citation[];
   passages: SearchResultHit[];
+  /** Which synthesis stage produced the answer (issue #197 observability). */
+  mode?: 'llm' | 'endpoint' | 'extractive';
+}
+
+/**
+ * System/user split for transports that keep the two apart on the wire —
+ * MCP `sampling/createMessage` (issue #197) carries a `systemPrompt` field
+ * and a message list, unlike the single-string local LLM bridge.
+ */
+export interface LlmStructuredRequest {
+  system: string;
+  user: string;
 }
 
 export interface ChatSourceManifestItem {
@@ -56,6 +68,7 @@ export interface AskOptions {
   llmEndpoint?: string;
   llmModel?: string;
   llmFn?: (prompt: string) => Promise<string>;
+  llmRequestFn?: (req: LlmStructuredRequest) => Promise<string>;
   systemPrompt?: string;
   embedFn?: any;
 }
@@ -72,6 +85,7 @@ export interface ChatTurnOptions {
   llmEndpoint?: string;
   llmModel?: string;
   llmFn?: (prompt: string) => Promise<string>;
+  llmRequestFn?: (req: LlmStructuredRequest) => Promise<string>;
   systemPrompt?: string;
   embedFn?: any;
   log?: (msg: string) => void;
@@ -241,6 +255,7 @@ export async function synthesizeAnswer(
   passages: SearchResultHit[],
   options: {
     llmFn?: (prompt: string) => Promise<string>;
+    llmRequestFn?: (req: LlmStructuredRequest) => Promise<string>;
     llmEndpoint?: string;
     llmModel?: string;
     systemPrompt?: string;
@@ -253,30 +268,36 @@ export async function synthesizeAnswer(
     score: p.score,
   }));
 
+  // One prompt assembly for every stage: `system + user` reproduces the
+  // historical single-string prompt byte-for-byte; the split serves the
+  // structured transports (MCP sampling, issue #197).
+  const system = options.systemPrompt || DEFAULT_RAG_SYSTEM_PROMPT;
   const historyHeader = options.conversationHistory ? `\nConversation History:\n${options.conversationHistory}\n` : '';
+  const contextBlocks = passages
+    .map((p, i) => {
+      const header = p.heading ? `${p.file} › ${p.heading}` : p.file;
+      return `[Source ${i + 1}: ${header}]\n${p.snippet}`;
+    })
+    .join('\n\n---\n\n');
+  const user = `${historyHeader}\n\nContext:\n${contextBlocks}\n\nQuestion: ${query}\n\nAnswer:`;
+
+  // issue #197: structured hook (MCP sampling). Best-effort like the endpoint
+  // path — a refusal or timeout falls through to the extractive answer.
+  if (options.llmRequestFn) {
+    try {
+      const answer = await options.llmRequestFn({ system, user });
+      if (answer) return { answer, citations, passages, mode: 'llm' };
+    } catch {
+      // Fall through to extractive.
+    }
+  }
 
   if (options.llmFn) {
-    const contextBlocks = passages
-      .map((p, i) => {
-        const header = p.heading ? `${p.file} › ${p.heading}` : p.file;
-        return `[Source ${i + 1}: ${header}]\n${p.snippet}`;
-      })
-      .join('\n\n---\n\n');
-
-    const prompt = `${options.systemPrompt || DEFAULT_RAG_SYSTEM_PROMPT}${historyHeader}\n\nContext:\n${contextBlocks}\n\nQuestion: ${query}\n\nAnswer:`;
-    const answer = await options.llmFn(prompt);
-    return { answer, citations, passages };
+    const answer = await options.llmFn(system + user);
+    return { answer, citations, passages, mode: 'llm' };
   }
 
   if (options.llmEndpoint) {
-    const contextBlocks = passages
-      .map((p, i) => {
-        const header = p.heading ? `${p.file} › ${p.heading}` : p.file;
-        return `[Source ${i + 1}: ${header}]\n${p.snippet}`;
-      })
-      .join('\n\n---\n\n');
-
-    const prompt = `${options.systemPrompt || DEFAULT_RAG_SYSTEM_PROMPT}${historyHeader}\n\nContext:\n${contextBlocks}\n\nQuestion: ${query}\n\nAnswer:`;
     try {
       const resp = await fetch(`${options.llmEndpoint}/api/generate`, {
         method: 'POST',
@@ -286,14 +307,14 @@ export async function synthesizeAnswer(
         signal: AbortSignal.timeout(fetchTimeoutMs()),
         body: JSON.stringify({
           model: options.llmModel || 'llama3',
-          prompt,
+          prompt: system + user,
           stream: false,
         }),
       });
       if (resp.ok) {
         const data: any = await resp.json();
         const answer = data.response || data.text || '';
-        if (answer) return { answer, citations, passages };
+        if (answer) return { answer, citations, passages, mode: 'endpoint' };
       }
     } catch {
       // Fallback to extractive
@@ -301,7 +322,7 @@ export async function synthesizeAnswer(
   }
 
   const answer = extractAnswerFallback(query, passages);
-  return { answer, citations, passages };
+  return { answer, citations, passages, mode: 'extractive' };
 }
 
 /**
@@ -315,6 +336,7 @@ export async function askQuestion(opts: AskOptions): Promise<SynthesisResult> {
     cacheDir = '',
     k = 5,
     llmFn,
+    llmRequestFn,
     llmEndpoint,
     llmModel,
     systemPrompt,
@@ -338,6 +360,7 @@ export async function askQuestion(opts: AskOptions): Promise<SynthesisResult> {
 
   return synthesizeAnswer(query, passages, {
     llmFn,
+    llmRequestFn,
     llmEndpoint,
     llmModel,
     systemPrompt,
@@ -361,6 +384,7 @@ export async function chatTurn(opts: ChatTurnOptions): Promise<{
     cacheDir = '',
     k = 5,
     llmFn,
+    llmRequestFn,
     llmEndpoint,
     llmModel,
     systemPrompt,
@@ -433,6 +457,7 @@ export async function chatTurn(opts: ChatTurnOptions): Promise<{
   // 5. Synthesize answer
   const synth = await synthesizeAnswer(query, passages, {
     llmFn,
+    llmRequestFn,
     llmEndpoint,
     llmModel,
     systemPrompt,

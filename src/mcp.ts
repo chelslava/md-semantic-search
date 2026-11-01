@@ -21,6 +21,134 @@ const MCP_VERSION: string = JSON.parse(
   fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
 ).version;
 
+/**
+ * Protocol versions this server can speak (issue #197), newest first.
+ * `initialize` echoes the client's requested version when we support it,
+ * otherwise answers with MCP_SUPPORTED_VERSIONS[0].
+ */
+export const MCP_SUPPORTED_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
+
+/**
+ * Resolves the protocol version to answer an `initialize` with: the client's
+ * exact request when supported, else the newest version we speak (the spec's
+ * "respond with another protocol version you support" branch).
+ */
+export function negotiateProtocolVersion(requested?: unknown): string {
+  const v = typeof requested === 'string' ? requested : '';
+  return MCP_SUPPORTED_VERSIONS.includes(v) ? v : MCP_SUPPORTED_VERSIONS[0];
+}
+
+export interface McpClientChannelRequestOptions {
+  timeoutMs?: number;
+}
+
+/**
+ * Reverse channel for server→client JSON-RPC requests (issue #197) — today
+ * only `sampling/createMessage`. Both transports build one: stdio writes
+ * requests to its stdout and matches response lines by id; HTTP pushes them
+ * onto the GET /mcp SSE stream and matches POSTed responses by id.
+ */
+export interface McpClientChannel {
+  request(method: string, params?: any, opts?: McpClientChannelRequestOptions): Promise<any>;
+  /**
+   * Feeds a client message in. Returns true when it resolved a pending
+   * request; false means the message is a client request/notification and
+   * belongs to the normal handler.
+   */
+  handleResponse(msg: any): boolean;
+}
+
+/** Server→client requests that outlive this wait degrade, not hang (issue #197). */
+export const DEFAULT_SAMPLING_TIMEOUT_MS = 60_000;
+/** `sampling/createMessage` requires maxTokens — a grounded citation answer fits comfortably. */
+export const DEFAULT_SAMPLING_MAX_TOKENS = 1024;
+
+export function samplingTimeoutMs(envValue?: string): number {
+  const raw = Number(envValue ?? process.env.MDSS_SAMPLING_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_SAMPLING_TIMEOUT_MS;
+}
+
+/**
+ * Builds a client channel over a raw sink. Ids are prefixed `mdss-srv-` so
+ * they can never collide with the client's own request ids in either
+ * direction's logs or pending maps.
+ */
+export function createClientChannel(send: (msg: any) => void): McpClientChannel {
+  const pending = new Map<any, { resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
+  let nextId = 0;
+  return {
+    request(method: string, params: any = {}, opts: McpClientChannelRequestOptions = {}): Promise<any> {
+      const timeoutMs = opts.timeoutMs ?? DEFAULT_SAMPLING_TIMEOUT_MS;
+      const id = `mdss-srv-${++nextId}`;
+      return new Promise<any>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`${method}: client did not respond within ${timeoutMs}ms`));
+        }, timeoutMs);
+        timer.unref?.();
+        pending.set(id, { resolve, reject, timer });
+        try {
+          send({ jsonrpc: '2.0', id, method, params });
+        } catch (e: any) {
+          clearTimeout(timer);
+          pending.delete(id);
+          reject(new Error(`${method}: ${e?.message || String(e)}`));
+        }
+      });
+    },
+    handleResponse(msg: any): boolean {
+      if (!msg || typeof msg !== 'object' || msg.method !== undefined) return false;
+      const entry = pending.get(msg.id);
+      if (!entry) return false;
+      clearTimeout(entry.timer);
+      pending.delete(msg.id);
+      if (msg.error) {
+        entry.reject(new Error(msg.error.message || `client error ${msg.error.code ?? ''}`));
+      } else {
+        entry.resolve(msg.result);
+      }
+      return true;
+    },
+  };
+}
+
+/**
+ * A sampling-backed synthesis hook for the RAG layer (issue #197): returns
+ * null unless the client both declared the `sampling` capability at
+ * initialize AND a reverse channel exists — otherwise ask_knowledge_base goes
+ * straight to the local extractive answer. Any in-flight failure (client
+ * refusal, timeout, non-text content) throws and degrades the same way.
+ */
+export function createSamplingSynthesizer(state: {
+  channel?: McpClientChannel;
+  clientCapabilities?: any;
+}): { fn: (req: { system: string; user: string }) => Promise<string>; used: () => boolean } | null {
+  if (!state.channel || !state.clientCapabilities?.sampling) return null;
+  let used = false;
+  const channel = state.channel;
+  return {
+    used: () => used,
+    fn: async ({ system, user }) => {
+      const result = await channel.request(
+        'sampling/createMessage',
+        {
+          messages: [{ role: 'user', content: { type: 'text', text: user } }],
+          systemPrompt: system,
+          includeContext: 'thisServer',
+          maxTokens: DEFAULT_SAMPLING_MAX_TOKENS,
+        },
+        { timeoutMs: samplingTimeoutMs() },
+      );
+      const text = result?.content?.text;
+      if (typeof text !== 'string' || !text.trim()) {
+        throw new Error('sampling/createMessage returned no text content');
+      }
+      used = true;
+      return text;
+    },
+  };
+}
+
 export const MCP_TOOLS = [
   {
     name: 'search_markdown',
@@ -208,7 +336,22 @@ export const MCP_PROMPTS = [
   },
 ];
 
-export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir: string; offline: boolean; embedFn?: any }): Promise<any | null> {
+/**
+ * Shared state for both MCP transports (stdio + Streamable HTTP): the
+ * transports own the extras — `channel` (server→client requests, issue #197),
+ * `clientCapabilities` (recorded at initialize), `output` (stdio sink, test seam).
+ */
+export interface McpHandlerState {
+  loaded: any;
+  cacheDir: string;
+  offline: boolean;
+  embedFn?: any;
+  channel?: McpClientChannel;
+  clientCapabilities?: any;
+  output?: { write(chunk: string): void };
+}
+
+export async function handleMcpRequest(req: any, state: McpHandlerState): Promise<any | null> {
   if (!req || typeof req !== 'object') return null;
   const { id, method, params } = req;
 
@@ -216,12 +359,22 @@ export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir:
     return null;
   }
 
+  // A JSON-RPC *response* to one of our server→client requests carries an id
+  // but no method — the transport's channel correlation already consumed any
+  // that matched; replying to the leftovers would be nonsense.
+  if (typeof method !== 'string') {
+    return null;
+  }
+
   if (method === 'initialize') {
+    // issue #197: remember what the client can do — `sampling` opens the
+    // ask_knowledge_base LLM path — and answer with the negotiated version.
+    state.clientCapabilities = params?.capabilities ?? {};
     return {
       jsonrpc: '2.0',
       id,
       result: {
-        protocolVersion: '2024-11-05',
+        protocolVersion: negotiateProtocolVersion(params?.protocolVersion),
         capabilities: {
           tools: {
             listChanged: false,
@@ -239,6 +392,16 @@ export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir:
           version: MCP_VERSION,
         },
       },
+    };
+  }
+
+  // issue #197: liveness probe per the 2025-11-25 spec — answer promptly with
+  // an empty result, regardless of initialization state.
+  if (method === 'ping') {
+    return {
+      jsonrpc: '2.0',
+      id,
+      result: {},
     };
   }
 
@@ -668,6 +831,11 @@ export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir:
         const query = args.query;
         const k = typeof args.k === 'number' ? args.k : 5;
         const sessionId = args.sessionId || args.session_id;
+        // issue #197: with a sampling-capable client, hand the synthesis to
+        // the client's own LLM via sampling/createMessage — no local model,
+        // no user-side LLM config. Any failure (capability absent, client
+        // refusal, timeout) degrades to the extractive answer as before.
+        const sampling = createSamplingSynthesizer(state);
         if (sessionId && typeof sessionId === 'string') {
           const indexDir = state.loaded.indexDir || (state.loaded.index?.db ? path.join(state.loaded.index.db, '.mdss') : state.cacheDir);
           const session = loadChatSession(indexDir, sessionId);
@@ -679,6 +847,7 @@ export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir:
             cacheDir: state.cacheDir,
             k,
             embedFn: state.embedFn,
+            llmRequestFn: sampling?.fn,
           });
           rawResult = {
             answer: turnResult.answer,
@@ -686,15 +855,21 @@ export async function handleMcpRequest(req: any, state: { loaded: any; cacheDir:
             manifest: turnResult.manifest,
             sessionId: turnResult.session.id,
             turnsCount: turnResult.session.turns.length,
+            answerMode: sampling?.used() ? 'sampling' : 'extractive',
           };
         } else {
-          rawResult = await askQuestion({
+          const synth = await askQuestion({
             loaded: state.loaded,
             cacheDir: state.cacheDir,
             query,
             k,
             embedFn: state.embedFn,
+            llmRequestFn: sampling?.fn,
           });
+          rawResult = {
+            ...synth,
+            answerMode: sampling?.used() ? 'sampling' : 'extractive',
+          };
         }
       } else {
         return {
@@ -751,10 +926,14 @@ export interface StartMcpServerOptions {
   ignore?: string[];
   offline?: boolean;
   embedFn?: any;
+  /** Stdio source (default process.stdin) — test/embedding seam (issue #197). */
+  input?: NodeJS.ReadableStream;
+  /** Stdio sink (default process.stdout) — test/embedding seam (issue #197). */
+  output?: { write(chunk: string): void };
   log?: (msg: string) => void;
 }
 
-export async function startMcpServer(opts: StartMcpServerOptions): Promise<{ state: any; rl: readline.Interface }> {
+export async function startMcpServer(opts: StartMcpServerOptions): Promise<{ state: McpHandlerState; rl: readline.Interface }> {
   const {
     indexDir,
     cacheDir,
@@ -763,6 +942,8 @@ export async function startMcpServer(opts: StartMcpServerOptions): Promise<{ sta
     ignore = [],
     offline = false,
     embedFn,
+    input = process.stdin,
+    output = process.stdout,
     log = () => {},
   } = opts;
 
@@ -773,16 +954,22 @@ export async function startMcpServer(opts: StartMcpServerOptions): Promise<{ sta
     await buildIndex({ db, indexDir, cacheDir, modelName, ignore, offline, log, embedFn });
   }
 
-  const state = {
+  const state: McpHandlerState = {
     loaded: loadIndex(indexDir),
     cacheDir,
     offline,
     embedFn,
+    output,
   };
 
+  // issue #197: over stdio the reverse channel is the transport itself —
+  // server→client requests (sampling) go out as JSON-RPC lines on stdout and
+  // the client answers with plain response lines on stdin.
+  const channel = createClientChannel((msg) => output.write(JSON.stringify(msg) + '\n'));
+  state.channel = channel;
+
   const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
+    input,
     terminal: false,
   });
 
@@ -793,6 +980,27 @@ export async function startMcpServer(opts: StartMcpServerOptions): Promise<{ sta
   // through one guarded, serialized handler.
   let tail: Promise<void> = Promise.resolve();
   rl.on('line', (line: string) => {
+    // issue #197: a response line resolves a pending server→client request
+    // immediately — the serialized chain below is blocked awaiting exactly
+    // that request (sampling), so queueing the answer behind itself would
+    // deadlock. Only client requests/notifications join the chain.
+    const trimmed = line.trim();
+    if (trimmed) {
+      try {
+        const msg = JSON.parse(trimmed);
+        if (
+          msg &&
+          typeof msg === 'object' &&
+          msg.method === undefined &&
+          (msg.result !== undefined || msg.error !== undefined) &&
+          channel.handleResponse(msg)
+        ) {
+          return;
+        }
+      } catch {
+        /* not JSON — handleStdioLine turns it into -32700 */
+      }
+    }
     tail = tail
       .then(() => handleStdioLine(line, state))
       .catch(() => {
@@ -813,10 +1021,11 @@ export const MAX_STDIO_LINE_CHARS = 1024 * 1024;
 
 export async function handleStdioLine(
   line: string,
-  state: { loaded: any; cacheDir: string; offline: boolean; embedFn?: any },
+  state: McpHandlerState,
 ): Promise<void> {
+  const out = state.output ?? process.stdout;
   if (line.length > MAX_STDIO_LINE_CHARS) {
-    process.stdout.write(
+    out.write(
       JSON.stringify({
         jsonrpc: '2.0',
         id: null,
@@ -834,7 +1043,7 @@ export async function handleStdioLine(
   try {
     req = JSON.parse(trimmed);
   } catch {
-    process.stdout.write(
+    out.write(
       JSON.stringify({
         jsonrpc: '2.0',
         id: null,
@@ -855,6 +1064,6 @@ export async function handleStdioLine(
     };
   }
   if (res) {
-    process.stdout.write(JSON.stringify(res) + '\n');
+    out.write(JSON.stringify(res) + '\n');
   }
 }
