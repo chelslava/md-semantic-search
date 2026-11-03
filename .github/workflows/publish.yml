@@ -64,7 +64,15 @@ jobs:
             echo "md-semantic-search@${TAG} is already on npm — skipping publish (rerun-safe)"
             exit 0
           fi
-          npm publish --access public --provenance
+          if ! npm publish --access public --provenance; then
+            # a version published seconds ago can 409 ("previously staged")
+            # before `npm view` sees it — verify before failing
+            if npm view "md-semantic-search@${TAG}" version > /dev/null 2>&1; then
+              echo "md-semantic-search@${TAG} landed (staged-publish lag) — rerun-safe skip"
+              exit 0
+            fi
+            exit 1
+          fi
 
       - name: Generate CycloneDX SBOM (issue #122)
         run: npm sbom --sbom-format cyclonedx > mdss-sbom.cdx.json
