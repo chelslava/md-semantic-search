@@ -1,0 +1,44 @@
+{
+  "env": {
+    "node": "v24.14.1",
+    "platform": "win32-x64",
+    "release": "10.0.26200",
+    "cpu": "11th Gen Intel(R) Core(TM) i5-1135G7 @ 2.40GHz",
+    "cores": 8,
+    "gcExposed": false
+  },
+  "corpus": {
+    "seed": 196,
+    "files": 120,
+    "sections": 10,
+    "indexedFiles": 120,
+    "chunks": 1200,
+    "embedder": "fake-hash-offline"
+  },
+  "run": {
+    "rounds": 4,
+    "queriesPerRound": 30,
+    "k": 10,
+    "queriesRun": 480
+  },
+  "metrics": {
+    "buildIndexMs": 1447.3,
+    "loadIndexColdMs": 91.5,
+    "loadIndexWarmMs": 47.7,
+    "rssAfterLoadMb": 170.6,
+    "rssAfterQueriesMb": 250,
+    "indexSizeMb": 5.83,
+    "hybridP50Ms": 4.72,
+    "hybridP95Ms": 8.414,
+    "hybridP99Ms": 9.481,
+    "semanticP50Ms": 1.095,
+    "semanticP95Ms": 1.978,
+    "semanticP99Ms": 2.646,
+    "annP50Ms": 4.344,
+    "annP95Ms": 7.227,
+    "annP99Ms": 9.027,
+    "missP50Ms": 3.938,
+    "missP95Ms": 6.418,
+    "missP99Ms": 8.499
+  }
+}

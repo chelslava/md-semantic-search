@@ -47,6 +47,18 @@ jobs:
       - name: Golden-set retrieval gate (issue #198)
         run: node scripts/run-bench.mjs --slice dev --gate bench/fixtures/golden-baseline.json --cache-dir "$MDSS_NIGHTLY_CACHE_DIR"
 
+      - name: E2E latency benchmark report + regression gate (issue #196)
+        run: node bench/e2e.mjs --compare bench/fixtures/e2e-latency-baseline.json --tolerance-pct 20
+        # The committed baseline is machine-relative (bench/fixtures/e2e-latency-baseline.json
+        # records the hardware it was taken on). The gate only makes sense on matching
+        # runner hardware — enable it via the MDSS_E2E_COMPARE repo variable; without
+        # it the step runs in report-only mode (numbers go to the job summary).
+        if: ${{ vars.MDSS_E2E_COMPARE == '1' }}
+
+      - name: E2E latency benchmark report (issue #196, report-only)
+        run: node bench/e2e.mjs
+        if: ${{ vars.MDSS_E2E_COMPARE != '1' }}
+
       - name: Real chat-backend streaming smoke (issue #199; needs repo variable MDSS_SMOKE_ENDPOINT)
         if: ${{ vars.MDSS_SMOKE_ENDPOINT != '' }}
         run: >-
