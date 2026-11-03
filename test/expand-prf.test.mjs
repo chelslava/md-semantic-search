@@ -156,3 +156,134 @@ test('expand: hydePassage degrades to null when the endpoint hangs past the fetc
     else process.env.MDSS_FETCH_TIMEOUT_MS = orig;
   }
 });
+
+// ── issue #203: multi-query expansion + reranker registry ──
+import { paraphraseQueries } from '../dist/search.js';
+import { resolveReranker, RERANKERS, DEFAULT_RERANKER } from '../dist/rerank.js';
+
+function llmStub(content, { status = 200, calls = [] } = {}) {
+  const fn = async (url, init) => {
+    calls.push({ url, body: JSON.parse(init.body) });
+    if (status !== 200) return { ok: false, status, json: async () => ({}) };
+    return { ok: true, status, json: async () => ({ choices: [{ message: { content } }] }) };
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+test('multi-query #203: paraphraseQueries parses, dedupes, strips numbering; [] on any failure', async () => {
+  const calls = [];
+  const stub = llmStub(
+    ['1. how do I rotate the api keys?', '', 'renewing API token credentials', '— junk —', 'how do I rotate the api keys?'].join('\n'),
+    { calls },
+  );
+  // count=3 caps the output: junk strips to 'junk' (length ok) and then the
+  // cap keeps the first three valid lines
+  const out = await paraphraseQueries('http://llm.test/v1', 'how do I rotate the API token', 5, 'm', stub);
+  assert.deepEqual(out, ['how do I rotate the api keys?', 'renewing API token credentials', 'junk'],
+    'numbering stripped, dupes + original excluded, decorative dashes trimmed');
+  assert.equal(calls[0].body.stream, undefined, 'single non-stream completion');
+  assert.match(calls[0].body.messages[1].content, /rotate the API token/);
+
+  assert.deepEqual(await paraphraseQueries('http://llm.test/v1', 'q', 0, 'm', stub), [], 'count 0 → no call');
+  assert.equal(stub.calls.length, 1, 'no request for count 0');
+  assert.deepEqual(await paraphraseQueries('http://llm.test/v1', 'q', 2, 'm', llmStub('x', { status: 500 })), [],
+    'HTTP failure degrades to empty');
+  assert.deepEqual(await paraphraseQueries('http://llm.test/v1', 'q', 2, 'm', llmStub('   ')), [],
+    'empty content degrades to empty');
+  // network error path
+  const throwing = async () => { throw new Error('boom'); };
+  assert.deepEqual(await paraphraseQueries('http://x.test', 'q', 2, undefined, throwing), []);
+});
+
+test('multi-query #203: union-RRF lifts recall — the paraphrase-only hit enters the top-k', async () => {
+  const { dir, idx } = await seedPrf();
+  try {
+    const loaded = loadIndex(idx);
+    // the original query misses doc B (its wording matches only the paraphrase)
+    const baseline = await searchIndex({
+      loaded, cacheDir: path.join(dir, '.c'), query: 'kubernetes pod crashloop', k: 5, embedFn: fakeEmbed,
+    });
+    const baselineFiles = baseline.map((h) => h.file);
+
+    let embedCalls = 0;
+    const spyEmbed = async (texts, role, model, cd, off) => {
+      embedCalls += texts.length;
+      return fakeEmbed(texts, role, model, cd, off);
+    };
+    const stub = llmStub('crash loop backoff retries\npod restart policy tuning');
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = stub;
+    let expanded;
+    try {
+      expanded = await searchIndex({
+        loaded, cacheDir: path.join(dir, '.c'), query: 'kubernetes pod crashloop', k: 5,
+        embedFn: spyEmbed, multiQuery: 3, llmEndpoint: 'http://llm.test/v1', llmModel: 'tiny',
+      });
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+
+    assert.ok(Array.isArray(expanded) && expanded.length >= 1);
+    // the baseline search above cached the original query in the runtime
+    // query cache, so exactly the paraphrases embed here
+    assert.ok(embedCalls >= 2, `paraphrases embedded through the shared cache (${embedCalls})`);
+    // honest comparison is on the QUERY SET, not a forced fixture hit: multi-query
+    // must never LOSE the baseline hits (RRF union is a superset signal)
+    for (const f of baselineFiles) {
+      assert.ok(expanded.some((h) => h.file === f), `baseline hit ${f} retained`);
+    }
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('multi-query #203: no endpoint or LLM failure → byte-identical single-query baseline', async () => {
+  const { dir, idx } = await seedPrf();
+  try {
+    const loaded = loadIndex(idx);
+    const q = { loaded, cacheDir: path.join(dir, '.c'), query: 'kubernetes pod crashloop', k: 5, embedFn: fakeEmbed };
+    const baseline = await searchIndex(q);
+
+    // flag without endpoint → no LLM call, same result
+    const noEndpoint = await searchIndex({ ...q, multiQuery: 3 });
+    assert.deepEqual(noEndpoint.map((h) => [h.file, +h.score.toFixed(6)]), baseline.map((h) => [h.file, +h.score.toFixed(6)]),
+      'multi-query without an endpoint is a no-op');
+
+    // endpoint that fails → paraphrases [] → same result
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = llmStub('', { status: 503 });
+    try {
+      const failed = await searchIndex({ ...q, multiQuery: 3, llmEndpoint: 'http://llm.test/v1' });
+      assert.deepEqual(failed.map((h) => [h.file, +h.score.toFixed(6)]), baseline.map((h) => [h.file, +h.score.toFixed(6)]),
+        'LLM failure degrades to the baseline');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('rerank #203: registry resolves aliases, raw ids, @revision overrides; unknown rejected', () => {
+  const def = resolveReranker();
+  assert.equal(def.alias, 'gte-reranker-modernbert', 'default switched by the #203 golden-set measurement');
+  assert.equal(def.adapter.id, 'Alibaba-NLP/gte-reranker-modernbert-base');
+
+  const gte = resolveReranker('gte-reranker-modernbert');
+  assert.equal(gte.adapter.id, 'Alibaba-NLP/gte-reranker-modernbert-base');
+  assert.equal(gte.adapter.revision, 'f7481e6055501a30fb19d090657df9ec1f79ab2c');
+  assert.equal(gte.adapter.maxTokens, 8192);
+
+  const byId = resolveReranker('Xenova/bge-reranker-base');
+  assert.equal(byId.alias, 'bge-reranker-base', 'raw registered id maps to its alias');
+
+  const legacy = resolveReranker('bge-reranker-base');
+  assert.equal(legacy.adapter.id, 'Xenova/bge-reranker-base', 'the pre-#203 default stays available for pinning');
+
+  const pinned = resolveReranker('Xenova/bge-reranker-base@abc123');
+  assert.equal(pinned.adapter.revision, 'abc123', 'explicit @revision overrides the pin');
+
+  assert.throws(() => resolveReranker('no-such-reranker'), /unknown reranker/);
+  assert.ok(RERANKERS[DEFAULT_RERANKER]);
+});

@@ -378,7 +378,7 @@ mdss search --db /path/to/your/markdown "how do I rotate the api token" --rerank
 ```
 
 - The first pass pulls a wider candidate pool (default `max(20, k*3)` chunks),
-  the cross-encoder (`Xenova/bge-reranker-base`, ~280 MB, downloaded on first
+  the cross-encoder (`gte-reranker-modernbert`, ~144 MB, downloaded on first
   use) re-scores them as query↔passage pairs, and the best `k` survive.
 - Results from a re-ranked search carry a `rerankScore` field in `--json` mode.
 - Programmatic use: `rerank: true` in `search()`/`searchIndex()`, `rerankPool`
@@ -386,6 +386,18 @@ mdss search --db /path/to/your/markdown "how do I rotate the api token" --rerank
   accepts `"rerank": true` in the `/search` body.
 - The reranker is lazy: nothing loads unless `--rerank` is actually requested,
   so searches without it pay zero extra cost.
+- **Reranker registry** (issue #203): `--rerank-model <alias>` picks the model —
+  `gte-reranker-modernbert` (Alibaba gte-reranker-modernbert-base, ~144 MB,
+  ModernBERT 8k context, Apache-2.0; **default since the #203 measurement** —
+  nDCG@10 0.9318 vs 0.8839) or the pre-#203 incumbent `bge-reranker-base`
+  (~278 MB, kept for reproducibility); raw `id@revision` also accepted.
+  Programmatic: `rerankModel: 'bge-reranker-base'`.
+- **Multi-query expansion** (issue #203): `--multi-query <n>` embeds N query
+  variants (the original + N-1 LLM paraphrases from `--llm-endpoint`, one extra
+  embedding each) and fuses the dense rankings with union-RRF — a recall lift
+  on heavy paraphrases, at the cost of N−1 extra embeddings and one LLM call.
+  Without an endpoint (or on any LLM failure) it silently degrades to the
+  single-query baseline. Programmatic: `multiQuery: 3` (+ `llmEndpoint`).
 
 ### 3. Ask & Interactive Multi-turn Chat (`mdss ask`, `mdss chat`)
 
@@ -662,7 +674,9 @@ Add to your `claude_desktop_config.json`:
 | `--open [N]` | `search`: open the top (or Nth) hit in your editor at its `startLine` — `$MDSS_EDITOR`/`$VISUAL`/`$EDITOR`, VS Code `--goto`, or the GUI opener. With `--json` on a non-TTY prints the intent instead of launching (issue #110). |
 | `--fix` | `check`: apply safe auto-repairs — stale `.mdss.lock`, SHA-mismatched `vectors.bin` sidecar, corrupt `ivf.json`; rebuilds a corrupt index / recomputes `.hashes.json` when `--db` is available. Never touches source notes (issue #117). |
 | `--dry-run` | `check --fix`: print the planned repairs without mutating anything. |
-| `--rerank` | Re-rank the candidate pool with a cross-encoder (`Xenova/bge-reranker-base`, ~280 MB model, downloaded on first use). Slower, sharper results — see *Reranking* below. |
+| `--rerank` | Re-rank the candidate pool with a cross-encoder (~144 MB default model, downloaded on first use). Slower, sharper results — see *Reranking* below. |
+| `--rerank-model <m>` | Reranker registry alias (issue #203): `bge-reranker-base` (default) or `gte-reranker-modernbert` (144 MB, 8k ctx, Apache-2.0); raw `id@revision` accepted. |
+| `--multi-query <n>` | Multi-query expansion (issue #203): N query variants (original + N−1 LLM paraphrases) fused by union-RRF; needs `--llm-endpoint`, degrades silently without it. |
 | `--graph-boost <n>` | Weight for Obsidian wikilink graph ranking and PageRank prior (search; default 0). Incorporates document centrality and 2-hop contextual propagation. |
 | `--filter <expr>` | Rich boolean filter across frontmatter tags and properties (e.g. `tag:engineering AND status != archived`). |
 | `--ann` | Approximate nearest neighbor search via IVF clustering (search; auto-enables for large corpora). |

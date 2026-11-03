@@ -320,3 +320,54 @@ node scripts/run-bench.mjs --model e5-base --slice dev
 node scripts/run-bench.mjs --model granite-multilingual-311m --slice dev
 node scripts/run-bench.mjs --model embeddinggemma-300m --slice dev
 ```
+
+---
+
+## 16. Reranker Registry & Multi-Query Expansion (Issue #203)
+
+### Candidate screening
+
+The issue's proposed `bge-reranker-v2-m3` has **no transformers.js artifact**
+(`Xenova/bge-reranker-v2-m3` and `onnx-community/bge-reranker-v2-m3` do not
+exist — 401 on every resolve). The screened replacement:
+
+| Candidate | Verdict |
+|---|---|
+| `BAAI/bge-reranker-v2-m3` | **Rejected** — no JS-runtime ONNX conversion |
+| `Alibaba-NLP/gte-reranker-modernbert-base` | **Accepted** — ONNX exports in-repo, q8 144 MB, Apache-2.0, ModernBERT 8k ctx, single-logit head (same extraction contract as bge-reranker-base) |
+| `Xenova/bge-reranker-large` | available but unmeasured (~2× base size; superseded by gte-modernbert's result) |
+
+### Golden-Set Results (e5-base dense retrieval, frozen corpus, dev slice n=48)
+
+| Config | nDCG@10 | MRR | Hit@10 | Recall@10 |
+|---|---|---|---|---|
+| no rerank (baseline) | 0.8797 | 0.8628 | 0.979 | 1.000 |
+| `--rerank` (bge-reranker-base, ~278 MB) | 0.8839 | 0.8646 | 1.000 | 1.000 |
+| `--rerank --rerank-model gte-reranker-modernbert` (~144 MB) | **0.9318** | **0.9253** | 1.000 | 1.000 |
+
+**gte-reranker-modernbert passes the non-inferiority gate with a decisive
+margin: +0.052 nDCG@10 over the incumbent reranker, at half the size, under
+Apache-2.0.** Unlike the embedding default (#200), no license blocker applies —
+**the default reranker switches to `gte-reranker-modernbert`**; the incumbent
+stays in the registry as `--rerank-model bge-reranker-base` for reproducibility.
+
+### Multi-query expansion
+
+`--multi-query N` (N = total variants: original + N−1 LLM paraphrases, one
+extra embedding each) fuses per-variant dense rankings by union-RRF; ANN
+probing unions the per-variant candidate sets; the `cos` field stays anchored
+to the original query. Quality of the lift depends entirely on the LLM's
+paraphrases, so the pinned contract is the MECHANISM (unit tests with a fake
+LLM): variants embed through the shared query cache, the union never drops
+baseline hits, and — the acceptance criterion — **a paraphrase-only hit enters
+the top-k with the flag on and is absent without it**, while `--multi-query`
+without an endpoint (or on any LLM failure) is byte-identical to the
+single-query baseline. Production lift numbers require a real local LLM and
+are deliberately not claimed from a rigged fixture.
+
+### Reproducing
+
+```bash
+node scripts/run-bench.mjs --rerank
+node scripts/run-bench.mjs --rerank --rerank-model gte-reranker-modernbert
+```

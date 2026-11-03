@@ -357,6 +357,67 @@ export async function hydePassage(
 
 const runtimeIndexStates = new WeakMap<IndexFile, RuntimeIndexState>();
 
+/**
+ * issue #203: LLM paraphrases for multi-query expansion. ONE OpenAI-compatible
+ * chat completion asking for N alternative phrasings; returns clean, deduped,
+ * non-empty variants (the original query excluded). Returns [] on ANY failure —
+ * multi-query must degrade to the single-query baseline silently, exactly like
+ * HyDE. Injectable fetch for tests.
+ */
+export async function paraphraseQueries(
+  endpoint: string,
+  query: string,
+  count: number,
+  model?: string,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<string[]> {
+  if (!(count > 0)) return [];
+  const capped = Math.min(Math.floor(count), 5);
+  try {
+    const res = await fetchImpl(endpoint.replace(/\/$/, '') + '/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      signal: AbortSignal.timeout(fetchTimeoutMs()),
+      body: JSON.stringify({
+        ...(model ? { model } : {}),
+        messages: [
+          {
+            role: 'system',
+            content:
+              `Write ${capped} alternative phrasings of the user's search query. ` +
+              'One per line, no numbering, no quotes, keep the same language and meaning. Output only the paraphrases.',
+          },
+          { role: 'user', content: query },
+        ],
+      }),
+    });
+    if (!res.ok) return [];
+    const data: any = await res.json();
+    const text = data?.choices?.[0]?.message?.content;
+    if (typeof text !== 'string' || !text.trim()) return [];
+    const seen = new Set([query.trim().toLowerCase()]);
+    const out: string[] = [];
+    for (const raw of text.split('\n')) {
+      // strip list markers, surrounding quotes, and decorative dashes LLMs
+      // like to pad output with; a bare "— junk —" line then fails the
+      // length floor instead of passing as a paraphrase
+      const line = raw
+        .replace(/^\s*(?:[-*\d]+[.)]?\s+)/, '')
+        .replace(/^["'«“”\s—–-]+|["'»“”\s—–-]+$/g, '')
+        .trim();
+      if (line.length < 3 || line.length > MAX_QUERY_LENGTH) continue;
+      const key = line.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(line);
+      if (out.length >= capped) break;
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 /** Minimal EN+RU stopword set for PRF expansion (issue #125). */
 const EXPANSION_STOPWORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'with', 'is', 'are',
@@ -739,6 +800,15 @@ export interface SearchOptions {
   llmEndpoint?: string;
   /** issue #125: model name for the HyDE chat call. */
   llmModel?: string;
+  /**
+   * issue #203: multi-query expansion — N total query variants (original +
+   * N-1 LLM paraphrases), each embedded, rankings fused with union-RRF.
+   * Requires `llmEndpoint`; without one (or on any LLM failure) it degrades
+   * to the single-query baseline. 0/1/undefined = off.
+   */
+  multiQuery?: number;
+  /** issue #203: reranker registry alias (`bge-reranker-base` default, `gte-reranker-modernbert`, ...). */
+  rerankModel?: string;
   ann?: boolean;
   nprobe?: number;
   graphBoost?: number;
@@ -794,7 +864,10 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
   }
 
   const embedFn = opts.embedFn ?? embed;
-  const rerankFn = opts.rerankFn ?? rerankScores;
+  // issue #203: the registry alias rides the DEFAULT rerank path; an injected
+  // rerankFn (tests/serve) keeps its 4-arg signature and ignores it.
+  const rerankFn = opts.rerankFn ?? ((query: string, texts: string[], dir: string, off: boolean) =>
+    rerankScores(query, texts, dir, off, opts.rerankModel));
   const { index } = loaded;
   const runtime = validateRuntimeIndex(index);
   const { chunks, db, lexicalState, expectedDim } = runtime;
@@ -889,34 +962,56 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
     }
   }
 
-  let qVec: Float32Array | number[];
-  if (opts.useQueryCache !== false && runtime.queryCache) {
-    const normQuery = effectiveQuery.trim().toLowerCase();
-    const cacheKey = `${runtime.model.id}:${runtime.model.revision || 'main'}:${expectedDim || 0}:${normQuery}`;
-    // L2 disk layer (issue #114): persists across processes under cacheDir;
-    // corrupt/missing files degrade silently to a normal embed.
-    const diskKey = buildDiskKey(runtime.model.id, runtime.model.revision || 'main', expectedDim, normQuery);
-    const useDisk = opts.queryDiskCache !== false;
-    qVec = await runtime.queryCache.getOrCompute(cacheKey, async () => {
-      if (useDisk) {
-        const fromDisk = diskQueryGet(cacheDir, diskKey, expectedDim);
-        if (fromDisk) return fromDisk;
-      }
-      const [v] = await embedFn([effectiveQuery], 'query', runtime.model, cacheDir, offline);
-      if ((Array.isArray(v) || v instanceof Float32Array) && expectedDim !== undefined && v.length !== expectedDim) {
-        throw new Error(`query vector has ${v.length} dims, expected ${expectedDim} - run \`mdss index\` to rebuild`);
-      }
-      validateNumericVector(v, undefined, 'query vector');
-      if (useDisk) diskQueryPut(cacheDir, diskKey, v);
-      return v;
-    });
-  } else {
-    const [v] = await embedFn([effectiveQuery], 'query', runtime.model, cacheDir, offline);
+  // issue #203: one embed helper for the original query AND every multi-query
+  // paraphrase — both ride the same in-memory + disk query-embedding cache.
+  const embedFor = async (text: string): Promise<Float32Array | number[]> => {
+    if (opts.useQueryCache !== false && runtime.queryCache) {
+      const normQuery = text.trim().toLowerCase();
+      const cacheKey = `${runtime.model.id}:${runtime.model.revision || 'main'}:${expectedDim || 0}:${normQuery}`;
+      // L2 disk layer (issue #114): persists across processes under cacheDir;
+      // corrupt/missing files degrade silently to a normal embed.
+      const diskKey = buildDiskKey(runtime.model.id, runtime.model.revision || 'main', expectedDim, normQuery);
+      const useDisk = opts.queryDiskCache !== false;
+      return runtime.queryCache.getOrCompute(cacheKey, async () => {
+        if (useDisk) {
+          const fromDisk = diskQueryGet(cacheDir, diskKey, expectedDim);
+          if (fromDisk) return fromDisk;
+        }
+        const [v] = await embedFn([text], 'query', runtime.model, cacheDir, offline);
+        if ((Array.isArray(v) || v instanceof Float32Array) && expectedDim !== undefined && v.length !== expectedDim) {
+          throw new Error(`query vector has ${v.length} dims, expected ${expectedDim} - run \`mdss index\` to rebuild`);
+        }
+        validateNumericVector(v, undefined, 'query vector');
+        if (useDisk) diskQueryPut(cacheDir, diskKey, v);
+        return v;
+      });
+    }
+    const [v] = await embedFn([text], 'query', runtime.model, cacheDir, offline);
     if ((Array.isArray(v) || v instanceof Float32Array) && expectedDim !== undefined && v.length !== expectedDim) {
       throw new Error(`query vector has ${v.length} dims, expected ${expectedDim} — run \`mdss index\` to rebuild`);
     }
     validateNumericVector(v, undefined, 'query vector');
-    qVec = v;
+    return v;
+  };
+
+  const qVec = await embedFor(effectiveQuery);
+
+  // issue #203: multi-query expansion — N total variants (original first),
+  // each embedded, dense rankings fused by union-RRF below. Paraphrases come
+  // from the LLM bridge; without an endpoint (or on any failure) the list is
+  // empty and the search is byte-identical to the single-query baseline.
+  const multiQueryN = Number.isFinite(opts.multiQuery) ? Math.floor(Number(opts.multiQuery)) : 0;
+  const paraphrases =
+    multiQueryN >= 2 && opts.llmEndpoint
+      ? await paraphraseQueries(opts.llmEndpoint, query, multiQueryN - 1, opts.llmModel)
+      : [];
+  const qVecs: Array<Float32Array | number[]> = [qVec];
+  for (const p of paraphrases.slice(0, multiQueryN - 1)) {
+    try {
+      qVecs.push(await embedFor(p));
+    } catch {
+      // a paraphrase that fails to embed (e.g. dim mismatch) is dropped, not fatal
+    }
   }
   const queryTerms = [...new Set(tokenize(query))];
 
@@ -943,17 +1038,42 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
     norms && chunk.vec instanceof Int8Array
       ? asymmetricCosineInt8CachedNorm(qVec as Float32Array, chunk.vec, norms[idx])
       : cosine(qVec, chunk.vec);
+  // issue #203: ANN probing unions the candidate sets of every query variant —
+  // a paraphrase must not recall into chunks the original's probe excluded
   const probed = useAnn && candidates.length >= ANN_THRESHOLD
     ? (() => {
         if (!runtime.ivf) {
           const rawVecs = chunks.map((c) => (c.vec instanceof Float32Array ? c.vec : dequantizeFromInt8(c.vec)));
           runtime.ivf = trainIVF(rawVecs);
         }
-        const qVecF32 = qVec instanceof Float32Array ? qVec : Float32Array.from(qVec);
-        return new Set(searchIVFCandidates(qVecF32, runtime.ivf, opts.nprobe ?? DEFAULT_NPROBE));
+        const probedUnion = new Set<number>();
+        for (const vec of qVecs) {
+          const qVecF32 = vec instanceof Float32Array ? vec : Float32Array.from(vec);
+          for (const idx of searchIVFCandidates(qVecF32, runtime.ivf, opts.nprobe ?? DEFAULT_NPROBE)) {
+            probedUnion.add(idx);
+          }
+        }
+        return probedUnion;
       })()
     : null;
-  if (semanticOnly && !(graphBoost > 0)) {
+  if (qVecs.length > 1) {
+    // issue #203: multi-query — one dense sweep per variant, rankings fused by
+    // union-RRF. `cos` stays anchored to the ORIGINAL query's cosine so the
+    // hit shape (and score display) keeps its meaning.
+    const sweepWith = (vec: Float32Array | number[]) => (chunk: RuntimeChunk, idx: number): number =>
+      norms && chunk.vec instanceof Int8Array
+        ? asymmetricCosineInt8CachedNorm(vec as Float32Array, chunk.vec, norms[idx])
+        : cosine(vec, chunk.vec);
+    const perVectorRankings = qVecs.map((vec) =>
+      candidates.map(({ chunk, idx }) => ({
+        idx,
+        score: probed && !probed.has(idx) ? -1 : sweepWith(vec)(chunk, idx),
+      })),
+    );
+    const fusedSemantic = rrf(perVectorRankings, 60);
+    semantic = [...fusedSemantic.entries()].map(([idx, score]) => ({ idx, score }));
+    cosByIdx = new Map(perVectorRankings[0].map((s) => [s.idx, s.score]));
+  } else if (semanticOnly && !(graphBoost > 0)) {
     // issue #191: the pure-semantic ranking only needs the top pool — select
     // it with a bounded min-heap in one pass (no per-chunk objects, no full
     // sort). Equivalent to [...candidates].map(score).sort(desc).slice(0, pool)
@@ -1011,8 +1131,10 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
         .sort((a, b) => b.fscore - a.fscore)
         .slice(0, pool);
     } else {
-      // issue #191: `semantic` is already the top pool, ordered (score desc, idx asc)
-      ranked = semantic.map((s) => ({ idx: s.idx, fscore: s.score, cos: s.score }));
+      // issue #191: `semantic` is already the top pool, ordered (score desc, idx asc);
+      // issue #203: with multi-query the pool scores are RRF — cos stays the
+      // original query's cosine via cosByIdx
+      ranked = semantic.map((s) => ({ idx: s.idx, fscore: s.score, cos: cosByIdx ? cosByIdx.get(s.idx)! : s.score }));
     }
   } else {
     const kw =

@@ -97,6 +97,8 @@ function parseArgs(argv) {
     slice: 'dev', k: 10, model: 'e5-base',
     indexDir: null, cacheDir: null, json: false, fast: false, fake: false,
     gate: null, updateBaseline: null,
+    // issue #203: reranker/multi-query measurement passthrough
+    rerank: false, rerankModel: null, multiQuery: 0,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -114,6 +116,9 @@ function parseArgs(argv) {
     else if (a === '--json') args.json = true;
     else if (a === '--fast') args.fast = true;
     else if (a === '--fake') args.fake = true;
+    else if (a === '--rerank') args.rerank = true;
+    else if (a === '--rerank-model') args.rerankModel = next();
+    else if (a === '--multi-query') args.multiQuery = Number(next());
     else if (a === '--gate') args.gate = next();
     else if (a === '--update-baseline') args.updateBaseline = next();
     else throw new Error(`unknown flag: ${a}`);
@@ -195,7 +200,13 @@ async function main() {
   /** @type {Array<{id:string, category:string, language:string, ndcg:number, mrr:number, hit:0|1, recall:number}>} */
   const perQuery = [];
   for (const q of queries) {
-    const hits = await searchIndex({ loaded, cacheDir, query: q.text, k, embedFn, offline });
+    const hits = await searchIndex({
+      loaded, cacheDir, query: q.text, k, embedFn, offline,
+      // issue #203: reranker registry / multi-query measurement
+      ...(args.rerank ? { rerank: true } : {}),
+      ...(args.rerankModel ? { rerankModel: args.rerankModel } : {}),
+      ...(args.multiQuery >= 2 ? { multiQuery: args.multiQuery } : {}),
+    });
     const ranked = [...new Set(hits.map((h) => h.file))];
     /** @type {Record<string, number>} */
     const docGrades = {};

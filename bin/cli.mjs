@@ -117,6 +117,12 @@ function parseArgs(argv) {
       // issue #202: 0 explicitly restores the legacy char budget
       opts.maxChunkTokens = nextNonNegInt(argv, ++i, a);
     }
+    else if (a === '--multi-query') {
+      // issue #203: N total query variants (>=2 activates; LLM required)
+      opts.multiQuery = nextInt(argv, ++i, a);
+      if (opts.multiQuery > 5) die('--multi-query must be <= 5');
+    }
+    else if (a === '--rerank-model') opts.rerankModel = nextValue(argv, ++i, a);
     else if (a === '--rag') opts.rag = true;
     else if (a === '--auto-tag') opts.autoTag = true;
     else if (a === '--auto-summarize') opts.autoSummarize = true;
@@ -218,6 +224,7 @@ const KNOWN_CONFIG_KEYS = new Set([
   'watchDebug', 'watch-debug',
   'format', 'noVectors', 'no-vectors', 'output', 'workers', 'dimensions', 'dim', 'ann', 'nprobe', 'graphBoost', 'graph-boost', 'filter', 'quantize',
   'maxChunkTokens', 'max-chunk-tokens',
+  'multiQuery', 'multi-query', 'rerankModel', 'rerank-model',
   'vault', 'vaults', 'rag', 'autoTag', 'auto-tag', 'autoSummarize', 'auto-summarize',
   'llmEndpoint', 'llm-endpoint', 'llmModel', 'llm-model', 'systemPrompt', 'system-prompt',
   'llmProvider', 'llm-provider',
@@ -401,6 +408,14 @@ Options:
   --json              Machine-readable output (index, stats, search).
   --semantic          Pure vector ranking, skip lexical/RRF fusion (search).
   --rerank            Re-rank candidates with a cross-encoder (search; ~280MB model).
+  --rerank-model <m>  Reranker registry alias (issue #203): "bge-reranker-base"
+                      (default) or "gte-reranker-modernbert" (144MB, 8k ctx,
+                      Apache-2.0); also accepts id[@revision].
+  --multi-query <n>   Multi-query expansion (issue #203): N total query
+                      variants (original + N-1 LLM paraphrases, one extra
+                      embedding each) fused by union-RRF — recall lift on
+                      heavy paraphrases. Needs --llm-endpoint; silently falls
+                      back to the single query without one. 0/1 = off.
   --graph-boost <n>   Boost weight for graph PageRank / Obsidian wikilinks (search, default: 0).
   --filter <expr>     Rich boolean filter across frontmatter tags and properties (search).
   --ann               Approximate nearest neighbor search via IVF (search).
@@ -1194,6 +1209,8 @@ async function cmdTui(opts) {
     status: opts.status || undefined,
     graphBoost: typeof opts.graphBoost === 'number' ? opts.graphBoost : undefined,
     rerank: !!opts.rerank,
+    ...(opts.multiQuery ? { multiQuery: opts.multiQuery, llmEndpoint: opts.llmEndpoint, ...(opts.llmModel ? { llmModel: opts.llmModel } : {}) } : {}),
+    ...(opts.rerankModel ? { rerankModel: opts.rerankModel } : {}),
     rag: !!opts.rag,
     // issue #199: the RAG panel streams a real LLM answer when an endpoint
     // is configured; without one it stays on the extractive fallback.
@@ -1431,6 +1448,12 @@ async function cmdSearch(opts) {
   const query = opts._.join(' ').trim();
   if (!query) die('Missing query text. e.g. mdss search --db ./docs "your question"');
 
+  // issue #203: multi-query paraphrases and HyDE both send note-derived text
+  // through the LLM endpoint — same one-time disclosure as ask/chat
+  if ((opts.multiQuery || opts.expand === 'hyde') && opts.llmEndpoint) {
+    warnDataEgress('--llm-endpoint', opts.llmEndpoint);
+  }
+
   const embedderOverrides = await resolveEmbedderOverrides(opts);
   let results;
   const isFederated = Array.isArray(opts.vaults) && opts.vaults.length > 0;
@@ -1451,6 +1474,9 @@ async function cmdSearch(opts) {
       path: opts.path.length > 0 ? opts.path : undefined,
       since: opts.since,
       rerank: !!opts.rerank,
+      // issue #203: multi-query expansion + reranker registry alias
+      ...(opts.multiQuery ? { multiQuery: opts.multiQuery, llmEndpoint: opts.llmEndpoint, ...(opts.llmModel ? { llmModel: opts.llmModel } : {}) } : {}),
+      ...(opts.rerankModel ? { rerankModel: opts.rerankModel } : {}),
       tag: opts.tag,
       project: opts.project,
       type: opts.type,
@@ -1484,6 +1510,9 @@ async function cmdSearch(opts) {
       path: opts.path.length > 0 ? opts.path : undefined,
       since: opts.since,
       rerank: !!opts.rerank,
+      // issue #203: multi-query expansion + reranker registry alias
+      ...(opts.multiQuery ? { multiQuery: opts.multiQuery, llmEndpoint: opts.llmEndpoint, ...(opts.llmModel ? { llmModel: opts.llmModel } : {}) } : {}),
+      ...(opts.rerankModel ? { rerankModel: opts.rerankModel } : {}),
       tag: opts.tag,
       project: opts.project,
       type: opts.type,

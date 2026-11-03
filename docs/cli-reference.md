@@ -42,6 +42,14 @@ Options:
   --json              Machine-readable output (index, stats, search).
   --semantic          Pure vector ranking, skip lexical/RRF fusion (search).
   --rerank            Re-rank candidates with a cross-encoder (search; ~280MB model).
+  --rerank-model <m>  Reranker registry alias (issue #203): "bge-reranker-base"
+                      (default) or "gte-reranker-modernbert" (144MB, 8k ctx,
+                      Apache-2.0); also accepts id[@revision].
+  --multi-query <n>   Multi-query expansion (issue #203): N total query
+                      variants (original + N-1 LLM paraphrases, one extra
+                      embedding each) fused by union-RRF — recall lift on
+                      heavy paraphrases. Needs --llm-endpoint; silently falls
+                      back to the single query without one. 0/1 = off.
   --graph-boost <n>   Boost weight for graph PageRank / Obsidian wikilinks (search, default: 0).
   --filter <expr>     Rich boolean filter across frontmatter tags and properties (search).
   --ann               Approximate nearest neighbor search via IVF (search).

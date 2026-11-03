@@ -42,6 +42,8 @@ export const FLAGS: FlagSpec[] = [
   { name: '--embedder-key-file', kind: 'file' },
   { name: '--expand', kind: 'value' },
   { name: '--expand-passages', kind: 'number' },
+  { name: '--multi-query', kind: 'number' },
+  { name: '--rerank-model', kind: 'value' },
   { name: '--health-public', kind: 'flag' },
   { name: '--allow-unsecured', kind: 'flag' },
   { name: '--ann', kind: 'flag' },

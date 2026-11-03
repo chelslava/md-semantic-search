@@ -963,6 +963,11 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         offline: state.offline,
         embedFn: state.embedFn,
         rerankFn: state.rerankFn,
+        // issue #203: multi-query expansion (LLM bridge = the daemon's own
+        // --llm-endpoint, NEVER a payload-supplied URL — that would let any
+        // client exfiltrate note content to an arbitrary host) + reranker alias
+        ...(payload.multiQuery && state.llmEndpoint ? { multiQuery: payload.multiQuery, llmEndpoint: state.llmEndpoint, ...(state.llmModel ? { llmModel: state.llmModel } : {}) } : {}),
+        ...(payload.rerankModel ? { rerankModel: payload.rerankModel } : {}),
         tag: payload.tag,
         project: payload.project,
         type: payload.type,
