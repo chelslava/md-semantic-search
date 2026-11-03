@@ -299,3 +299,88 @@ test('fingerprint stays stable for e5-base and bge-m3', () => {
   assert.equal(bgeFp, bgeLegacyFp, 'bge-m3 fingerprint unchanged');
   assert.match(e5Fp, /^adapter-v1:[a-f0-9]{64}$/);
 });
+
+// ── issue #200: modern embedding adapter candidates ──
+
+const GRANITE_ALIAS = 'granite-multilingual-311m';
+const GRANITE_PROFILE = {
+  id: 'onnx-community/granite-embedding-311m-multilingual-r2-ONNX',
+  revision: '8f039f21d4181327268271bea4b11ddcc7eef88d',
+  dim: 768,
+  queryPrefix: '',
+  passagePrefix: '',
+  pooling: 'cls',
+};
+
+const GEMMA_ALIAS = 'embeddinggemma-300m';
+const GEMMA_PROFILE = {
+  id: 'onnx-community/embeddinggemma-300m-ONNX',
+  revision: '5090578d9565bb06545b4552f76e6bc2c93e4a66',
+  dim: 768,
+  queryPrefix: 'task: search result | query: ',
+  passagePrefix: 'title: none | text: ',
+  pooling: 'none',
+};
+
+test('#200: granite adapter resolves with the pinned CLS-pooling profile', () => {
+  const model = core.resolveModel(GRANITE_ALIAS);
+  assert.equal(model.id, GRANITE_PROFILE.id);
+  assert.equal(model.revision, GRANITE_PROFILE.revision);
+  assert.equal(model.dim, 768);
+  assert.equal(model.pooling, 'cls');
+  assert.equal(model.normalize, true);
+  assert.equal(model.maxTokens, 8192);
+  assert.equal(model.pooledOutput, undefined, 'granite uses the standard pipeline path');
+  // no prefixes — CLS pooling models take raw text on both sides
+  assert.equal(model.queryPrefix, '');
+  assert.equal(model.passagePrefix, '');
+});
+
+test('#200: embeddinggemma adapter resolves with the pinned pre-pooled profile + MRL', () => {
+  const model = core.resolveModel(GEMMA_ALIAS);
+  assert.equal(model.id, GEMMA_PROFILE.id);
+  assert.equal(model.revision, GEMMA_PROFILE.revision);
+  assert.equal(model.pooling, 'none');
+  assert.equal(model.pooledOutput, true, 'gemma reads the sentence_embedding output directly');
+  assert.deepEqual(model.dimensions, [64, 128, 256, 512, 768]);
+  assert.equal(model.dtype, 'q8');
+  // fp16 is explicitly unsupported by the embeddinggemma graph
+  const truncated = core.resolveModel(GEMMA_ALIAS, 256);
+  assert.equal(truncated.dim, 256);
+  assert.throws(() => core.resolveModel(GEMMA_ALIAS, 300), /invalid dimension 300/);
+});
+
+test('#200: prepareEmbeddingRequest — gemma prefixes per kind, granite raw text, pooling options', () => {
+  const gemma = core.resolveModel(GEMMA_ALIAS);
+  const q = core.prepareEmbeddingRequest(gemma, ['rotate tokens'], 'query');
+  const d = core.prepareEmbeddingRequest(gemma, ['token rotation policy'], 'passage');
+  assert.equal(q.input[0], 'task: search result | query: rotate tokens');
+  assert.equal(d.input[0], 'title: none | text: token rotation policy');
+  assert.equal(q.options.pooling, 'none');
+
+  const granite = core.resolveModel(GRANITE_ALIAS);
+  const gq = core.prepareEmbeddingRequest(granite, ['rotate tokens'], 'query');
+  assert.equal(gq.input[0], 'rotate tokens', 'no prefix on either side');
+  assert.equal(gq.options.pooling, 'cls');
+});
+
+test('#200: new candidates have distinct fingerprints from e5-base and each other', () => {
+  const fps = new Set([
+    embeddingAdapterFingerprint(core.resolveModel('e5-base')),
+    embeddingAdapterFingerprint(core.resolveModel(GRANITE_ALIAS)),
+    embeddingAdapterFingerprint(core.resolveModel(GEMMA_ALIAS)),
+  ]);
+  assert.equal(fps.size, 3, 'switching candidates invalidates stored vectors');
+
+  // normalizeAdapter round-trips pooledOutput for custom adapters
+  const custom = normalizeAdapter({
+    id: 'custom/pooled-model', nativeDim: 8, pooling: 'none',
+    queryPrefix: '', passagePrefix: '', pooledOutput: true,
+  });
+  assert.equal(custom.pooledOutput, true);
+  const plain = normalizeAdapter({
+    id: 'custom/mean-model', nativeDim: 8, pooling: 'mean',
+    queryPrefix: '', passagePrefix: '',
+  });
+  assert.equal(plain.pooledOutput, undefined);
+});

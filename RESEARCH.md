@@ -259,3 +259,64 @@ mdss index --db ./notes --model qwen3-embedding-0.6b --dimensions 256
 # Search with dimension safety validation
 mdss search --db ./notes --dimensions 256 "query"
 ```
+
+---
+
+## 15. Research Evaluation: Modern Embedding Adapter Candidates (Issue #200)
+
+### Context & Decision Gate
+
+The registry default (`e5-base`, 2022) predates the 2024-2025 multilingual
+embedding generation. Issue #200 asked for 2-3 measured candidates, each a
+registry entry with a pinned revision + q8 ONNX artifact, evaluated on the
+golden set (#56) before any default change.
+
+**Candidate screening (Hugging Face artifact probe, 2026-11):**
+
+| Candidate | Verdict |
+|---|---|
+| `Xenova/gte-multilingual-base-1` | **Rejected** — no public transformers.js artifact (gte-multilingual needs remote-code modeling, unsupported by the JS runtime) |
+| `Xenova/arctic-embed-m` | **Rejected** — no ONNX conversion published |
+| `Xenova/jina-embeddings-v3` | **Rejected** — no transformers.js-compatible artifact; task-LoRA switch is not expressible through the feature-extraction pipeline |
+| `onnx-community/Qwen3-Embedding-4B-ONNX` | **Rejected** — fp32-only (16 GB); no quantized export; unusable for a CLI embedder |
+| `onnx-community/granite-embedding-311m-multilingual-r2-ONNX` | **Accepted** — q8 298 MB, Apache-2.0, ModernBERT (8k ctx), CLS pooling, no prefixes |
+| `onnx-community/embeddinggemma-300m-ONNX` | **Accepted** — q8 ~300 MB, pre-pooled `sentence_embedding` graph output (needed a new `pooledOutput` adapter path in `core.embed`), MRL 64–768, Gemma license |
+
+### Golden-Set Results (frozen corpus, hash `dev-golden.json`)
+
+| Model (alias) | q8 size | nDCG@10 (dev, n=48) | MRR | Hit@10 | Recall@10 | nDCG (test) | nDCG (holdout) |
+|---|---|---|---|---|---|---|---|
+| `e5-base` (baseline) | ~280 MB | 0.8797 | 0.8628 | 0.979 | 1.000 | 1.0000 | 0.9077 |
+| `granite-multilingual-311m` | ~298 MB | 0.8761 | 0.8559 | 0.979 | 1.000 | 1.0000 | 0.9077 |
+| `embeddinggemma-300m` | ~300 MB | **0.9002** | **0.8837** | **1.000** | 1.000 | 1.0000 | 0.9077 |
+
+- **Non-inferiority (#198 tolerance: drop ≤ 0.01):** granite passes (−0.0036);
+  embeddinggemma **exceeds** the baseline (+0.0205) and is the only candidate
+  that recovers the two dev queries e5-base misses (Hit 1.000).
+- **Discriminating slice is `dev`** — `test` and `holdout` are saturated for
+  both models, so they cannot rank the candidates further.
+
+### Decision
+
+1. **Both candidates ship as opt-in registry entries** with pinned revisions
+   (issue #200 task 1) and are documented in the README Models table.
+2. **The default stays `e5-base`.** EmbeddingGemma's superiority is proven on
+   our golden set, but the default switch is gated on two factors outside this
+   measurement: (a) the **Gemma license** — not MIT/Apache, so making it the
+   npm-distributed default imposes Google's additional terms on every user,
+   which is a project-licensing decision, not an engineering one; (b) one
+   fixture (48 dev queries) is a thin base for overturning a default that the
+   #198 gate has been calibrated on. Re-evaluate if/when the golden set grows.
+   **Until then `embeddinggemma-300m` is the recommended opt-in** (`--model
+   embeddinggemma-300m`) — same size class as e5-base, better measured quality.
+3. **Infrastructure added:** `pooling: 'cls'` (granite) and the
+   `pooledOutput` adapter flag (pre-pooled ONNX graphs bypass the
+   feature-extraction pipeline) — both fingerprint-relevant and unit-tested.
+
+### Reproducing
+
+```bash
+node scripts/run-bench.mjs --model e5-base --slice dev
+node scripts/run-bench.mjs --model granite-multilingual-311m --slice dev
+node scripts/run-bench.mjs --model embeddinggemma-300m --slice dev
+```

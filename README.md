@@ -776,6 +776,8 @@ mdss models
 | `e5-large` | `Xenova/multilingual-e5-large` | 1024 | ~2.2 GB, higher quality. |
 | `bge-m3` | `Xenova/bge-m3` | 1024 | ~2.3 GB. Best cross-lingual separation in tests. |
 | `qwen3-embedding-0.6b` | `onnx-community/Qwen3-Embedding-0.6B-ONNX` | 1024 | ~613 MB q8. Opt-in; instruction-prefixed queries and last-token pooling. |
+| `granite-multilingual-311m` | `onnx-community/granite-embedding-311m-multilingual-r2-ONNX` | 768 | ~298 MB q8. IBM Granite r2 — ModernBERT 8k context, CLS pooling, Apache-2.0 (issue #200). |
+| `embeddinggemma-300m` | `onnx-community/embeddinggemma-300m-ONNX` | 768 | ~300 MB q8. Google EmbeddingGemma — pre-pooled output, MRL dims 64–768, Gemma license (issue #200). |
 
 Switching models invalidates the stored vectors automatically — the next
 `index` run does a full rebuild.
@@ -798,12 +800,16 @@ The adapter declares exactly which embedding semantics it needs — the shared
 `embed()` path never guesses from the model name:
 
 - `queryPrefix` / `passagePrefix` — text prepended to queries/passages (E5 uses
-  `query: `/`passage: `, BGE none, Qwen3 a retrieval instruction on queries);
-- `pooling` — `'mean'`, `'last_token'`, or `'none'`;
+  `query: `/`passage: `, BGE/Granite none, Qwen3 a retrieval instruction on
+  queries, EmbeddingGemma its task/title prefixes);
+- `pooling` — `'mean'`, `'last_token'`, `'cls'`, or `'none'`;
 - `normalize` — whether vectors are L2-normalized;
 - `nativeDim` / `dim` — embedding dimension (and optional `dimensions` for MRL);
 - `dtype` — the ONNX runtime data type loaded at runtime (default `q8`);
 - `maxTokens` — the tokenizer context budget (Qwen3-0.6B is 32768);
+- `pooledOutput` — the ONNX graph already emits a pooled `sentence_embedding`
+  (EmbeddingGemma); embedding reads that output directly instead of the
+  feature-extraction pipeline;
 - `family` — an informational formatting/pooling label surfaced by `stats`.
 
 `mdss models` prints each adapter's pooling, normalization, dimension, and

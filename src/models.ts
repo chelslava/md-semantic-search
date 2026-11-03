@@ -3,7 +3,7 @@
  */
 import crypto from 'node:crypto';
 
-export type Pooling = 'mean' | 'last_token' | 'none';
+export type Pooling = 'mean' | 'last_token' | 'none' | 'cls';
 export type DType = 'q8' | 'q4' | 'fp16' | 'fp32' | 'int8' | 'uint8';
 
 export interface ModelAdapter {
@@ -19,6 +19,12 @@ export interface ModelAdapter {
   dtype?: DType | string;
   maxTokens?: number;
   sessionOptions?: Record<string, unknown>;
+  /**
+   * issue #200: the ONNX graph already emits a pooled `sentence_embedding`
+   * (e.g. EmbeddingGemma) — embedding bypasses the feature-extraction
+   * pipeline and reads that output directly; `pooling: 'none'` is implied.
+   */
+  pooledOutput?: boolean;
   family?: string;
   note?: string;
   unknownAdapter?: boolean;
@@ -93,10 +99,40 @@ export const MODELS: Record<string, ModelAdapter> = {
     family: 'qwen3',
     note: '~613 MB q8. Opt-in Qwen3 embedding model with Matryoshka/MRL support.',
   },
+  'granite-multilingual-311m': {
+    id: 'onnx-community/granite-embedding-311m-multilingual-r2-ONNX',
+    revision: '8f039f21d4181327268271bea4b11ddcc7eef88d',
+    nativeDim: 768,
+    dim: 768,
+    queryPrefix: '',
+    passagePrefix: '',
+    pooling: 'cls',
+    normalize: true,
+    dtype: 'q8',
+    maxTokens: 8192,
+    family: 'granite',
+    note: '~298 MB q8. IBM Granite r2, ModernBERT (8k context), CLS pooling, Apache-2.0. Issue #200.',
+  },
+  'embeddinggemma-300m': {
+    id: 'onnx-community/embeddinggemma-300m-ONNX',
+    revision: '5090578d9565bb06545b4552f76e6bc2c93e4a66',
+    nativeDim: 768,
+    dim: 768,
+    dimensions: [64, 128, 256, 512, 768],
+    queryPrefix: 'task: search result | query: ',
+    passagePrefix: 'title: none | text: ',
+    pooling: 'none',
+    normalize: true,
+    dtype: 'q8',
+    maxTokens: 2048,
+    pooledOutput: true,
+    family: 'gemma',
+    note: '~300 MB q8. Google EmbeddingGemma, pre-pooled sentence_embedding output, MRL. Gemma license (not MIT/Apache). Issue #200.',
+  },
 };
 
 export const DEFAULT_MODEL = 'e5-base';
-export const POOLING: Pooling[] = ['mean', 'last_token', 'none'];
+export const POOLING: Pooling[] = ['mean', 'last_token', 'none', 'cls'];
 const POOLING_SET = new Set<string>(POOLING);
 
 const aliasByRepoId = new Map<string, string>();
@@ -141,6 +177,7 @@ export function normalizeAdapter(raw: Partial<ModelAdapter> | ModelAdapter): Mod
     normalize: raw.normalize !== false,
     dtype: typeof raw.dtype === 'string' && raw.dtype.length > 0 ? raw.dtype : 'q8',
     ...(Number.isSafeInteger(raw.maxTokens) && raw.maxTokens && raw.maxTokens > 0 ? { maxTokens: raw.maxTokens } : {}),
+    ...(raw.pooledOutput === true ? { pooledOutput: true } : {}),
     ...(typeof raw.family === 'string' && raw.family.length > 0 ? { family: raw.family } : {}),
     ...(typeof raw.note === 'string' ? { note: raw.note } : {}),
   });

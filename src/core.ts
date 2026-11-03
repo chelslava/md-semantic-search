@@ -300,6 +300,44 @@ export async function getExtractor(
   const key = getExtractorCacheKey(model, cacheDir, offline);
   if (_extractors.has(key)) return _extractors.get(key);
 
+  // issue #200: adapters whose ONNX graph emits a pre-pooled
+  // `sentence_embedding` (EmbeddingGemma family) bypass the feature-extraction
+  // pipeline — it can only pool last_hidden_state/logits/token_embeddings and
+  // would crash on such graphs. The shim keeps the pipeline call signature so
+  // embed() is unchanged.
+  if (model.pooledOutput === true) {
+    const loadPooledModel = async () => {
+      const { AutoModel, AutoTokenizer, env } = await import('@huggingface/transformers');
+      if (cacheDir) env.cacheDir = cacheDir;
+      env.allowRemoteModels = !offline;
+      const sessionOptions = resolveSessionOptions(model);
+      const modelOpts: any = {
+        revision,
+        dtype: model.dtype || 'q8',
+        progress_callback: emitDownloadEvent,
+        ...(sessionOptions ? { session_options: sessionOptions } : {}),
+      };
+      const tokenizer = await AutoTokenizer.from_pretrained(source, { revision });
+      const onnxModel = await AutoModel.from_pretrained(source, modelOpts);
+      const normalize = model.normalize !== false;
+      const ext = async (input: string | string[]) => {
+        const texts = Array.isArray(input) ? input : [input];
+        const modelInputs = await tokenizer(texts, { padding: true, truncation: true });
+        const outputs = await onnxModel(modelInputs);
+        let result = outputs.sentence_embedding;
+        if (!result) {
+          throw new Error(`model "${model.id}" declared pooledOutput but produced no sentence_embedding output`);
+        }
+        if (normalize) result = result.normalize(2, -1);
+        return { tolist: () => result.tolist() };
+      };
+      _extractors.set(key, ext);
+      return ext;
+    };
+    if (offline) return await loadPooledModel();
+    return await retryWithBackoff(loadPooledModel, retryOpts);
+  }
+
   const loadPipeline = async () => {
     const { pipeline, env } = await import('@huggingface/transformers');
     if (cacheDir) env.cacheDir = cacheDir;
