@@ -90,6 +90,9 @@ export class MDSSSearchView extends ItemView {
   relatedResultsEl: HTMLElement;
   askInput: HTMLInputElement;
   askBtn: HTMLButtonElement;
+  askChatToggle: HTMLInputElement;
+  askNewChatBtn: HTMLButtonElement;
+  askHistoryEl: HTMLElement;
   askAnswerEl: HTMLElement;
   askSourcesEl: HTMLElement;
   searchInput: HTMLInputElement;
@@ -105,6 +108,10 @@ export class MDSSSearchView extends ItemView {
   hits: MDSSSearchResultHit[] = [];
   relatedHits: MDSSRelatedHit[] = [];
   activeFile: TFile | null = null;
+  // chat mode state (issue #199 follow-up): persistent session across Ask runs
+  askChatOn = false;
+  askSessionId = '';
+  askTurns: Array<{ q: string; a: string }> = [];
 
   constructor(leaf: WorkspaceLeaf, plugin: MDSSPlugin) {
     super(leaf);
@@ -197,8 +204,30 @@ export class MDSSSearchView extends ItemView {
       cls: 'mdss-search-input',
     });
     this.askBtn = askHeader.createEl('button', { text: 'Ask', cls: 'mdss-ask-btn' });
+
+    const askControls = this.askSectionEl.createEl('div', { cls: 'mdss-ask-controls' });
+    const chatLabel = askControls.createEl('label', {
+      title: 'Multi-turn: follow-up questions carry conversation context (POST /ask sessionId)',
+      cls: 'mdss-ask-chat-label',
+    });
+    this.askChatToggle = chatLabel.createEl('input', { type: 'checkbox' });
+    chatLabel.appendText(' chat');
+    this.askNewChatBtn = askControls.createEl('button', { text: 'new chat', cls: 'mdss-ask-newchat' });
+    this.askNewChatBtn.hide();
+
+    this.askHistoryEl = this.askSectionEl.createEl('div', { cls: 'mdss-ask-history' });
     this.askAnswerEl = this.askSectionEl.createEl('div', { cls: 'mdss-ask-answer' });
     this.askSourcesEl = this.askSectionEl.createEl('div', { cls: 'mdss-ask-sources' });
+
+    this.askChatToggle.addEventListener('change', () => {
+      this.askChatOn = this.askChatToggle.checked;
+      if (!this.askChatOn) this.resetAskChat();
+    });
+    this.askNewChatBtn.addEventListener('click', () => {
+      this.resetAskChat();
+      this.askAnswerEl.empty();
+      this.askSourcesEl.empty();
+    });
 
     const submitAsk = () => {
       if (!this.askBtn.disabled) this.executeAsk();
@@ -484,10 +513,30 @@ export class MDSSSearchView extends ItemView {
     }
   }
 
+  resetAskChat() {
+    this.askTurns = [];
+    this.askSessionId = '';
+    this.askNewChatBtn.hide();
+    this.askHistoryEl.empty();
+  }
+
+  renderAskHistory() {
+    this.askHistoryEl.empty();
+    for (const t of this.askTurns) {
+      const div = this.askHistoryEl.createEl('div', { cls: 'mdss-ask-turn' });
+      div.createEl('span', { text: `Q: ${t.q}`, cls: 'mdss-ask-turn-q' });
+      div.createEl('span', { text: t.a, cls: 'mdss-ask-turn-a' });
+    }
+    if (this.askTurns.length > 0) {
+      this.askHistoryEl.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
   /**
    * Streams a grounded answer from POST /ask (issue #199). The daemon must
    * run with --llm-endpoint; a missing backend surfaces as the daemon's
-   * 400 message rather than a silent degrade.
+   * 400 message rather than a silent degrade. With the chat toggle on,
+   * requests continue (or start) a persistent session.
    */
   async executeAsk() {
     const query = this.askInput.value.trim();
@@ -511,7 +560,10 @@ export class MDSSSearchView extends ItemView {
       } catch {
         return;
       }
-      if (event === 'delta') {
+      if (event === 'session') {
+        this.askSessionId = obj.id || this.askSessionId;
+        if (this.askSessionId) this.askNewChatBtn.show();
+      } else if (event === 'delta') {
         if (statusEl.parentNode) statusEl.remove();
         answerEl.appendText(obj.text || '');
       } else if (event === 'done') {
@@ -524,6 +576,12 @@ export class MDSSSearchView extends ItemView {
           });
         }
         this.renderAskSources(obj.citations);
+        if (obj.sessionId) {
+          this.askSessionId = obj.sessionId;
+          this.askNewChatBtn.show();
+          this.askTurns.push({ q: query, a: obj.answer });
+          this.renderAskHistory();
+        }
       } else if (event === 'error') {
         if (statusEl.parentNode) statusEl.remove();
         this.askAnswerEl.createEl('div', {
@@ -535,7 +593,12 @@ export class MDSSSearchView extends ItemView {
 
     let buffer = '';
     try {
-      const { url, headers, body } = buildAskRequest(this.plugin.settings, query);
+      const { url, headers, body } = buildAskRequest(
+        this.plugin.settings,
+        query,
+        this.askChatOn ? this.askSessionId : undefined,
+        this.askChatOn && !this.askSessionId
+      );
       const res = await fetch(url, {
         method: 'POST',
         headers,
@@ -551,6 +614,9 @@ export class MDSSSearchView extends ItemView {
           /* non-JSON error body */
         }
         throw new Error(detail);
+      }
+      if (!res.body) {
+        throw new Error('HTTP response has no readable stream (streaming unsupported)');
       }
       const reader = res.body.getReader();
       const dec = new TextDecoder();

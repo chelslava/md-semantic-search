@@ -52,7 +52,8 @@ export declare function buildRelatedRequest(
 export declare function buildAskRequest(
   settings: Partial<MDSSPluginSettings> | undefined,
   query: string,
-  sessionId?: string
+  sessionId?: string,
+  chat?: boolean
 ): {
   url: string;
   headers: Record<string, string>;
@@ -60,6 +61,7 @@ export declare function buildAskRequest(
     query: string;
     k: number;
     sessionId?: string;
+    chat?: boolean;
   };
 };
 

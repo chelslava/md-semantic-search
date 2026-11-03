@@ -302,3 +302,53 @@
 .mdss-ask-source-item {
   cursor: pointer;
 }
+
+/* Ask chat mode (issue #199 follow-up): persistent sessions in the Ask tab */
+.mdss-ask-controls {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.mdss-ask-chat-label {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mdss-ask-newchat {
+  cursor: pointer;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 2px 8px;
+}
+
+.mdss-ask-history:empty {
+  display: none;
+}
+
+.mdss-ask-turn {
+  margin: 4px 0;
+  padding: 4px 8px;
+  border-left: 2px solid var(--background-modifier-border);
+  font-size: 12px;
+}
+
+.mdss-ask-turn-q {
+  display: block;
+  color: var(--text-accent);
+  margin-bottom: 2px;
+}
+
+.mdss-ask-turn-a {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}

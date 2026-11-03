@@ -3,7 +3,9 @@
 Each subdirectory is a standalone integration for `mdss serve`
 (loopback HTTP daemon). All of them speak the same protocol — see
 [`shared/search-client.mjs`](./shared/search-client.mjs) for the canonical
-client and [`test/integrations-client.test.mjs`](../../test/integrations-client.test.mjs)
+client (search, health, and since issue #199 the streamed `ask()` over
+`POST /ask` with `extractSseFrames`) and
+[`test/integrations-client.test.mjs`](../../test/integrations-client.test.mjs)
 for the pinned contract.
 
 | Integration | Kind | Release automation |

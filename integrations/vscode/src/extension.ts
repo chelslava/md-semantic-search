@@ -38,6 +38,108 @@ export interface DaemonSearchParams {
   k: number;
 }
 
+export interface AskFrame {
+  event: 'session' | 'sources' | 'delta' | 'done' | 'error';
+  data: any;
+}
+
+/** Splits raw SSE text into complete frames; returns finished frames + remainder. */
+export function extractSseFrames(buffer: string): { frames: Array<{ event: string; data: string }>; rest: string } {
+  const frames: Array<{ event: string; data: string }> = [];
+  // normalize CR variants (CRLF frames, stray CR) to LF
+  let rest = String(buffer ?? '').replace(/\r\n?/g, '\n');
+  let idx: number;
+  while ((idx = rest.indexOf('\n\n')) >= 0) {
+    const raw = rest.slice(0, idx);
+    rest = rest.slice(idx + 2);
+    let event = 'message';
+    const dataLines: string[] = [];
+    for (const line of raw.split('\n')) {
+      if (line.lastIndexOf('event:', 0) === 0) event = line.slice(6).trim();
+      else if (line.lastIndexOf('data:', 0) === 0) dataLines.push(line.slice(5).replace(/^ /, ''));
+    }
+    if (dataLines.length) frames.push({ event, data: dataLines.join('\n') });
+  }
+  return { frames, rest };
+}
+
+/** Options for the streamed /ask call. */
+export interface DaemonAskParams {
+  daemonUrl: string;
+  apiKey?: string;
+  query: string;
+  k?: number;
+  /** Continue this persistent chat session (issue #199). */
+  sessionId?: string;
+  /** Start a fresh persistent session when no sessionId is known yet. */
+  chat?: boolean;
+  onFrame?: (frame: AskFrame) => void;
+  signal?: AbortSignal;
+}
+
+/**
+ * Streamed grounded QA over POST /ask (issue #199). The daemon must run with
+ * --llm-endpoint; its 400 error text surfaces verbatim. Frames are forwarded
+ * to onFrame as they arrive so the sidebar can render token-by-token.
+ */
+export async function askDaemon({
+  daemonUrl, apiKey, query, k = 5, sessionId, chat, onFrame, signal,
+}: DaemonAskParams): Promise<AskFrame | null> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  const body: Record<string, unknown> = { query, k };
+  const sid = String(sessionId ?? '').trim();
+  if (sid) body.sessionId = sid;
+  else if (chat) body.chat = true;
+
+  const resp = await fetch(`${daemonUrl}/ask`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+    ...(signal ? { signal } : {}),
+  });
+  if (!resp.ok) {
+    let detail = `Daemon returned HTTP ${resp.status}`;
+    try {
+      const j = await resp.json();
+      if (j?.error) detail = j.error;
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new Error(detail);
+  }
+  if (!resp.body) {
+    throw new Error('Daemon response has no readable stream (streaming unsupported)');
+  }
+
+  let buffer = '';
+  let done: AskFrame | null = null;
+  const consume = (event: string, data: string) => {
+    let obj: any;
+    try {
+      obj = JSON.parse(data);
+    } catch {
+      return;
+    }
+    if (event === 'done') done = { event: 'done', data: obj };
+    onFrame?.({ event: event as AskFrame['event'], data: obj });
+  };
+  const reader = resp.body.getReader();
+  const dec = new TextDecoder();
+  for (;;) {
+    const { done: finished, value } = await reader.read();
+    if (finished) break;
+    buffer += dec.decode(value, { stream: true });
+    const parsed = extractSseFrames(buffer);
+    buffer = parsed.rest;
+    for (const f of parsed.frames) consume(f.event, f.data);
+  }
+  // flush a trailing frame that ended without its blank line
+  const tail = extractSseFrames(`${buffer}\n\n`);
+  for (const f of tail.frames) consume(f.event, f.data);
+  return done;
+}
+
 /** Shared daemon client used by both the QuickPick flow and the sidebar. */
 export async function searchDaemon({ daemonUrl, apiKey, query, k }: DaemonSearchParams): Promise<SearchResultItem[]> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -194,22 +296,49 @@ export class MdssSidebarProvider implements vscode.WebviewViewProvider {
 
     // Issue #165: the webview posts search intents to the Extension Host,
     // which owns daemon settings (daemonUrl, apiKey, k) and returns results.
-    webviewView.webview.onDidReceiveMessage(async (msg: { type?: string; query?: unknown }) => {
-      if (msg?.type !== 'search' || typeof msg.query !== 'string' || !msg.query.trim()) return;
+    // issue #199: `ask` intents stream SSE frames back as ask-frame messages.
+    webviewView.webview.onDidReceiveMessage(async (msg: { type?: string; query?: unknown; sessionId?: unknown; chat?: unknown }) => {
       const config = vscode.workspace.getConfiguration('mdss');
-      try {
-        const results = await searchDaemon({
-          daemonUrl: config.get<string>('daemonUrl', 'http://127.0.0.1:8747'),
-          apiKey: await resolveApiKey(this._secrets, config),
-          query: msg.query.trim(),
-          k: config.get<number>('k', 8),
-        });
-        void webviewView.webview.postMessage({ type: 'results', results });
-      } catch (err: any) {
-        void webviewView.webview.postMessage({
-          type: 'error',
-          message: `Failed to reach mdss daemon: ${err?.message ?? err}`,
-        });
+      if (msg?.type === 'search') {
+        if (typeof msg.query !== 'string' || !msg.query.trim()) return;
+        try {
+          const results = await searchDaemon({
+            daemonUrl: config.get<string>('daemonUrl', 'http://127.0.0.1:8747'),
+            apiKey: await resolveApiKey(this._secrets, config),
+            query: msg.query.trim(),
+            k: config.get<number>('k', 8),
+          });
+          void webviewView.webview.postMessage({ type: 'results', results });
+        } catch (err: any) {
+          void webviewView.webview.postMessage({
+            type: 'error',
+            message: `Failed to reach mdss daemon: ${err?.message ?? err}`,
+          });
+        }
+        return;
+      }
+      if (msg?.type === 'ask') {
+        if (typeof msg.query !== 'string' || !msg.query.trim()) return;
+        try {
+          await askDaemon({
+            daemonUrl: config.get<string>('daemonUrl', 'http://127.0.0.1:8747'),
+            apiKey: await resolveApiKey(this._secrets, config),
+            query: msg.query.trim(),
+            k: 5,
+            sessionId: typeof msg.sessionId === 'string' ? msg.sessionId : undefined,
+            chat: msg.chat === true,
+            onFrame: (frame) => {
+              void webviewView.webview.postMessage({ type: 'ask-frame', event: frame.event, data: frame.data });
+            },
+          });
+          void webviewView.webview.postMessage({ type: 'ask-end' });
+        } catch (err: any) {
+          void webviewView.webview.postMessage({
+            type: 'ask-error',
+            message: String(err?.message ?? err),
+          });
+        }
+        return;
       }
     });
   }
@@ -225,19 +354,44 @@ export class MdssSidebarProvider implements vscode.WebviewViewProvider {
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <style>
     body { font-family: var(--vscode-font-family); padding: 10px; color: var(--vscode-foreground); }
-    input { width: 100%; box-sizing: border-box; padding: 6px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 2px; }
+    input[type=text] { width: 100%; box-sizing: border-box; padding: 6px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 2px; }
     .btn { margin-top: 8px; width: 100%; padding: 6px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; cursor: pointer; border-radius: 2px; }
     .btn:hover { background: var(--vscode-button-hoverBackground); }
+    .btn:disabled { opacity: .55; cursor: wait; }
     #results { margin-top: 15px; }
     .hit { padding: 8px; margin-bottom: 8px; background: var(--vscode-editor-inactiveSelectionBackground); border-radius: 4px; }
     .hit-title { font-weight: bold; color: var(--vscode-textLink-foreground); }
     .hit-snippet { font-size: 0.9em; opacity: 0.85; margin-top: 4px; }
+    .divider { margin-top: 18px; border-top: 1px solid var(--vscode-divider-background, var(--vscode-input-border)); padding-top: 10px; }
+    .ask-controls { display: flex; gap: 10px; align-items: center; margin-top: 8px; font-size: .92em; }
+    .ask-controls label { display: flex; gap: 4px; align-items: center; color: var(--vscode-descriptionForeground); cursor: pointer; }
+    .newchat { background: transparent; color: var(--vscode-descriptionForeground); border: 1px solid var(--vscode-input-border); border-radius: 2px; cursor: pointer; padding: 2px 8px; }
+    #answer { margin-top: 10px; padding: 8px; background: var(--vscode-editor-inactiveSelectionBackground); border-radius: 4px; white-space: pre-wrap; overflow-wrap: break-word; min-height: 20px; }
+    #answer:empty::before { content: '—'; color: var(--vscode-descriptionForeground); }
+    #asksources { margin-top: 8px; font-size: .88em; color: var(--vscode-descriptionForeground); }
+    #askhistory { margin-top: 8px; }
+    .turn { margin: 4px 0; padding: 4px 8px; border-left: 2px solid var(--vscode-input-border); font-size: .88em; }
+    .turn .tq { display: block; color: var(--vscode-textLink-foreground); margin-bottom: 2px; }
+    .turn .ta { display: block; white-space: pre-wrap; overflow-wrap: break-word; }
+    .fallback-note { display: block; margin-top: 6px; font-size: .85em; color: var(--vscode-descriptionForeground); }
   </style>
 </head>
 <body>
   <input id="query" type="text" placeholder="Search Markdown notes by meaning..." />
   <button class="btn" onclick="doSearch()">Search</button>
   <div id="results"></div>
+
+  <div class="divider">
+    <input id="askq" type="text" placeholder="Ask the notes — daemon needs --llm-endpoint..." />
+    <button class="btn" id="askbtn" onclick="doAsk()">Ask</button>
+    <div class="ask-controls">
+      <label><input type="checkbox" id="chatmode" /> chat</label>
+      <button class="newchat" id="newchat" style="display:none" onclick="resetChat()">new chat</button>
+    </div>
+    <div id="askhistory"></div>
+    <div id="answer"></div>
+    <div id="asksources"></div>
+  </div>
   <script nonce="${nonce}">
     var vscode = acquireVsCodeApi();
 
@@ -254,6 +408,58 @@ export class MdssSidebarProvider implements vscode.WebviewViewProvider {
       if (!q) return;
       document.getElementById('results').innerHTML = '<p>Searching...</p>';
       vscode.postMessage({ type: 'search', query: q });
+    }
+
+    // ── Ask (issue #199): streamed grounded QA via the Extension Host ──
+    var askTurns = [];
+    var askSessionId = '';
+    var askQueryPending = '';
+
+    function renderHistory() {
+      var el = document.getElementById('askhistory');
+      var html = '';
+      for (var i = 0; i < askTurns.length; i++) {
+        html += '<div class="turn"><span class="tq">Q: ' + escapeHtml(askTurns[i].q) + '</span>'
+          + '<span class="ta">' + escapeHtml(askTurns[i].a) + '</span></div>';
+      }
+      el.innerHTML = html;
+    }
+
+    function resetChat() {
+      askTurns = [];
+      askSessionId = '';
+      renderHistory();
+      document.getElementById('newchat').style.display = 'none';
+      document.getElementById('answer').textContent = '';
+      document.getElementById('asksources').innerHTML = '';
+    }
+
+    function doAsk() {
+      var q = document.getElementById('askq').value;
+      if (!q.trim()) return;
+      askQueryPending = q.trim();
+      document.getElementById('askbtn').disabled = true;
+      var answer = document.getElementById('answer');
+      answer.textContent = 'Thinking…';
+      document.getElementById('asksources').innerHTML = '';
+      var chatOn = document.getElementById('chatmode').checked;
+      vscode.postMessage({
+        type: 'ask',
+        query: q.trim(),
+        sessionId: chatOn && askSessionId ? askSessionId : undefined,
+        chat: chatOn && !askSessionId
+      });
+    }
+
+    function renderSources(citations) {
+      var el = document.getElementById('asksources');
+      if (!citations || !citations.length) { el.innerHTML = ''; return; }
+      var html = '<strong>Sources:</strong> ';
+      for (var i = 0; i < citations.length; i++) {
+        var c = citations[i];
+        html += escapeHtml(c.file) + (c.heading ? ' › ' + escapeHtml(c.heading) : '') + ' &nbsp; ';
+      }
+      el.innerHTML = html;
     }
 
     window.addEventListener('message', function (event) {
@@ -276,6 +482,37 @@ export class MdssSidebarProvider implements vscode.WebviewViewProvider {
         resDiv.innerHTML = html;
       } else if (msg.type === 'error') {
         resDiv.innerHTML = '<p style="color:red">' + escapeHtml(msg.message) + '</p>';
+      } else if (msg.type === 'ask-frame') {
+        var answer = document.getElementById('answer');
+        var obj = msg.data || {};
+        if (msg.event === 'session') {
+          askSessionId = obj.id || askSessionId;
+          if (askSessionId) document.getElementById('newchat').style.display = '';
+        } else if (msg.event === 'delta') {
+          if (answer.textContent === 'Thinking…') answer.textContent = '';
+          answer.textContent += obj.text || '';
+        } else if (msg.event === 'done') {
+          if (obj.answer) answer.textContent = obj.answer;
+          if (obj.mode === 'extractive') {
+            answer.insertAdjacentHTML('beforeend', '<span class="fallback-note">LLM unavailable — extractive fallback shown.</span>');
+          }
+          renderSources(obj.citations);
+          if (obj.sessionId) {
+            askSessionId = obj.sessionId;
+            document.getElementById('newchat').style.display = '';
+            askTurns.push({ q: askQueryPending, a: obj.answer });
+            renderHistory();
+          }
+          document.getElementById('askbtn').disabled = false;
+        } else if (msg.event === 'error') {
+          answer.textContent = obj.error || 'answer synthesis failed';
+          document.getElementById('askbtn').disabled = false;
+        }
+      } else if (msg.type === 'ask-end') {
+        document.getElementById('askbtn').disabled = false;
+      } else if (msg.type === 'ask-error') {
+        document.getElementById('answer').textContent = msg.message;
+        document.getElementById('askbtn').disabled = false;
       }
     });
   </script>

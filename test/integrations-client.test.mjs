@@ -67,3 +67,69 @@ test('integrations client: health probes GET /health and returns parsed body (is
   assert.equal(f.calls[0].init, null, 'health is a plain GET');
   assert.equal(h.chunks, 42);
 });
+
+// ── issue #199: shared ask() streaming client + SSE frame splitter ──
+import { extractSseFrames } from '../integrations/shared/search-client.mjs';
+
+/** fetch stub streaming an SSE body chunk-by-chunk over a web ReadableStream. */
+import { ReadableStream } from 'node:stream/web';
+function sseStub(chunks, { status = 200, body = null } = {}) {
+  const calls = [];
+  const fn = async (url, init) => {
+    calls.push({ url, init: init || null });
+    if (status >= 400) return { ok: false, status, json: async () => body ?? { error: `boom ${status}` } };
+    const enc = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        for (const c of chunks) controller.enqueue(enc.encode(c));
+        controller.close();
+      },
+    });
+    return { ok: true, status, body: stream, json: async () => ({}) };
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+test('integrations client: extractSseFrames — frames, CR normalization, partial remainder', () => {
+  const { frames, rest } = extractSseFrames('event: delta\r\ndata: {"t":"a"}\r\n\r\nnext-even');
+  assert.deepEqual(frames, [{ event: 'delta', data: '{"t":"a"}' }]);
+  assert.equal(rest, 'next-even');
+  assert.deepEqual(extractSseFrames(': keepalive\n\n').frames, [], 'comment-only frames drop');
+});
+
+test('integrations client: ask streams frames, carries auth/session, resolves with done (issue #199)', async () => {
+  const f = sseStub([
+    'event: session\ndata: {"id":"s1","turns":1}\n\n',
+    'event: delta\ndata: {"text":"Hel"}\n\n',
+    'event: delta\ndata: {"text":"lo"}\n\nevent: done\nda',
+    'ta: {"answer":"Hello","mode":"endpoint","sessionId":"s1"}\n\n',
+  ]);
+  const client = createSearchClient({ baseUrl: 'http://d.test', apiKey: 'sk', fetchImpl: f });
+  const frames = [];
+  const done = await client.ask('next question', {
+    sessionId: 's1',
+    onFrame: (event, obj) => frames.push([event, obj]),
+  });
+
+  assert.equal(f.calls[0].url, 'http://d.test/ask');
+  assert.equal(f.calls[0].init.headers.Authorization, 'Bearer sk');
+  assert.deepEqual(JSON.parse(f.calls[0].init.body), { query: 'next question', k: 5, sessionId: 's1' });
+
+  assert.deepEqual(frames.map((fr) => fr[0]), ['session', 'delta', 'delta', 'done'], 'all frames delivered in order');
+  assert.deepEqual(frames[1][1], { text: 'Hel' });
+  assert.equal(done.answer, 'Hello', 'promise resolves with the done payload');
+  assert.equal(done.sessionId, 's1');
+});
+
+test('integrations client: ask body shapes — chat flag vs one-shot, error detail surfaces (issue #199)', async () => {
+  const f = sseStub(['event: done\ndata: {"answer":"a"}\n\n']);
+  const client = createSearchClient({ baseUrl: 'http://d.test', fetchImpl: f });
+  await client.ask('q', { chat: true });
+  assert.deepEqual(JSON.parse(f.calls[0].init.body), { query: 'q', k: 5, chat: true });
+  await client.ask('q');
+  assert.deepEqual(JSON.parse(f.calls[1].init.body), { query: 'q', k: 5 }, 'one-shot sends neither sessionId nor chat');
+
+  const bad = createSearchClient({ baseUrl: 'http://d.test', fetchImpl: sseStub([], { status: 400, body: { error: 'POST /ask requires an LLM chat endpoint' } }) });
+  await assert.rejects(() => bad.ask('q'), /requires an LLM chat endpoint/, 'daemon 400 detail is preserved');
+});

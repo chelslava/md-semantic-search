@@ -317,6 +317,14 @@ test('obsidian: buildAskRequest constructs valid /ask POST payload with optional
 
   const blank = buildAskRequest(undefined, '', '   ');
   assert.deepEqual(blank.body, { query: '', k: 5 }, 'blank session id is dropped, query stays verbatim');
+
+  const newChat = buildAskRequest(undefined, 'hello', undefined, true);
+  assert.equal(newChat.body.chat, true, 'chat flag opens a fresh session when no sessionId');
+  assert.equal('sessionId' in newChat.body, false);
+
+  const contChat = buildAskRequest(undefined, 'next', 'sess9', true);
+  assert.equal(contChat.body.sessionId, 'sess9', 'existing sessionId wins over the chat flag');
+  assert.equal('chat' in contChat.body, false);
 });
 
 test('obsidian: extractSseFrames splits complete frames and keeps the remainder (issue #199)', () => {

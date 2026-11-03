@@ -80,7 +80,7 @@ export function buildSearchRequest(settings, query) {
  * for a one-shot grounded answer. The daemon answers SSE
  * (session?/sources/delta/done frames) and requires `--llm-endpoint`.
  */
-export function buildAskRequest(settings, query, sessionId) {
+export function buildAskRequest(settings, query, sessionId, chat) {
   const s = mergeSettings(settings, DEFAULT_SETTINGS);
   const q = String(query == null ? '' : query).trim();
   const url = `http://${s.host}:${s.port}/ask`;
@@ -92,6 +92,8 @@ export function buildAskRequest(settings, query, sessionId) {
   const sid = String(sessionId == null ? '' : sessionId).trim();
   if (sid) {
     body.sessionId = sid;
+  } else if (chat) {
+    body.chat = true;
   }
   return { url, headers, body };
 }

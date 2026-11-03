@@ -5,7 +5,7 @@ Official Obsidian plugin for **[md-semantic-search (`mdss`)](https://github.com/
 ## Features
 
 - **Live Semantic Search Panel**: Right-hand sidebar view with debounced real-time queries.
-- **Ask the notes** (issue #199): third tab streaming a grounded answer token-by-token from `POST /ask` — start the daemon with `--llm-endpoint` (llama.cpp, LM Studio, vLLM, Ollama) and ask follow-up-free questions with clickable source citations; without the endpoint the daemon's clear 400 message is shown.
+- **Ask the notes** (issue #199): third tab streaming a grounded answer token-by-token from `POST /ask` — start the daemon with `--llm-endpoint` (llama.cpp, LM Studio, vLLM, Ollama) and ask questions with clickable source citations; a **chat** toggle turns the tab into persistent multi-turn conversations (history per session, "new chat" reset), and without the endpoint the daemon's clear 400 message is shown.
 - **Deep Note Navigation**: Clicking a hit opens the note and navigates directly to the matched heading (`note.md#Heading`).
 - **Score & Snippet Preview**: Displays cosine relevance score and matching context snippet.
 - **Configurable Settings**: Host, port, API key authentication, `k`, cross-encoder reranker, and ANN acceleration toggles.
