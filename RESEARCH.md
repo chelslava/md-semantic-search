@@ -421,8 +421,12 @@ corpora keeps **IVF as the default engine**; the criterion's second branch
 2. Bare `--ann` and the automatic threshold path stay on IVF until either
    (a) the JS graph build gets an order of magnitude cheaper (worker
    parallelism, WASM SIMD — see §13), or (b) incremental watch rebuilds
-   start reusing the persisted graph (the `insertHnsw`/`deleteHnsw` API is
-   already in place for that).
+   start reusing the persisted graph. **(b) is now implemented (issue
+   #223):** a watch rebuild remaps the persisted graph onto the new chunk
+   numbering via `chunkHash` (`remapHnsw` — vector reuse is hash-keyed, so
+   every carried edge distance stays valid), tombstones the gone nodes and
+   inserts only the new ones; the build-side gap now applies to FULL builds
+   only (first run, engine/budget switch, entry-point-unanchorable remap).
 3. `--ef <n>` tunes the HNSW search breadth (default 64; recall saturates
    at 100% already at ef 16 on the bench corpora — the default leaves
    headroom for noisier real-world distributions).

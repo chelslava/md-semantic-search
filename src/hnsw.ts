@@ -412,3 +412,79 @@ export function deserializeHnsw(raw: unknown, expectedChunksCount?: number): Hns
   }
   return { dim, M, seed, entryPoint, maxLevel, levels, neighbors, deleted };
 }
+
+/**
+ * issue #223: carry a persisted graph across a watch rebuild. `mapping[oldIdx]`
+ * is the chunk's NEW index (undefined = the chunk is gone → tombstone); nodes
+ * carry over because vector reuse is keyed by chunkHash — a surviving chunk
+ * keeps its exact vector, so every stored edge distance stays valid.
+ * Returns null when the remap cannot produce a navigable graph (e.g. the
+ * entry point did not survive) — the caller falls back to a full rebuild.
+ */
+export function remapHnsw(
+  hnsw: HnswIndex,
+  mapping: Array<number | undefined>,
+  newCount: number,
+): HnswIndex | null {
+  if (newCount <= 0) return null;
+  // every new index may receive at most one old node
+  const taken = new Set<number>();
+  const remapOf = new Map<number, number>();
+  for (let oldIdx = 0; oldIdx < mapping.length; oldIdx++) {
+    const newIdx = mapping[oldIdx];
+    if (newIdx === undefined || newIdx < 0 || newIdx >= newCount) continue;
+    if (taken.has(newIdx)) continue;
+    taken.add(newIdx);
+    remapOf.set(oldIdx, newIdx);
+  }
+  // the entry point does NOT need to survive — it re-anchors below
+
+  const levels: number[] = new Array(newCount);
+  const neighbors: number[][][] = new Array(newCount);
+  const deleted = new Set<number>();
+
+  for (const [oldIdx, newIdx] of remapOf) {
+    levels[newIdx] = hnsw.levels[oldIdx];
+    neighbors[newIdx] = (hnsw.neighbors[oldIdx] ?? []).map((links) =>
+      (links ?? [])
+        .map((nb) => remapOf.get(nb))
+        .filter((nb): nb is number => nb !== undefined),
+    );
+    if (hnsw.deleted.has(oldIdx)) deleted.add(newIdx);
+  }
+  // structural holes would break insertHnsw/serialize — unmapped new indices
+  // are placeholders the caller fills with insertHnsw immediately after
+  for (let i = 0; i < newCount; i++) {
+    if (levels[i] === undefined) {
+      levels[i] = 0;
+      neighbors[i] = [[]];
+      deleted.add(i); // invisible until a real node is inserted over it
+    }
+  }
+
+  // the entry point must sit on the TOP layer: after a partial remap the
+  // old entry may carry a lower level, or some survivor may carry a higher
+  // one — re-anchor deterministically to the lowest-index survivor at maxLevel
+  let maxLevel = -1;
+  for (const newIdx of remapOf.values()) maxLevel = Math.max(maxLevel, levels[newIdx]);
+  if (maxLevel < 0) return null;
+  let entryPoint = -1;
+  for (let i = 0; i < newCount; i++) {
+    if (!deleted.has(i) && levels[i] === maxLevel) {
+      entryPoint = i;
+      break;
+    }
+  }
+  if (entryPoint < 0) return null;
+
+  return {
+    dim: hnsw.dim,
+    M: hnsw.M,
+    seed: hnsw.seed,
+    entryPoint,
+    maxLevel,
+    levels,
+    neighbors,
+    deleted,
+  };
+}

@@ -36,7 +36,7 @@ import {
 } from './lexical.js';
 import { embeddingAdapterFingerprint, legacyEmbeddingAdapterFingerprint } from './models.js';
 import { trainIVF, serializeIVF, ANN_THRESHOLD } from './ivf.js';
-import { buildHnsw, serializeHnsw, HnswIndex } from './hnsw.js';
+import { buildHnsw, insertHnsw, remapHnsw, serializeHnsw, deserializeHnsw, HnswIndex } from './hnsw.js';
 import { DocumentMetadata } from './frontmatter.js';
 import { serializeBinaryIndex } from './binary-format.js';
 import { defaultChunkTokenBudget } from './markdown-parser.js';
@@ -658,16 +658,51 @@ async function _buildIndexInner({
   if (buildSidecar) {
     const rawVecs = chunks.map((c) => (c.vec instanceof Float32Array ? c.vec : Float32Array.from(c.vec as number[])));
     if (annEngine === 'hnsw') {
-      const hnswIndex: HnswIndex = buildHnsw(rawVecs, {
-        vectors: rawVecs,
-        // cosine distance (lower = closer) over the flat normalized vectors
-        distance: (a, b) => {
-          const bv = rawVecs[b];
+      const hnswDistance = (vectors: Array<Float32Array | number[]>) =>
+        (a: Float32Array | Int8Array | number[], b: number) => {
+          const bv = vectors[b];
           let dot = 0;
           for (let i = 0; i < a.length; i++) dot += (a as ArrayLike<number>)[i] * (bv as ArrayLike<number>)[i];
           return 1 - dot;
-        },
-      });
+        };
+
+      // issue #223: reuse the persisted graph across watch rebuilds — remap
+      // surviving nodes onto the new chunk numbering via chunkHash (vector
+      // reuse is hash-keyed, so every carried edge distance stays valid),
+      // tombstone the gone ones, insert the new ones. Full rebuild only when
+      // no valid previous graph exists (first run, engine/budget switch) or
+      // the remap cannot anchor an entry point.
+      let hnswIndex: HnswIndex | null = null;
+      if (!chunkerChanged && oldIndex.chunks.length > 0) {
+        try {
+          const prev = deserializeHnsw(JSON.parse(fs.readFileSync(hnswPath, 'utf8')), oldIndex.chunks.length);
+          if (prev.levels.length === oldIndex.chunks.length) {
+            const newIdxByHash = new Map<string, number>();
+            chunks.forEach((c, newIdx) => newIdxByHash.set(c.chunkHash || chunkHash(model, c), newIdx));
+            const mapping: Array<number | undefined> = oldIndex.chunks.map((c) =>
+              newIdxByHash.get(c.chunkHash || chunkHash(model, c)),
+            );
+            hnswIndex = remapHnsw(prev, mapping, chunks.length);
+            if (hnswIndex) {
+              const inserted: number[] = [];
+              for (let newIdx = 0; newIdx < chunks.length; newIdx++) {
+                if (hnswIndex.levels[newIdx] !== undefined && !hnswIndex.deleted.has(newIdx)) continue;
+                insertHnsw(hnswIndex, newIdx, hnswDistance(rawVecs), rawVecs);
+                inserted.push(newIdx);
+              }
+              log(
+                `hnsw: reused persisted graph — ` +
+                  `${chunks.length - inserted.length} surviving node(s), ${inserted.length} inserted`,
+              );
+            }
+          }
+        } catch {
+          hnswIndex = null; // corrupt/foreign sidecar — full rebuild below
+        }
+      }
+      if (!hnswIndex) {
+        hnswIndex = buildHnsw(rawVecs, { vectors: rawVecs, distance: hnswDistance(rawVecs) });
+      }
       atomicWrite(hnswPath, JSON.stringify(serializeHnsw(hnswIndex)));
       if (fs.existsSync(ivfPath)) {
         try {
