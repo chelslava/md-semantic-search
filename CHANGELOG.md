@@ -4,7 +4,16 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.0] - 2026-11-03
+
+**Upgrade notes:** Node ≥ 20.9 is now required. First `mdss index` after the
+upgrade re-chunks the corpus under the new token-budget chunker (`chunkBudget`
+mismatch forces a full re-chunk; identical chunk texts reuse cached vectors, so
+only chunks whose boundaries actually moved re-embed). `mdss search --rerank`
+now loads `gte-reranker-modernbert` by default (measured +0.05 nDCG@10 at half
+the size, Apache-2.0) — pin `--rerank-model bge-reranker-base` for the
+pre-2.0.0 behavior. Retrieval defaults were re-measured against the golden
+set; every switch is documented in RESEARCH.md §15–§17.
 
 ### Added
 - **Issue #201** — HNSW graph ANN alongside IVF: `src/hnsw.ts` is a pure JS/TS Hierarchical Navigable Small World index sharing the IVF contract (build → `hnsw.json` sidecar → candidate pre-filter) with **no training phase**, incremental `insertHnsw`/tombstone `deleteHnsw` (the watch-rebuild path), seeded-deterministic level assignment, and diversity-heuristic pruning (Algorithm 4) — blind top-M pruning stranded whole graph regions (44.4% recall that ignored `ef`); the heuristic restores 100% recall on both bench corpora. `--ann hnsw` switches the engine end-to-end (`hnsw.json` sidecar instead of `ivf.json`, search probe with `--ef` breadth, `check --fix` corrupt-sidecar repair, silent brute-force fallback on a corrupt file); bare `--ann` prefers an existing sidecar. **Measured** (bench/ann-recall.mjs, 1000/5000 vectors): HNSW ≥ IVF on the query side — 100% recall@10 at equal-or-lower p50 latency (0.215 vs 0.252 ms at 5000) — while the build stays ~20× more expensive in JS, so the automatic sidecar keeps **IVF as the default engine**, documented in RESEARCH.md §17 with the revisit conditions (cheaper graph build or persisted-graph watch reuse).
@@ -456,7 +465,8 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ### Added
 - Initial release: local semantic search over a folder of Markdown files.
 
-[Unreleased]: https://github.com/chelslava/md-semantic-search/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/chelslava/md-semantic-search/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/chelslava/md-semantic-search/compare/v1.1.0...v2.0.0
 [0.3.0]: https://github.com/chelslava/md-semantic-search/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/chelslava/md-semantic-search/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/chelslava/md-semantic-search/releases/tag/v0.1.0
