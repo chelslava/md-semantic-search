@@ -56,6 +56,7 @@ export const FLAGS: FlagSpec[] = [
   { name: '--dry-run', kind: 'flag' },
   // values
   { name: '--workers', kind: 'number' },
+  { name: '--max-chunk-tokens', kind: 'number' },
   { name: '--config', kind: 'file' },
   { name: '--format', kind: 'value' },
   { name: '--output', alias: '-o', kind: 'file' },

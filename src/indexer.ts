@@ -38,6 +38,7 @@ import { embeddingAdapterFingerprint, legacyEmbeddingAdapterFingerprint } from '
 import { trainIVF, serializeIVF, ANN_THRESHOLD } from './ivf.js';
 import { DocumentMetadata } from './frontmatter.js';
 import { serializeBinaryIndex } from './binary-format.js';
+import { defaultChunkTokenBudget } from './markdown-parser.js';
 
 export interface IndexChunk {
   file: string;
@@ -58,6 +59,14 @@ export interface PersistedIndex {
   model?: string | null;
   modelAlias?: string;
   adapterFingerprint?: string;
+  /**
+   * issue #202: the effective chunk token budget these chunks were built
+   * with (null = legacy char budget). A mismatch forces a full re-chunk —
+   * otherwise the file-level fast path would keep stale char-budget chunks
+   * for unchanged files and produce a mixed index. Identical chunk texts
+   * still reuse their cached vectors through chunkHash.
+   */
+  chunkBudget?: number | null;
   dim?: number;
   db?: string;
   built?: string;
@@ -177,6 +186,13 @@ export interface BuildIndexOptions {
   workers?: number;
   ann?: boolean;
   quantize?: 'fp32' | 'int8';
+  /**
+   * issue #202: chunk budget in TOKENS (overrides the legacy char budget).
+   * Default: min(adapter.maxTokens, 512) — the point of the issue is that the
+   * char budget overflowed real maxTokens for Cyrillic. Explicit `0` restores
+   * the legacy char behavior.
+   */
+  maxChunkTokens?: number;
 }
 
 export interface BuildIndexResult {
@@ -209,11 +225,12 @@ export async function buildIndex(opts: BuildIndexOptions): Promise<BuildIndexRes
     workers = 1,
     ann = false,
     quantize = 'fp32',
+    maxChunkTokens,
   } = opts;
   if (_lockHeld)
-    return _buildIndexInner({ db, indexDir, cacheDir, modelName, dimensions, ignore, log, offline, embedFn, maxRetries, onProgress, workers, ann, quantize });
+    return _buildIndexInner({ db, indexDir, cacheDir, modelName, dimensions, ignore, log, offline, embedFn, maxRetries, onProgress, workers, ann, quantize, maxChunkTokens });
   return withIndexLock(indexDir, () =>
-    _buildIndexInner({ db, indexDir, cacheDir, modelName, dimensions, ignore, log, offline, embedFn, maxRetries, onProgress, workers, ann, quantize })
+    _buildIndexInner({ db, indexDir, cacheDir, modelName, dimensions, ignore, log, offline, embedFn, maxRetries, onProgress, workers, ann, quantize, maxChunkTokens })
   );
 }
 
@@ -232,14 +249,24 @@ async function _buildIndexInner({
   workers = 1,
   ann = false,
   quantize = 'fp32',
-}: Required<Omit<BuildIndexOptions, '_lockHeld' | 'onProgress' | 'workers' | 'ann' | 'quantize' | 'dimensions'>> & {
+  maxChunkTokens = undefined,
+}: Required<Omit<BuildIndexOptions, '_lockHeld' | 'onProgress' | 'workers' | 'ann' | 'quantize' | 'dimensions' | 'maxChunkTokens'>> & {
   dimensions?: number;
   onProgress?: (done: number, total: number, chunksPerSec: number) => void;
   workers?: number;
   ann?: boolean;
   quantize?: 'fp32' | 'int8';
+  maxChunkTokens?: number;
 }): Promise<BuildIndexResult> {
   const model = resolveModel(modelName, dimensions);
+  // issue #202: explicit maxChunkTokens wins; `0` restores the legacy char
+  // budget; otherwise min(adapter.maxTokens, 512), undefined → char mode
+  const effectiveChunkTokens =
+    maxChunkTokens === 0
+      ? undefined
+      : maxChunkTokens && maxChunkTokens > 0
+        ? maxChunkTokens
+        : defaultChunkTokenBudget(model);
   const modelIdentity = `${model.id}@${model.revision || 'main'}`;
   const adapterFingerprint = embeddingAdapterFingerprint(model);
   const legacyAdapterFingerprint = legacyEmbeddingAdapterFingerprint(model);
@@ -356,6 +383,14 @@ async function _buildIndexInner({
 
   const modelChanged = !!oldIndex.model && oldIndex.model !== modelIdentity;
   const contextVectorsReusable = sourceSchema >= 2 && !modelChanged && adapterCompatible(oldIndex);
+  // issue #202: a different chunk budget invalidates the file-level fast path
+  // (unchanged files must be re-chunked), NOT the per-chunk vector cache —
+  // chunks whose text did not move across the budget boundary re-embed free.
+  const chunkBudgetMarker = effectiveChunkTokens ?? null;
+  const chunkerChanged = (oldIndex.chunkBudget ?? null) !== chunkBudgetMarker;
+  if (chunkerChanged && oldIndex.chunks.length > 0) {
+    log('chunk budget changed — re-chunking all files (per-chunk vector cache still applies).');
+  }
   let buildDim = model.dim > 0 ? model.dim : contextVectorsReusable && oldDimensionValid ? oldExpectedDim : undefined;
   const acceptBuildVector = (vector: unknown) => {
     const length = validateNumericVector(vector, buildDim, 'embedding vector');
@@ -417,6 +452,7 @@ async function _buildIndexInner({
     model: modelIdentity,
     modelAlias: typeof modelName === 'string' ? modelName || 'e5-base' : model.id,
     adapterFingerprint,
+    chunkBudget: chunkBudgetMarker,
     ...(buildDim === undefined ? {} : { dim: buildDim }),
     db,
     built: new Date().toISOString(),
@@ -437,7 +473,7 @@ async function _buildIndexInner({
       newHashes[rel] = h;
       if (oldHashes[rel] === h) reusableLexicalRecords = lexicalByFile.get(rel);
 
-      if (sourceSchema === SCHEMA_VERSION && contextVectorsReusable && oldHashes[rel] === h && oldByFile.has(rel)) {
+      if (sourceSchema === SCHEMA_VERSION && contextVectorsReusable && !chunkerChanged && oldHashes[rel] === h && oldByFile.has(rel)) {
         const old = oldByFile.get(rel)!;
         for (const c of old) {
           if (!c.chunkHash) c.chunkHash = chunkHash(model, c);
@@ -456,7 +492,7 @@ async function _buildIndexInner({
         continue;
       }
       changedFiles++;
-      parsed = parseFile(abs, db, undefined, raw);
+      parsed = parseFile(abs, db, undefined, raw, effectiveChunkTokens);
     } catch (e: any) {
       delete newHashes[rel];
       skipped++;
@@ -590,6 +626,7 @@ async function _buildIndexInner({
     model: modelIdentity,
     modelAlias: typeof modelName === 'string' ? modelName || 'e5-base' : model.id,
     adapterFingerprint,
+    chunkBudget: chunkBudgetMarker,
     ...(dim === undefined ? {} : { dim }),
     db,
     built: new Date().toISOString(),

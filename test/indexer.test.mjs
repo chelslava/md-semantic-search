@@ -1393,3 +1393,69 @@ test('canonicalPassage: injects document title, serialized heading path, and tag
   );
 });
 
+
+// ── issue #202: token-budget chunking defaults, persistence, re-chunk forcing ──
+
+test('buildIndex #202: default budget = min(adapter.maxTokens, 512), persisted as chunkBudget', async () => {
+  const dir = tempDir('tok-default');
+  const idx = path.join(dir, '.mdss');
+  try {
+    // RU corpus: legacy 1400-char chunks would overflow 512 estimated tokens
+    const ru = Array.from({ length: 30 }, () => 'Привет, мир! Быстрая бурая лиса прыгает через ленивого пса под дождём и громом.').join('\n\n');
+    writeCorpus(dir, { 'ru.md': `# RU\n\n${ru}` });
+
+    // e5-base adapter maxTokens = 512 → token budget on by default
+    const res = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const persisted = readIndex(idx);
+    assert.equal(persisted.chunkBudget, 512, 'effective budget persisted on the index');
+
+    const { estimateTokens } = await import('../dist/markdown-parser.js');
+    for (const c of persisted.chunks) {
+      assert.ok(estimateTokens(c.text) <= 512, 'every chunk fits the 512-token budget');
+    }
+
+    // no-op rebuild: same budget → file-level fast path reuses everything
+    const noop = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    assert.equal(noop.embedded, 0);
+    assert.equal(noop.reused, noop.chunks, 'same budget keeps the file fast path');
+    assert.ok(res.chunks > 0);
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('buildIndex #202: budget change re-chunks unchanged files (no mixed index); 0 restores chars', async () => {
+  const dir = tempDir('tok-switch');
+  const idx = path.join(dir, '.mdss');
+  try {
+    const ru = Array.from({ length: 30 }, () => 'Привет, мир! Быстрая бурая лиса прыгает через ленивого пса под дождём и громом.').join('\n\n');
+    writeCorpus(dir, { 'ru.md': `# RU\n\n${ru}` });
+
+    const first = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    assert.equal(readIndex(idx).chunkBudget, 512);
+
+    // explicit 0 → legacy char budget → persisted marker flips to null and
+    // the file fast path must NOT reuse the token-budget chunks
+    const legacy = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed, maxChunkTokens: 0 });
+    const legacyIndex = readIndex(idx);
+    assert.equal(legacyIndex.chunkBudget, null, 'char budget persisted as null');
+    assert.ok(legacy.chunks !== first.chunks, 'chunk count reacts to the budget switch');
+
+    // back to default → re-chunk again
+    const back = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    assert.equal(readIndex(idx).chunkBudget, 512);
+    assert.equal(back.chunks, first.chunks, 'same budget reproduces the same chunking');
+
+    // explicit custom budget overrides the adapter default
+    writeCorpus(dir, { 'ru.md': `# RU\n\n${ru}`, 'en.md': `# EN\n\n${Array.from({ length: 20 }, () => 'The quick brown fox jumps over the lazy dog near the riverbank at dawn.').join('\n\n')}` });
+    const custom = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed, maxChunkTokens: 64 });
+    assert.equal(readIndex(idx).chunkBudget, 64);
+    const { estimateTokens } = await import('../dist/markdown-parser.js');
+    for (const c of readIndex(idx).chunks) {
+      assert.ok(estimateTokens(c.text) <= 64 + 40, 'custom budget respected (fence/header overhead aside)');
+    }
+    assert.ok(custom.chunks > 0);
+  } finally {
+    safeRm(dir);
+  }
+});

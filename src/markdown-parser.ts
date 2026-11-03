@@ -175,12 +175,80 @@ export function resolveChunkBudget(tokens?: number, defaultMax: number = 1200): 
   return defaultMax;
 }
 
+/**
+ * issue #202: script-calibrated token estimate for the sentencepiece E5/BGE
+ * vocab family — the fast-path alternative to running the real tokenizer per
+ * block. Ratios are calibrated so the estimate errs slightly HIGH: a budget
+ * checked against this estimate never overflows the model's real maxTokens.
+ *   Latin/digits/punctuation ≈ 4 chars/token, Cyrillic ≈ 1.8 chars/token
+ *   (RU systematically under-chunked by the old char budget — the point of
+ *   this issue), CJK ≈ 1 token/char, whitespace mostly merges into the
+ *   following subword so it counts a little.
+ */
+export function estimateTokens(text: string): number {
+  let tokens = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c >= 0x0400 && c <= 0x04ff) tokens += 0.55; // Cyrillic (+ Cyrillic supplement edges)
+    else if (
+      (c >= 0x3040 && c <= 0x30ff) || // hiragana / katakana
+      (c >= 0x3400 && c <= 0x4dbf) || // CJK ext A
+      (c >= 0x4e00 && c <= 0x9fff) || // CJK unified
+      (c >= 0xff00 && c <= 0xffef)    // fullwidth forms
+    ) {
+      tokens += 1.0;
+    } else if (c === 0x20 || (c >= 0x09 && c <= 0x0d)) tokens += 0.08;
+    else if (c < 0x80) tokens += 0.25; // ASCII (latin, digits, punctuation, markdown syntax)
+    else tokens += 0.35; // other scripts / symbols — conservative middle ground
+  }
+  return Math.ceil(tokens);
+}
+
+/** Token measure: injected exact counter when available, else the calibrated estimate. */
+export type TokenCounter = (text: string) => number;
+
+export interface ChunkBudget {
+  /** Max measured size a single chunk may reach before it is split/flushed. */
+  budget: number;
+  /** Measures a text in the same unit the budget is expressed in. */
+  measure: TokenCounter;
+  /** Unit name for diagnostics/tests. */
+  unit: 'chars' | 'tokens';
+}
+
+/** Char budget (pre-#202 behavior) vs token budget (issue #202). */
+export function resolveChunkingBudget(opts: {
+  maxChunk?: number;
+  maxChunkTokens?: number;
+  countTokens?: TokenCounter;
+}): ChunkBudget {
+  if (opts.maxChunkTokens && Number.isFinite(opts.maxChunkTokens) && opts.maxChunkTokens > 0) {
+    const budget = Math.max(32, Math.round(opts.maxChunkTokens));
+    return { budget, measure: opts.countTokens ?? estimateTokens, unit: 'tokens' };
+  }
+  const budget = resolveChunkBudget(undefined, opts.maxChunk ?? 1200);
+  return { budget, measure: (t) => t.length, unit: 'chars' };
+}
+
+/**
+ * issue #202: the DEFAULT chunk budget in tokens, derived from the embedding
+ * adapter's context window. Capped at 512 — a passage much larger than that
+ * dilutes retrieval granularity even for models with 8k+ context (bge-m3).
+ * Returns undefined for adapters without a known maxTokens, which keeps the
+ * legacy char budget instead of guessing.
+ */
+export function defaultChunkTokenBudget(adapter: { maxTokens?: number }): number | undefined {
+  const mt = adapter?.maxTokens;
+  if (!mt || !Number.isFinite(mt) || mt <= 0) return undefined;
+  return Math.min(Math.round(mt), 512);
+}
+
 export function chunkMarkdownStructural(
   input: string | MarkdownBlock[],
-  opts?: number | { maxChunk?: number; targetTokens?: number }
+  opts?: number | { maxChunk?: number; targetTokens?: number; maxChunkTokens?: number; countTokens?: TokenCounter }
 ): StructuralChunk[] {
   const options = typeof opts === 'number' ? { maxChunk: opts } : (opts || {});
-  const maxChunk = resolveChunkBudget(options.targetTokens, options.maxChunk ?? 1200);
+  const { budget: maxChunk, measure } = resolveChunkingBudget(options);
   const blocks = typeof input === 'string' ? parseMarkdownBlocks(input) : input;
   const chunks: StructuralChunk[] = [];
 
@@ -190,6 +258,8 @@ export function chunkMarkdownStructural(
   let currentLen = 0;
   let groupStartLine = 0;
   let groupEndLine = 0;
+  // measured size of the '\n\n' joiner — 2 in char mode, ~1 in token mode
+  const joinerSize = measure('\n\n');
 
   const flushGroup = () => {
     if (currentGroup.length === 0) return;
@@ -223,13 +293,13 @@ export function chunkMarkdownStructural(
     const blockText = block.text.trim();
     if (!blockText) continue;
 
-    if (blockText.length > maxChunk) {
+    if (measure(blockText) > maxChunk) {
       flushGroup();
       const headingPath = headingStack.map(h => h.heading);
       // Issue #167: pieces carry the block-relative range of REAL source
       // lines backing them — synthetic fence/header repeats must not advance
       // the line cursor, or every later sub-chunk drifts down the file.
-      const subPieces = splitOversizedBlockWithRanges(blockText, maxChunk, block.type);
+      const subPieces = splitOversizedByMeasure(blockText, maxChunk, measure, block.type);
       for (const piece of subPieces) {
         chunks.push({
           heading: headingPath.at(-1) ?? '',
@@ -242,7 +312,7 @@ export function chunkMarkdownStructural(
       continue;
     }
 
-    const addedLen = currentLen === 0 ? blockText.length : currentLen + 2 + blockText.length;
+    const addedLen = currentLen === 0 ? measure(blockText) : currentLen + joinerSize + measure(blockText);
     if (addedLen > maxChunk && currentGroup.length > 0) {
       flushGroup();
     }
@@ -251,7 +321,7 @@ export function chunkMarkdownStructural(
       groupStartLine = block.startLine;
     }
     currentGroup.push(blockText);
-    currentLen += (currentGroup.length === 1 ? 0 : 2) + blockText.length;
+    currentLen += (currentGroup.length === 1 ? 0 : joinerSize) + measure(blockText);
     groupEndLine = block.endLine;
   }
 
@@ -286,6 +356,124 @@ export function splitOversizedBlock(
   blockType?: MarkdownBlock['type']
 ): string[] {
   return splitOversizedBlockWithRanges(text, maxChunk, blockType).map((p) => p.text);
+}
+
+/**
+ * issue #202: oversized-block splitting under an arbitrary measure (chars or
+ * tokens). The heavy lifting (fence repeats, table header repeats, #167 line
+ * ranges) stays in the char-based splitOversizedBlockWithRanges; the token
+ * budget is converted to a char budget for THIS block via its own chars-per-
+ * measured-unit ratio, then every piece is verified — script-skew inside the
+ * block (ASCII header + Cyrillic body) is caught by a greedy re-split.
+ */
+export function splitOversizedByMeasure(
+  text: string,
+  budget: number,
+  measure: TokenCounter,
+  blockType?: MarkdownBlock['type']
+): OversizedPiece[] {
+  if (measure(text) <= budget) {
+    return [{ text, startLine: 0, endLine: Number.MAX_SAFE_INTEGER }];
+  }
+
+  // char equivalent of the budget for this block's script mix; fall back to
+  // a plain char split with the raw budget when measuring is degenerate
+  const measured = Math.max(1, measure(text));
+  const charsPerUnit = text.length / measured;
+  const charBudget = Math.max(32, Math.floor(budget * charsPerUnit));
+
+  const pieces = splitOversizedBlockWithRanges(text, charBudget, blockType);
+  const out: OversizedPiece[] = [];
+  for (const piece of pieces) {
+    if (measure(piece.text) <= budget) {
+      out.push(piece);
+      continue;
+    }
+    // script-skew safety net: greedy line/word accumulation under measure;
+    // the greedy splitter tracks consumed source lines so #167 ranges stay real
+    const spanLines = piece.endLine - piece.startLine + 1;
+    const textLines = piece.text.split('\n');
+    // when synthetic lines (fence/table repeats) inflated the piece, the text
+    // has more lines than the source span — clamp keeps ranges inside the block
+    const lineStride = textLines.length > spanLines ? spanLines / textLines.length : 1;
+    for (const sub of greedySplitByMeasure(piece.text, budget, measure)) {
+      const startLine = piece.startLine + Math.min(spanLines - 1, Math.floor(sub.startLine * lineStride));
+      const endLine = piece.startLine + Math.min(spanLines - 1, Math.max(sub.startLine, Math.floor(sub.endLine * lineStride)));
+      out.push({ text: sub.text, startLine, endLine });
+    }
+  }
+  return out;
+}
+
+/** Greedy line-based (then word-based, then hard-slice) split under measure, with line ranges. */
+interface MeasuredPiece {
+  text: string;
+  /** 0-based indices into the input's line array. */
+  startLine: number;
+  endLine: number;
+}
+
+function greedySplitByMeasure(text: string, budget: number, measure: TokenCounter): MeasuredPiece[] {
+  const out: MeasuredPiece[] = [];
+  const lines = text.split('\n');
+  let bufStart = 0;
+  let bufEnd = 0;
+  let current = '';
+
+  const flush = (uptoLine: number) => {
+    if (current.trim()) out.push({ text: current.trim(), startLine: bufStart, endLine: uptoLine });
+    current = '';
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const candidate = current ? `${current}\n${line}` : line;
+    if (measure(candidate) <= budget) {
+      if (!current) bufStart = i;
+      current = candidate;
+      bufEnd = i;
+      continue;
+    }
+    flush(i - 1);
+    if (measure(line) <= budget) {
+      bufStart = i;
+      current = line;
+      bufEnd = i;
+      continue;
+    }
+    // single line over budget: word-level accumulation, all pieces stay on
+    // this line's range
+    const words = line.split(/\s+/);
+    let wordBuf = '';
+    for (const word of words) {
+      const wc = wordBuf ? `${wordBuf} ${word}` : word;
+      if (measure(wc) <= budget) {
+        wordBuf = wc;
+        continue;
+      }
+      if (wordBuf.trim()) out.push({ text: wordBuf.trim(), startLine: i, endLine: i });
+      if (measure(word) <= budget) {
+        wordBuf = word;
+        continue;
+      }
+      // monster token (no spaces): hard-slice by chars proportional to budget
+      const ratio = line.length / Math.max(1, measure(line));
+      const sliceLen = Math.max(8, Math.floor(budget * ratio));
+      let rest = word;
+      while (measure(rest) > budget && rest.length > sliceLen) {
+        out.push({ text: rest.slice(0, sliceLen), startLine: i, endLine: i });
+        rest = rest.slice(sliceLen);
+      }
+      wordBuf = rest;
+    }
+    if (wordBuf.trim()) {
+      bufStart = i;
+      current = wordBuf;
+      bufEnd = i;
+    }
+  }
+  flush(bufEnd);
+  return out;
 }
 
 /**

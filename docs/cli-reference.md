@@ -27,6 +27,11 @@ Options:
   --model <name|id>   Embedding model (default: e5-base). See `mdss models`.
   --dimensions <n>    Truncate vector dimensions for Matryoshka/MRL models (alias: --dim).
   --workers <n>       Number of parallel batch workers for indexing (default: 1).
+  --max-chunk-tokens <n>  index/serve: chunk budget in TOKENS (issue #202) —
+                      default min(model maxTokens, 512), so Cyrillic notes are
+                      chunked by the same real budget as English ones instead
+                      of an English-calibrated char count; 0 restores the
+                      legacy char budget (1400).
   --format <fmt>      Export format: jsonl (default), csv, parquet (export).
   --no-vectors        Omit vector embeddings from export (export).
   --output <file>     Output file path (export, default: stdout).

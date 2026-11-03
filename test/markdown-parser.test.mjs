@@ -253,3 +253,101 @@ test('property-based: parser produces valid non-empty chunks without crashing (f
   );
 });
 
+
+// ── issue #202: token-budget chunking (script-calibrated estimate) ──
+import { estimateTokens, resolveChunkingBudget, splitOversizedByMeasure, defaultChunkTokenBudget } from '../dist/markdown-parser.js';
+
+const ruParagraph = 'Привет, мир! Быстрая бурая лиса прыгает через ленивого пса под дождём и громом.';
+const enParagraph = 'The quick brown fox jumps over the lazy dog near the riverbank at dawn every single morning.';
+
+test('chunking #202: estimateTokens — calibrated per script, RU ≈ 2x EN per char', () => {
+  const ru = estimateTokens(ruParagraph);
+  const en = estimateTokens(enParagraph);
+  // e5 sentencepiece calibration: RU ~0.55 tok/char, EN ~0.25 tok/char
+  assert.ok(ru / ruParagraph.length > 0.4 && ru / ruParagraph.length < 0.7, `RU tok/char = ${(ru / ruParagraph.length).toFixed(2)}`);
+  assert.ok(en / enParagraph.length > 0.15 && en / enParagraph.length < 0.35, `EN tok/char = ${(en / enParagraph.length).toFixed(2)}`);
+  assert.ok(ru / en > 1.4, 'Cyrillic is estimated ~2x denser than Latin');
+  assert.equal(estimateTokens(''), 0);
+  // CJK counts ~1 token per char
+  assert.ok(estimateTokens('日本語テキスト') >= 6);
+});
+
+test('chunking #202: RU and EN chunks fit the SAME token budget (the acceptance criterion)', () => {
+  const build = (sentence) => Array.from({ length: 40 }, () => sentence).join('\n\n');
+  const budget = 512;
+  for (const [name, text] of [['RU', build(ruParagraph)], ['EN', build(enParagraph)]]) {
+    const chunks = chunkMarkdownStructural(text, { maxChunkTokens: budget });
+    assert.ok(chunks.length > 1, `${name}: corpus splits`);
+    for (const c of chunks) {
+      const est = estimateTokens(c.text);
+      assert.ok(est <= budget, `${name}: chunk ${est} tokens exceeds budget ${budget}`);
+    }
+  }
+
+  // the regression this issue fixes: the legacy 1400-char budget let RU
+  // chunks reach ~1400 chars ≈ 770+ estimated tokens — well past maxTokens
+  const legacyRu = chunkMarkdownStructural(build(ruParagraph), 1400);
+  const worstLegacy = Math.max(...legacyRu.map((c) => estimateTokens(c.text)));
+  assert.ok(worstLegacy > budget, `legacy char budget overflows token budget (${worstLegacy} > ${budget})`);
+});
+
+test('chunking #202: token mode keeps structural atomicity — code fences and tables stay intact', () => {
+  const codeLines = Array.from({ length: 30 }, (_, i) => `const value${i} = ${i} * 37; // ${'x'.repeat(40)}`);
+  const md = ['# Code', '', '```js', ...codeLines, '```', '', '| col1 | col2 |', '|------|------|', '| a | b |', '| c | d |'].join('\n');
+  const chunks = chunkMarkdownStructural(md, { maxChunkTokens: 60 });
+  const codeChunks = chunks.filter((c) => c.text.includes('```js'));
+  assert.ok(codeChunks.length >= 1, 'code block present');
+  for (const c of codeChunks) {
+    const fenceCount = (c.text.match(/```/g) || []).length;
+    assert.ok(fenceCount % 2 === 0, 'fences balanced in every piece');
+    assert.ok(estimateTokens(c.text) <= 120, 'fence repeat overhead keeps pieces near budget');
+  }
+  const tableChunks = chunks.filter((c) => c.text.startsWith('|'));
+  for (const c of tableChunks) {
+    assert.ok(c.text.includes('| col1 | col2 |'), 'table header repeated in every piece');
+  }
+});
+
+test('chunking #202: splitOversizedByMeasure — line ranges stay real after greedy re-split', () => {
+  // block whose ratio is skewed: ASCII head + Cyrillic body
+  const lines = ['ascii header line here', ...Array.from({ length: 8 }, () => 'Кириллическая строка с достаточным количеством букв для плотности токенов.')];
+  const text = lines.join('\n');
+  const pieces = splitOversizedByMeasure(text, 40, estimateTokens, 'paragraph');
+  assert.ok(pieces.length > 1);
+  for (const p of pieces) {
+    assert.ok(estimateTokens(p.text) <= 40 || p.startLine === p.endLine, 'pieces within budget (or a single hard-sliced line)');
+    assert.ok(p.startLine <= p.endLine, 'ranges ordered');
+    assert.ok(p.endLine < lines.length + 1, 'ranges inside the block');
+  }
+  // concat coverage: every source line appears somewhere
+  const joined = pieces.map((p) => p.text).join('\n');
+  for (const line of lines) assert.ok(joined.includes(line), 'no source line lost');
+});
+
+test('chunking #202: resolveChunkingBudget + defaultChunkTokenBudget', () => {
+  const tok = resolveChunkingBudget({ maxChunkTokens: 512 });
+  assert.equal(tok.unit, 'tokens');
+  assert.equal(tok.budget, 512);
+  assert.equal(tok.measure(enParagraph), estimateTokens(enParagraph));
+
+  const exact = resolveChunkingBudget({ maxChunkTokens: 64, countTokens: (t) => t.length });
+  assert.equal(exact.measure('abc'), 3, 'injected exact counter wins over the estimate');
+
+  const chars = resolveChunkingBudget({ maxChunk: 1400 });
+  assert.equal(chars.unit, 'chars');
+  assert.equal(chars.budget, 1400);
+  assert.equal(chars.measure('abcd'), 4, 'char mode measures raw length');
+
+  assert.equal(defaultChunkTokenBudget({ maxTokens: 512 }), 512);
+  assert.equal(defaultChunkTokenBudget({ maxTokens: 32768 }), 512, 'huge-context models clamp to 512');
+  assert.equal(defaultChunkTokenBudget({}), undefined, 'unknown maxTokens keeps legacy char mode');
+  assert.equal(defaultChunkTokenBudget({ maxTokens: 0 }), undefined);
+});
+
+test('chunking #202: legacy char mode is byte-identical when maxChunkTokens absent', () => {
+  const md = ['# T', '', ruParagraph, '', enParagraph, '', Array.from({ length: 10 }, () => enParagraph).join('\n\n')].join('\n');
+  const legacy = chunkMarkdownStructural(md, 1200);
+  const viaOpts = chunkMarkdownStructural(md, { maxChunk: 1200 });
+  assert.deepEqual(legacy, viaOpts, 'number form and {maxChunk} form agree');
+  assert.ok(legacy.every((c) => c.text.length <= 1200 + 60), 'char budget respected');
+});

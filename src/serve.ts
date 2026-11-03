@@ -95,6 +95,8 @@ export interface CreateServeOptions {
   ui?: boolean;
   /** issue #123: mount Streamable HTTP MCP at /mcp (default off; stdio stays default). */
   mcp?: boolean;
+  /** issue #202: chunk budget in tokens; default min(adapter.maxTokens, 512), 0 = legacy chars. */
+  maxChunkTokens?: number;
   /** issue #199: chat endpoint for POST /ask SSE answer synthesis. */
   llmEndpoint?: string;
   llmModel?: string;
@@ -287,6 +289,7 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     _testFs,
     mcp = false,
     ui = true,
+    maxChunkTokens,
     llmEndpoint,
     llmModel,
     llmProvider,
@@ -303,7 +306,7 @@ export async function createServe(opts: CreateServeOptions): Promise<{
   if (!fs.existsSync(path.join(indexDir, 'vectors.json'))) {
     if (!db) throw new Error('serve: no index found and no --db given to build one');
     log(`No index at ${indexDir} — building it from ${db}…`);
-    await buildIndex({ db, indexDir, cacheDir, modelName, ignore, offline, log, embedFn });
+    await buildIndex({ db, indexDir, cacheDir, modelName, ignore, offline, log, embedFn, ...(maxChunkTokens !== undefined ? { maxChunkTokens } : {}) });
   }
 
   const state: ServeState = {
@@ -374,7 +377,7 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     if (!db) return false;
     log('Change detected — re-indexing…');
     try {
-      await buildIndex({ db, indexDir, cacheDir, modelName, ignore, offline, log, embedFn });
+      await buildIndex({ db, indexDir, cacheDir, modelName, ignore, offline, log, embedFn, ...(maxChunkTokens !== undefined ? { maxChunkTokens } : {}) });
     } catch (e: any) {
       if (/(being written by pid|being written|lock)/i.test(String(e?.message || ''))) {
         log(`re-index deferred: ${e.message}`);

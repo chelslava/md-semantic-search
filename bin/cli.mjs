@@ -113,6 +113,10 @@ function parseArgs(argv) {
     else if (a === '--direction') opts.direction = nextValue(argv, ++i, a);
     else if (a === '--no-semantic') opts.noSemantic = true;
     else if (a === '--quantize') opts.quantize = nextValue(argv, ++i, a);
+    else if (a === '--max-chunk-tokens') {
+      // issue #202: 0 explicitly restores the legacy char budget
+      opts.maxChunkTokens = nextNonNegInt(argv, ++i, a);
+    }
     else if (a === '--rag') opts.rag = true;
     else if (a === '--auto-tag') opts.autoTag = true;
     else if (a === '--auto-summarize') opts.autoSummarize = true;
@@ -213,6 +217,7 @@ const KNOWN_CONFIG_KEYS = new Set([
   'watchDelay', 'watch-delay', 'offline', 'rerank', 'semantic', 'tag', 'project', 'type', 'status', 'canonical',
   'watchDebug', 'watch-debug',
   'format', 'noVectors', 'no-vectors', 'output', 'workers', 'dimensions', 'dim', 'ann', 'nprobe', 'graphBoost', 'graph-boost', 'filter', 'quantize',
+  'maxChunkTokens', 'max-chunk-tokens',
   'vault', 'vaults', 'rag', 'autoTag', 'auto-tag', 'autoSummarize', 'auto-summarize',
   'llmEndpoint', 'llm-endpoint', 'llmModel', 'llm-model', 'systemPrompt', 'system-prompt',
   'llmProvider', 'llm-provider',
@@ -381,6 +386,11 @@ Options:
   --model <name|id>   Embedding model (default: ${DEFAULT_MODEL}). See \`mdss models\`.
   --dimensions <n>    Truncate vector dimensions for Matryoshka/MRL models (alias: --dim).
   --workers <n>       Number of parallel batch workers for indexing (default: 1).
+  --max-chunk-tokens <n>  index/serve: chunk budget in TOKENS (issue #202) —
+                      default min(model maxTokens, 512), so Cyrillic notes are
+                      chunked by the same real budget as English ones instead
+                      of an English-calibrated char count; 0 restores the
+                      legacy char budget (1400).
   --format <fmt>      Export format: jsonl (default), csv, parquet (export).
   --no-vectors        Omit vector embeddings from export (export).
   --output <file>     Output file path (export, default: stdout).
@@ -590,6 +600,8 @@ async function cmdIndex(opts) {
       workers: opts.workers,
       ann: opts.ann,
       quantize: opts.quantize,
+      // issue #202: token-budget chunking — default min(adapter.maxTokens, 512)
+      ...(opts.maxChunkTokens !== undefined ? { maxChunkTokens: opts.maxChunkTokens } : {}),
       log: s => {
         if (process.stderr.isTTY && !opts.json && /^\s+\d+\/\d+$/.test(s)) return;
         process.stderr.write(s + '\n');
@@ -1626,6 +1638,8 @@ async function cmdServe(opts) {
     ignore: opts.ignore,
     offline: resolveOffline(opts),
     ...(embedderOverrides.embedFn ? { embedFn: embedderOverrides.embedFn } : {}),
+    // issue #202: token-budget chunking for serve's initial + watch rebuilds.
+    ...(opts.maxChunkTokens !== undefined ? { maxChunkTokens: opts.maxChunkTokens } : {}),
     // issue #199: chat endpoint for POST /ask SSE synthesis.
     ...(opts.llmEndpoint ? { llmEndpoint: opts.llmEndpoint } : {}),
     ...(opts.llmModel ? { llmModel: opts.llmModel } : {}),

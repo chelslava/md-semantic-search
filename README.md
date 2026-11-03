@@ -849,7 +849,12 @@ section instead of silently producing wrong vectors.
 1. **Walk** `--db` recursively for `.md`/`.markdown` (dotfiles & `--ignore`
    globs skipped).
 2. **Chunk** each file by Markdown headings while retaining the active heading
-   stack; oversized sections split on blank lines (~1400 body chars/chunk).
+   stack; oversized sections split on blank lines. The budget is in **tokens**
+   (issue #202): `min(model maxTokens, 512)` by default with a script-
+   calibrated estimator, so Cyrillic notes get the same real budget as English
+   ones (the legacy English-calibrated `~1400 chars` budget overflowed the
+   model's context for RU ~2×). Override with `--max-chunk-tokens`, or set `0`
+   to restore the legacy char budget.
 3. **Embed** the document title, full heading path, and chunk body (`passage:`
    prefix for E5) → store `{file, title, heading, headingPath, text, vec}` in
    `vectors.json`, plus per-file md5 in `.hashes.json`. The index stores an

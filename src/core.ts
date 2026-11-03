@@ -621,8 +621,17 @@ export function extractTitle(frontmatter: string, body: string, relPath: string)
 
 const DEFAULT_MAX_CHUNK = 1400;
 
-export function chunkMarkdown(body: string, maxChunk: number = DEFAULT_MAX_CHUNK): StructuralChunk[] {
-  return chunkMarkdownStructural(body, maxChunk);
+export function chunkMarkdown(
+  body: string,
+  maxChunk: number = DEFAULT_MAX_CHUNK,
+  maxChunkTokens?: number
+): StructuralChunk[] {
+  // issue #202: a token budget (maxChunkTokens) takes precedence over the
+  // legacy char budget; without it the pre-#202 char behavior is unchanged
+  return chunkMarkdownStructural(
+    body,
+    maxChunkTokens && maxChunkTokens > 0 ? { maxChunkTokens } : maxChunk
+  );
 }
 
 export interface ParsedChunkFile {
@@ -636,14 +645,21 @@ export interface ParsedChunkFile {
   meta: DocumentMetadata;
 }
 
-export function parseFile(absPath: string, dbDir: string, maxChunk?: number, raw?: string): ParsedChunkFile[] {
+export function parseFile(
+  absPath: string,
+  dbDir: string,
+  maxChunk?: number,
+  raw?: string,
+  /** issue #202: token budget overrides the char budget when set. */
+  maxChunkTokens?: number
+): ParsedChunkFile[] {
   const content = raw ?? fs.readFileSync(absPath, 'utf8');
   const { frontmatter, body } = splitFrontmatter(content);
   const meta = parseFrontmatter(frontmatter);
   const rel = path.relative(dbDir, absPath).split(path.sep).join('/');
   const title = meta.title || extractTitle(frontmatter, body, rel);
   const frontmatterLineCount = frontmatter ? frontmatter.split('\n').length + 2 : 0;
-  return chunkMarkdown(body, maxChunk).map((c) => {
+  return chunkMarkdown(body, maxChunk, maxChunkTokens).map((c) => {
     const heading = c.heading || title;
     return {
       file: rel,
