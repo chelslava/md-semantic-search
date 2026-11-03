@@ -8,7 +8,7 @@ import { buildIndex } from '../dist/indexer.js';
 import {
   askQuestion, synthesizeAnswer, extractAnswerFallback,
   chatTurn, saveChatSession, loadChatSession, listChatSessions,
-  DEFAULT_RAG_SYSTEM_PROMPT,
+  extractUsedCitations, DEFAULT_RAG_SYSTEM_PROMPT,
 } from '../dist/rag.js';
 
 function safeRm(p) {
@@ -558,4 +558,54 @@ test('rag: llmChat injection seam bypasses endpoint construction (issue #199)', 
   } finally {
     fake.close();
   }
+});
+
+test('rag: chatTurn propagates the synthesis mode (issue #199 — CLI interrupted-fallback detection)', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-rag-mode-'));
+  const db = path.join(root, 'notes');
+  const indexDir = path.join(root, '.mdss');
+  fs.mkdirSync(db, { recursive: true });
+  const fake = await startFakeOpenAiChat(['streamed ', 'answer']);
+  try {
+    fs.writeFileSync(path.join(db, 'deploy.md'), '# Deploy\n\n## Rollback\n\nRoll back by re-running the previous release tag.\n');
+    await buildIndex({ db, indexDir, cacheDir: root, modelName: 'e5-base', embedFn: fakeEmbed });
+
+    const res = await chatTurn({
+      query: 'how to roll back',
+      indexDir,
+      cacheDir: root,
+      k: 3,
+      embedFn: fakeEmbed,
+      llmEndpoint: fake.url,
+    });
+    assert.equal(res.mode, 'endpoint', 'chatTurn exposes mode so the CLI can tell a full stream from a fallback');
+    assert.equal(res.turn.mode, 'endpoint', 'persisted turn carries the mode too');
+  } finally {
+    fake.close();
+    safeRm(root);
+  }
+});
+
+test('rag: extractUsedCitations — bracket mentions, order, exclusion of unknown files (issue #199 follow-up)', () => {
+  const citations = [
+    { file: 'auth.md', heading: 'Tokens', score: 0.9 },
+    { file: 'auth.md', heading: 'Sessions', score: 0.8 },
+    { file: 'config.md', score: 0.7 },
+  ];
+  const answer = [
+    'Rotate keys often [auth.md#Tokens]; sessions idle out [auth.md › Sessions].',
+    'See [config.md] for defaults; [unrelated.md#Nope] is not in the manifest,',
+    'a [link](https://example.com) and an empty [] are ignored.',
+    'Repeat [auth.md#Tokens] counts once.',
+  ].join(' ');
+
+  const used = extractUsedCitations(answer, citations);
+  assert.deepEqual(used.map((c) => [c.file, c.heading ?? null]), [
+    ['auth.md', 'Tokens'],
+    ['auth.md', 'Sessions'],
+    ['config.md', null],
+  ], 'first-mention order, heading formats unified, unknown/links excluded');
+
+  assert.deepEqual(extractUsedCitations('no citations at all', citations), []);
+  assert.deepEqual(extractUsedCitations('', citations), []);
 });

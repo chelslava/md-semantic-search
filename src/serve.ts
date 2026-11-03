@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { buildIndex } from './indexer.js';
 import { loadIndex, searchIndex } from './search.js';
-import { synthesizeAnswer } from './rag.js';
+import { synthesizeAnswer, chatTurn, loadChatSession, assertSafeSessionId } from './rag.js';
 import { walkMarkdown, assertSafePath, getDocLines, ModelDescriptor } from './core.js';
 import { createFileWatcher, FileWatcher, classifyFsError, readWithRetry } from './watcher.js';
 import { WEBUI_HTML, WEBUI_JS, WEBUI_CSS } from './webui.js';
@@ -1043,6 +1043,23 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     }
     const k = Number.isInteger(payload.k) && payload.k > 0 ? payload.k : 5;
 
+    // issue #199 (follow-up): chat mode. `{"sessionId": "..."}` continues a
+    // persistent session (same store as `mdss chat`); `{"chat": true}` starts
+    // a fresh one whose id comes back in the `session`/`done` frames for the
+    // next request. One SSE protocol for both.
+    const rawSessionId = typeof payload.sessionId === 'string' ? payload.sessionId.trim() : '';
+    const chatMode = !!rawSessionId || payload.chat === true;
+    if (rawSessionId) {
+      // issue #149 discipline: validate BEFORE any filesystem use; a bad id
+      // gets a plain 400 here rather than a thrown error mid-stream
+      try {
+        assertSafeSessionId(rawSessionId);
+      } catch (e: any) {
+        json(res, 400, { error: `invalid sessionId: ${e.message}` });
+        return;
+      }
+    }
+
     const release = state.limiter ? await state.limiter.acquireSlot() : null;
     if (!release) {
       res.setHeader('retry-after', '1');
@@ -1062,27 +1079,58 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     const sse = (event: string, data: unknown) => {
       if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     };
+    const llmOpts = {
+      llmEndpoint: state.llmEndpoint!,
+      ...(state.llmModel ? { llmModel: state.llmModel } : {}),
+      ...(state.llmProvider ? { llmProvider: state.llmProvider } : {}),
+      ...(state.systemPrompt ? { systemPrompt: state.systemPrompt } : {}),
+      onDelta: (d: string) => sse('delta', { text: d }),
+      signal: clientAbort.signal,
+    };
     try {
-      const passages = await searchIndex({
-        loaded: state.loaded,
-        cacheDir: state.cacheDir,
-        query,
-        k,
-        offline: state.offline,
-        embedFn: state.embedFn,
-      });
-      sse('sources', {
-        citations: passages.map((p) => ({ file: p.file, heading: p.heading, score: p.score })),
-      });
-      const result = await synthesizeAnswer(query, passages, {
-        llmEndpoint: state.llmEndpoint,
-        ...(state.llmModel ? { llmModel: state.llmModel } : {}),
-        ...(state.llmProvider ? { llmProvider: state.llmProvider } : {}),
-        ...(state.systemPrompt ? { systemPrompt: state.systemPrompt } : {}),
-        onDelta: (d) => sse('delta', { text: d }),
-        signal: clientAbort.signal,
-      });
-      sse('done', { answer: result.answer, mode: result.mode, citations: result.citations });
+      if (chatMode) {
+        const session = loadChatSession(state.indexDir, rawSessionId || crypto.randomUUID().slice(0, 8));
+        sse('session', { id: session.id, turns: session.turns.length });
+        const turn = await chatTurn({
+          session,
+          query,
+          loaded: state.loaded,
+          indexDir: state.indexDir,
+          cacheDir: state.cacheDir,
+          k,
+          offline: state.offline,
+          embedFn: state.embedFn,
+          ...llmOpts,
+        });
+        sse('done', {
+          answer: turn.answer,
+          mode: turn.mode,
+          citations: turn.citations,
+          citationsUsed: turn.citationsUsed,
+          manifest: turn.manifest,
+          sessionId: session.id,
+          turnsCount: session.turns.length,
+        });
+      } else {
+        const passages = await searchIndex({
+          loaded: state.loaded,
+          cacheDir: state.cacheDir,
+          query,
+          k,
+          offline: state.offline,
+          embedFn: state.embedFn,
+        });
+        sse('sources', {
+          citations: passages.map((p) => ({ file: p.file, heading: p.heading, score: p.score })),
+        });
+        const result = await synthesizeAnswer(query, passages, llmOpts);
+        sse('done', {
+          answer: result.answer,
+          mode: result.mode,
+          citations: result.citations,
+          citationsUsed: result.citationsUsed,
+        });
+      }
     } catch (e: any) {
       // issue #182 discipline: raw errors can carry absolute paths — the
       // frame stays generic, details go to the server log

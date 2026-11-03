@@ -75,6 +75,53 @@ export function buildSearchRequest(settings, query) {
 }
 
 /**
+ * Builds the URL, headers, and body payload for a /ask POST request
+ * (issue #199 follow-up). `sessionId` continues a chat session; omit it
+ * for a one-shot grounded answer. The daemon answers SSE
+ * (session?/sources/delta/done frames) and requires `--llm-endpoint`.
+ */
+export function buildAskRequest(settings, query, sessionId) {
+  const s = mergeSettings(settings, DEFAULT_SETTINGS);
+  const q = String(query == null ? '' : query).trim();
+  const url = `http://${s.host}:${s.port}/ask`;
+  const headers = { 'Content-Type': 'application/json' };
+  if (s.apiKey) {
+    headers['Authorization'] = `Bearer ${s.apiKey}`;
+  }
+  const body = { query: q, k: 5 };
+  const sid = String(sessionId == null ? '' : sessionId).trim();
+  if (sid) {
+    body.sessionId = sid;
+  }
+  return { url, headers, body };
+}
+
+/**
+ * Splits raw SSE text into complete `event:`/`data:` frames (issue #199).
+ * Pure and incremental: pass the accumulated buffer, get the finished
+ * frames plus the remainder to keep for the next chunk.
+ */
+export function extractSseFrames(buffer) {
+  const frames = [];
+  // normalize CR variants (CRLF frames, stray CR) to LF; a chunk-boundary
+  // CR followed by a real LF just yields an empty frame, which is dropped
+  let rest = String(buffer == null ? '' : buffer).replace(/\r\n?/g, '\n');
+  let idx;
+  while ((idx = rest.indexOf('\n\n')) >= 0) {
+    const raw = rest.slice(0, idx);
+    rest = rest.slice(idx + 2);
+    let event = 'message';
+    const dataLines = [];
+    for (const line of raw.split('\n')) {
+      if (line.lastIndexOf('event:', 0) === 0) event = line.slice(6).trim();
+      else if (line.lastIndexOf('data:', 0) === 0) dataLines.push(line.slice(5).replace(/^ /, ''));
+    }
+    if (dataLines.length) frames.push({ event, data: dataLines.join('\n') });
+  }
+  return { frames, rest };
+}
+
+/**
  * Builds the URL, headers, and body payload for a /related POST request.
  */
 export function buildRelatedRequest(settings, file, options = {}) {

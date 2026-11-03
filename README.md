@@ -461,8 +461,13 @@ the same hit shape.
 with `--llm-endpoint` (chat backend — llama.cpp, LM Studio, vLLM, Ollama `.../v1`)
 and `{"query": string, "k"?: number}` answers as `text/event-stream` frames:
 `sources` (citations from retrieval) → `delta` (`{"text": "…"}` per token) →
-`done` (`{answer, mode, citations}`; `mode` is `endpoint` for the LLM answer or
-`extractive` when it degraded). The same fairness gates as `/search` apply —
+`done` (`{answer, mode, citations, citationsUsed}`; `mode` is `endpoint` for the
+LLM answer or `extractive` when it degraded, `citationsUsed` lists the citations
+the answer text actually cites). **Multi-turn chat**: pass `"chat": true` to
+start a persistent session or `"sessionId": "…"` to continue one — the same
+`<indexDir>/sessions/` store `mdss chat` uses; a `session` frame opens the
+stream and the `done` frame returns `sessionId`/`turnsCount`. The built-in web
+UI has a **chat** toggle with history and a "new chat" reset. The same fairness gates as `/search` apply —
 rate limit `429`, concurrency `503` — and an LLM call holds one concurrency
 slot for its whole generation. Without `--llm-endpoint` the route answers
 `400` instead of silently degrading. The built-in web UI ships an

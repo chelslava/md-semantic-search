@@ -135,6 +135,8 @@ test('serve: POST /ask streams sources → deltas → done over SSE (issue #199)
       assert.equal(done.data.answer, 'Rotated tokens keep access tight.');
       assert.equal(done.data.mode, 'endpoint');
       assert.ok(Array.isArray(done.data.citations));
+      assert.ok(Array.isArray(done.data.citationsUsed), 'citationsUsed rides the done frame');
+      assert.ok(done.data.citationsUsed.length <= done.data.citations.length);
 
       // the daemon actually called the chat endpoint with the OpenAI wire format
       assert.equal(fake.calls.length, 1);
@@ -193,6 +195,90 @@ test('serve: POST /ask validation — bad JSON, missing query, oversized body (i
       assert.equal(long.status, 400);
 
       assert.equal(fake.calls.length, 0, 'rejected requests never reach the LLM');
+    } finally {
+      await svc.close();
+    }
+  } finally {
+    fake.close();
+    safeRm(dir);
+  }
+});
+
+// ── issue #199 follow-up: chat mode (persistent sessions over SSE) ──
+
+test('serve: POST /ask chat:true starts a persisted session; sessionId continues it (issue #199)', async () => {
+  const dir = tempDir('chat');
+  const idx = path.join(dir, '.mdss');
+  const fake = await startFakeChat();
+  try {
+    fs.writeFileSync(
+      path.join(dir, 'security.md'),
+      '# Security Guide\n\n## Token Rotation\n\nAPI tokens must be rotated every 90 days to keep access tight.\n'
+    );
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+
+    const svc = await createServe({ indexDir: idx, cacheDir: dir, db: dir, embedFn: fakeEmbed, llmEndpoint: fake.url });
+    await new Promise((r) => svc.server.listen(0, r));
+    const url = `http://127.0.0.1:${svc.server.address().port}`;
+    try {
+      // turn 1: chat:true → new session
+      const first = await postAsk(url, { query: 'token rotation policy', chat: true });
+      assert.equal(first.status, 200);
+      const sessionFrame = first.frames.find((f) => f.event === 'session');
+      assert.ok(sessionFrame, 'a session frame opens a chat stream');
+      assert.equal(sessionFrame.data.turns, 0);
+      const done1 = first.frames.find((f) => f.event === 'done');
+      assert.ok(done1.data.sessionId, 'done frame carries the session id');
+      assert.equal(done1.data.turnsCount, 1);
+      assert.ok(Array.isArray(done1.data.manifest) && done1.data.manifest.length >= 1, 'manifest rides the done frame');
+      assert.ok(Array.isArray(done1.data.citationsUsed));
+      const sid = done1.data.sessionId;
+
+      // session persisted to the same store `mdss chat` uses
+      const sessionJson = JSON.parse(fs.readFileSync(path.join(idx, 'sessions', `${sid}.json`), 'utf8'));
+      assert.equal(sessionJson.turns.length, 1);
+
+      // turn 2: same sessionId → context carries over
+      const second = await postAsk(url, { query: 'and what about the expiry window?', sessionId: sid });
+      assert.equal(second.status, 200);
+      const sessionFrame2 = second.frames.find((f) => f.event === 'session');
+      assert.equal(sessionFrame2.data.id, sid);
+      assert.equal(sessionFrame2.data.turns, 1, 'previous turn visible in the session frame');
+      const done2 = second.frames.find((f) => f.event === 'done');
+      assert.equal(done2.data.turnsCount, 2);
+      assert.equal(done2.data.sessionId, sid);
+
+      const sessionJson2 = JSON.parse(fs.readFileSync(path.join(idx, 'sessions', `${sid}.json`), 'utf8'));
+      assert.equal(sessionJson2.turns.length, 2);
+    } finally {
+      await svc.close();
+    }
+  } finally {
+    fake.close();
+    safeRm(dir);
+  }
+});
+
+test('serve: POST /ask rejects an unsafe sessionId with 400 before the stream opens (issue #149 discipline)', async () => {
+  const dir = tempDir('badsid');
+  const idx = path.join(dir, '.mdss');
+  const fake = await startFakeChat();
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Note\n\nsome grounded content here for the index\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const svc = await createServe({ indexDir: idx, cacheDir: dir, embedFn: fakeEmbed, llmEndpoint: fake.url });
+    await new Promise((r) => svc.server.listen(0, r));
+    try {
+      const res = await fetch(`http://127.0.0.1:${svc.server.address().port}/ask`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'connection': 'close' },
+        body: JSON.stringify({ query: 'q', sessionId: '../evil' }),
+      });
+      assert.equal(res.status, 400);
+      const data = await res.json();
+      assert.match(data.error, /invalid sessionId/);
+      assert.equal(fake.calls.length, 0, 'rejected request never reaches the LLM');
+      assert.equal(fs.existsSync(path.join(dir, 'evil.json')), false, 'no traversal write');
     } finally {
       await svc.close();
     }

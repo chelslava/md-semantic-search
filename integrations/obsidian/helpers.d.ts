@@ -49,6 +49,25 @@ export declare function buildRelatedRequest(
   };
 };
 
+export declare function buildAskRequest(
+  settings: Partial<MDSSPluginSettings> | undefined,
+  query: string,
+  sessionId?: string
+): {
+  url: string;
+  headers: Record<string, string>;
+  body: {
+    query: string;
+    k: number;
+    sessionId?: string;
+  };
+};
+
+export declare function extractSseFrames(buffer: string): {
+  frames: Array<{ event: string; data: string }>;
+  rest: string;
+};
+
 export declare function formatRelatedReason(reason?: string): string;
 
 export declare function formatRelatedScore(hit?: { score?: number }): string;

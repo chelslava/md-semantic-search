@@ -47,4 +47,13 @@ jobs:
       - name: Golden-set retrieval gate (issue #198)
         run: node scripts/run-bench.mjs --slice dev --gate bench/fixtures/golden-baseline.json --cache-dir "$MDSS_NIGHTLY_CACHE_DIR"
 
+      - name: Real chat-backend streaming smoke (issue #199; needs repo variable MDSS_SMOKE_ENDPOINT)
+        if: ${{ vars.MDSS_SMOKE_ENDPOINT != '' }}
+        run: >-
+          node scripts/smoke-chat-backend.mjs
+          --endpoint "${{ vars.MDSS_SMOKE_ENDPOINT }}"
+          ${{ vars.MDSS_SMOKE_PROVIDER && format('--provider {0}', vars.MDSS_SMOKE_PROVIDER) || '' }}
+          ${{ vars.MDSS_SMOKE_MODEL && format('--model {0}', vars.MDSS_SMOKE_MODEL) || '' }}
+          --timeout-ms 30000
+
 

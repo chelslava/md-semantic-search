@@ -4,6 +4,8 @@ import {
   MDSSPluginSettings,
   buildSearchRequest,
   buildRelatedRequest,
+  buildAskRequest,
+  extractSseFrames,
   formatHitHeading,
   formatLinkTarget,
   formatScore,
@@ -22,6 +24,8 @@ export {
   mergeSettings,
   buildSearchRequest,
   buildRelatedRequest,
+  buildAskRequest,
+  extractSseFrames,
   formatHitHeading,
   formatLinkTarget,
   formatScore,
@@ -75,19 +79,26 @@ function getReasonClass(reason: string): string {
 
 export class MDSSSearchView extends ItemView {
   plugin: MDSSPlugin;
-  mode: 'search' | 'related' = 'search';
+  mode: 'search' | 'related' | 'ask' = 'search';
   searchTabBtn: HTMLButtonElement;
   relatedTabBtn: HTMLButtonElement;
+  askTabBtn: HTMLButtonElement;
   searchSectionEl: HTMLElement;
   relatedSectionEl: HTMLElement;
+  askSectionEl: HTMLElement;
   resultsEl: HTMLElement;
   relatedResultsEl: HTMLElement;
+  askInput: HTMLInputElement;
+  askBtn: HTMLButtonElement;
+  askAnswerEl: HTMLElement;
+  askSourcesEl: HTMLElement;
   searchInput: HTMLInputElement;
   activeFileBadgeEl: HTMLElement;
   debounceTimer: number | null = null;
   relatedDebounceTimer: number | null = null;
   searchAbortController: AbortController | null = null;
   relatedAbortController: AbortController | null = null;
+  askAbortController: AbortController | null = null;
   searchSeq = 0;
   relatedSeq = 0;
   selectedIndex = -1;
@@ -105,7 +116,7 @@ export class MDSSSearchView extends ItemView {
   }
 
   getDisplayText() {
-    return 'Semantic Search & Related';
+    return 'Semantic Search, Related & Ask';
   }
 
   getIcon() {
@@ -121,9 +132,11 @@ export class MDSSSearchView extends ItemView {
     const tabGroup = container.createEl('div', { cls: 'mdss-tab-container' });
     this.searchTabBtn = tabGroup.createEl('button', { text: 'Search', cls: 'mdss-tab-button is-active' });
     this.relatedTabBtn = tabGroup.createEl('button', { text: 'Related Notes', cls: 'mdss-tab-button' });
+    this.askTabBtn = tabGroup.createEl('button', { text: 'Ask', cls: 'mdss-tab-button', title: 'Grounded answer via POST /ask — the daemon must run with --llm-endpoint' });
 
     this.searchTabBtn.addEventListener('click', () => this.setMode('search'));
     this.relatedTabBtn.addEventListener('click', () => this.setMode('related'));
+    this.askTabBtn.addEventListener('click', () => this.setMode('ask'));
 
     // 2. Search Section
     this.searchSectionEl = container.createEl('div', { cls: 'mdss-section-search' });
@@ -174,6 +187,32 @@ export class MDSSSearchView extends ItemView {
 
     this.relatedResultsEl = this.relatedSectionEl.createEl('div', { cls: 'mdss-results-container' });
 
+    // 3b. Ask Section (issue #199): streamed grounded QA over POST /ask.
+    this.askSectionEl = container.createEl('div', { cls: 'mdss-section-ask' });
+    this.askSectionEl.style.display = 'none';
+    const askHeader = this.askSectionEl.createEl('div', { cls: 'mdss-search-header' });
+    this.askInput = askHeader.createEl('input', {
+      type: 'text',
+      placeholder: 'Ask the notes — needs a daemon started with --llm-endpoint…',
+      cls: 'mdss-search-input',
+    });
+    this.askBtn = askHeader.createEl('button', { text: 'Ask', cls: 'mdss-ask-btn' });
+    this.askAnswerEl = this.askSectionEl.createEl('div', { cls: 'mdss-ask-answer' });
+    this.askSourcesEl = this.askSectionEl.createEl('div', { cls: 'mdss-ask-sources' });
+
+    const submitAsk = () => {
+      if (!this.askBtn.disabled) this.executeAsk();
+    };
+    this.askBtn.addEventListener('click', submitAsk);
+    this.askInput.addEventListener('keydown', (ev: KeyboardEvent) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        submitAsk();
+      } else if (ev.key === 'Escape') {
+        this.askInput.blur();
+      }
+    });
+
     // 4. Register workspace active file listener
     this.registerEvent(
       this.app.workspace.on('file-open', (file) => {
@@ -187,18 +226,24 @@ export class MDSSSearchView extends ItemView {
     }
   }
 
-  setMode(mode: 'search' | 'related') {
+  setMode(mode: 'search' | 'related' | 'ask') {
     this.mode = mode;
+    this.searchTabBtn.removeClass('is-active');
+    this.relatedTabBtn.removeClass('is-active');
+    this.askTabBtn.removeClass('is-active');
+    this.searchSectionEl.style.display = 'none';
+    this.relatedSectionEl.style.display = 'none';
+    this.askSectionEl.style.display = 'none';
     if (mode === 'search') {
       this.searchTabBtn.addClass('is-active');
-      this.relatedTabBtn.removeClass('is-active');
       this.searchSectionEl.style.display = '';
-      this.relatedSectionEl.style.display = 'none';
       this.searchInput.focus();
+    } else if (mode === 'ask') {
+      this.askTabBtn.addClass('is-active');
+      this.askSectionEl.style.display = '';
+      this.askInput.focus();
     } else {
-      this.searchTabBtn.removeClass('is-active');
       this.relatedTabBtn.addClass('is-active');
-      this.searchSectionEl.style.display = 'none';
       this.relatedSectionEl.style.display = '';
       this.onActiveFileChange(this.app.workspace.getActiveFile());
     }
@@ -439,9 +484,134 @@ export class MDSSSearchView extends ItemView {
     }
   }
 
+  /**
+   * Streams a grounded answer from POST /ask (issue #199). The daemon must
+   * run with --llm-endpoint; a missing backend surfaces as the daemon's
+   * 400 message rather than a silent degrade.
+   */
+  async executeAsk() {
+    const query = this.askInput.value.trim();
+    if (!query) return;
+    if (this.askAbortController) {
+      this.askAbortController.abort();
+      this.askAbortController = null;
+    }
+    const abortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    this.askAbortController = abortController;
+    this.askBtn.disabled = true;
+    this.askAnswerEl.empty();
+    this.askSourcesEl.empty();
+    const statusEl = this.askAnswerEl.createEl('div', { text: 'Thinking…', cls: 'mdss-loading' });
+    const answerEl = this.askAnswerEl.createEl('div', { cls: 'mdss-ask-text' });
+
+    const consumeFrame = (event: string, data: string) => {
+      let obj: any;
+      try {
+        obj = JSON.parse(data);
+      } catch {
+        return;
+      }
+      if (event === 'delta') {
+        if (statusEl.parentNode) statusEl.remove();
+        answerEl.appendText(obj.text || '');
+      } else if (event === 'done') {
+        if (statusEl.parentNode) statusEl.remove();
+        if (typeof obj.answer === 'string' && obj.answer) answerEl.setText(obj.answer);
+        if (obj.mode === 'extractive') {
+          this.askAnswerEl.createEl('small', {
+            text: 'LLM unavailable — extractive fallback shown.',
+            cls: 'mdss-ask-fallback-note',
+          });
+        }
+        this.renderAskSources(obj.citations);
+      } else if (event === 'error') {
+        if (statusEl.parentNode) statusEl.remove();
+        this.askAnswerEl.createEl('div', {
+          text: obj.error || 'answer synthesis failed',
+          cls: 'mdss-error',
+        });
+      }
+    };
+
+    let buffer = '';
+    try {
+      const { url, headers, body } = buildAskRequest(this.plugin.settings, query);
+      const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        signal: abortController ? abortController.signal : undefined,
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}: ${res.statusText}`;
+        try {
+          const j = await res.json();
+          if (j?.error) detail = j.error;
+        } catch {
+          /* non-JSON error body */
+        }
+        throw new Error(detail);
+      }
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += dec.decode(value, { stream: true });
+        const { frames, rest } = extractSseFrames(buffer);
+        buffer = rest;
+        for (const f of frames) consumeFrame(f.event, f.data);
+      }
+      // flush a trailing frame that ended without its blank line
+      const { frames } = extractSseFrames(`${buffer}\n\n`);
+      buffer = '';
+      for (const f of frames) consumeFrame(f.event, f.data);
+    } catch (e: any) {
+      if (e && (e.name === 'AbortError' || e.message === 'The user aborted a request.' || e.code === 20)) return;
+      if (statusEl.parentNode) statusEl.remove();
+      const errCard = this.askAnswerEl.createEl('div', { cls: 'mdss-error' });
+      errCard.createEl('div', { text: buildErrorMessage(e, this.plugin.settings) });
+
+      const cmd = buildServeCommand(this.plugin.settings);
+      const cmdBox = errCard.createEl('div', { cls: 'mdss-command-card' });
+      cmdBox.createEl('code', { text: `${cmd} --llm-endpoint <chat-url>`, cls: 'mdss-command-code' });
+      const copyBtn = cmdBox.createEl('button', { text: 'Copy', cls: 'mdss-copy-btn' });
+      copyBtn.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        try {
+          await navigator.clipboard.writeText(`${cmd} --llm-endpoint <chat-url>`);
+          copyBtn.setText('Copied!');
+          setTimeout(() => copyBtn.setText('Copy'), 2000);
+        } catch {
+          copyBtn.setText('Failed');
+        }
+      });
+    } finally {
+      this.askBtn.disabled = false;
+      this.askAbortController = null;
+    }
+  }
+
+  renderAskSources(citations?: Array<{ file: string; heading?: string; score?: number }>) {
+    this.askSourcesEl.empty();
+    if (!citations || !citations.length) return;
+    const label = this.askSourcesEl.createEl('div', { text: 'Sources:', cls: 'mdss-ask-sources-label' });
+    for (const c of citations) {
+      const item = this.askSourcesEl.createEl('div', { cls: 'mdss-result-item mdss-ask-source-item' });
+      item.createEl('div', { text: formatHitHeading(c), cls: 'mdss-result-title' });
+      item.addEventListener('click', async () => {
+        await this.openHit(c);
+      });
+    }
+  }
+
   async onClose() {
     if (this.debounceTimer !== null) window.clearTimeout(this.debounceTimer);
     if (this.relatedDebounceTimer !== null) window.clearTimeout(this.relatedDebounceTimer);
+    if (this.askAbortController) {
+      this.askAbortController.abort();
+      this.askAbortController = null;
+    }
     if (this.searchAbortController) {
       this.searchAbortController.abort();
       this.searchAbortController = null;

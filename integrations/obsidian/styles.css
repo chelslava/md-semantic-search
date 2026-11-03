@@ -256,3 +256,49 @@
 }
 
 
+
+/* Ask tab (issue #199): streamed grounded QA over POST /ask */
+.mdss-ask-btn {
+  margin-left: 8px;
+  padding: 6px 14px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.mdss-ask-btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.mdss-ask-answer {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.mdss-ask-text {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.mdss-ask-fallback-note {
+  display: block;
+  margin-top: 6px;
+  color: var(--text-faint);
+}
+
+.mdss-ask-sources {
+  margin-top: 8px;
+}
+
+.mdss-ask-sources-label {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.mdss-ask-source-item {
+  cursor: pointer;
+}

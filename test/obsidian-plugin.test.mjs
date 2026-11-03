@@ -5,6 +5,8 @@ import {
   mergeSettings,
   buildSearchRequest,
   buildRelatedRequest,
+  buildAskRequest,
+  extractSseFrames,
   formatHitHeading,
   formatLinkTarget,
   formatScore,
@@ -301,3 +303,43 @@ test('obsidian: active file change debounce pattern cancels stale in-flight requ
 });
 
 
+
+test('obsidian: buildAskRequest constructs valid /ask POST payload with optional session (issue #199)', () => {
+  const oneShot = buildAskRequest({ host: '10.0.0.2', port: 9000, apiKey: 'sk' }, '  rotate tokens  ');
+  assert.equal(oneShot.url, 'http://10.0.0.2:9000/ask');
+  assert.deepEqual(oneShot.body, { query: 'rotate tokens', k: 5 });
+  assert.equal(oneShot.headers.Authorization, 'Bearer sk');
+
+  const chat = buildAskRequest(undefined, 'follow-up', 'sess1');
+  assert.equal(chat.url, 'http://127.0.0.1:8747/ask');
+  assert.equal(chat.body.sessionId, 'sess1');
+  assert.equal('Authorization' in chat.headers, false, 'no auth header without an api key');
+
+  const blank = buildAskRequest(undefined, '', '   ');
+  assert.deepEqual(blank.body, { query: '', k: 5 }, 'blank session id is dropped, query stays verbatim');
+});
+
+test('obsidian: extractSseFrames splits complete frames and keeps the remainder (issue #199)', () => {
+  const { frames, rest } = extractSseFrames(
+    'event: sources\ndata: {"citations":[]}\n\nevent: delta\ndata: {"text":"Hel"}\n\nevent: del'
+  );
+  assert.deepEqual(frames, [
+    { event: 'sources', data: '{"citations":[]}' },
+    { event: 'delta', data: '{"text":"Hel"}' },
+  ], 'complete frames parsed with their event names');
+  assert.equal(rest, 'event: del', 'partial frame is kept for the next chunk');
+
+  const tail = extractSseFrames(`${rest}ta
+data: {"text":"x"}
+
+`);
+  assert.deepEqual(tail.frames, [{ event: 'delta', data: '{"text":"x"}' }], 'partial event name completes across chunks');
+
+  // chunk torn mid-CRLF-pair across reads
+  const torn = extractSseFrames('data: a\r');
+  assert.deepEqual(torn.frames, [], 'lone \r does not close a frame');
+  const torn2 = extractSseFrames(`${torn.rest}\n\ndata: b\n\n`);
+  assert.deepEqual(torn2.frames.map((f) => f.data), ['a', 'b']);
+
+  assert.deepEqual(extractSseFrames('').frames, []);
+});

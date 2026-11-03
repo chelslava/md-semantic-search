@@ -14,6 +14,13 @@ export interface Citation {
 export interface SynthesisResult {
   answer: string;
   citations: Citation[];
+  /**
+   * issue #199 follow-up: citations the answer actually mentions (bracket
+   * formats `[file#heading]` / `[file › heading]` / `[file]`), in order of
+   * first mention. Deterministic post-processing of the LLM text — a subset
+   * of `citations`, which stays the full retrieval manifest for compatibility.
+   */
+  citationsUsed?: Citation[];
   passages: SearchResultHit[];
   /** Which synthesis stage produced the answer (issue #197 observability). */
   mode?: 'llm' | 'endpoint' | 'extractive';
@@ -46,6 +53,8 @@ export interface ChatTurn {
   answer: string;
   citations: Citation[];
   manifest: ChatSourceManifestItem[];
+  /** Which synthesis stage produced the answer (issue #199; optional in persisted sessions). */
+  mode?: SynthesisResult['mode'];
 }
 
 export interface ChatSession {
@@ -259,6 +268,55 @@ export function extractAnswerFallback(query: string, passages: SearchResultHit[]
   return `Based on your notes:\n\n${body}`;
 }
 
+const CITATION_MENTION_RE = /\[([^\]\n]{1,200})\]/g;
+
+/** `[file]` | `[file#heading]` | `[file › heading]` → {file, heading?}; null for non-citations. */
+function parseCitationMention(text: string): { file: string; heading?: string } | null {
+  const t = text.trim();
+  if (!t) return null;
+  let file: string;
+  let heading: string | undefined;
+  const hash = t.indexOf('#');
+  const sep = t.indexOf('›');
+  if (hash > 0) {
+    file = t.slice(0, hash).trim();
+    heading = t.slice(hash + 1).trim();
+  } else if (sep > 0) {
+    file = t.slice(0, sep).trim();
+    heading = t.slice(sep + 1).trim();
+  } else {
+    file = t;
+  }
+  // markdown links, footnote refs, and empty brackets are not citations
+  if (!file || /https?:\/\//i.test(file)) return null;
+  return { file, heading: heading || undefined };
+}
+
+/**
+ * issue #199 follow-up: which of the retrieved citations the answer text
+ * actually cites. Bracket-only scan (the exact formats the system prompt and
+ * the extractive fallback emit), exact file/heading match against the
+ * retrieval manifest, order of first mention. No mention → [].
+ */
+export function extractUsedCitations(answer: string, citations: Citation[]): Citation[] {
+  const used: Citation[] = [];
+  const seen = new Set<string>();
+  for (const m of answer.matchAll(CITATION_MENTION_RE)) {
+    const mention = parseCitationMention(m[1]);
+    if (!mention) continue;
+    const hit = citations.find(
+      (c) => c.file === mention.file && (mention.heading === undefined || c.heading === mention.heading)
+    );
+    if (!hit) continue;
+    const key = `${hit.file}\u0000${hit.heading ?? ''}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      used.push(hit);
+    }
+  }
+  return used;
+}
+
 /**
  * Synthesizes an answer from retrieved passages using an LLM or fallback.
  */
@@ -300,12 +358,21 @@ export async function synthesizeAnswer(
     .join('\n\n---\n\n');
   const user = `${historyHeader}\n\nContext:\n${contextBlocks}\n\nQuestion: ${query}\n\nAnswer:`;
 
+  // every stage returns through one shape so citationsUsed stays consistent
+  const finish = (answer: string, mode: SynthesisResult['mode']): SynthesisResult => ({
+    answer,
+    citations,
+    citationsUsed: extractUsedCitations(answer, citations),
+    passages,
+    mode,
+  });
+
   // issue #197: structured hook (MCP sampling). Best-effort like the endpoint
   // path — a refusal or timeout falls through to the extractive answer.
   if (options.llmRequestFn) {
     try {
       const answer = await options.llmRequestFn({ system, user });
-      if (answer) return { answer, citations, passages, mode: 'llm' };
+      if (answer) return finish(answer, 'llm');
     } catch {
       // Fall through to extractive.
     }
@@ -313,7 +380,7 @@ export async function synthesizeAnswer(
 
   if (options.llmFn) {
     const answer = await options.llmFn(system + user);
-    return { answer, citations, passages, mode: 'llm' };
+    return finish(answer, 'llm');
   }
 
   // issue #199: unified chat provider path. `/chat/completions` by default
@@ -337,14 +404,14 @@ export async function synthesizeAnswer(
         ...(options.onDelta ? { onDelta: options.onDelta } : {}),
         ...(options.signal ? { signal: options.signal } : {}),
       });
-      if (answer) return { answer, citations, passages, mode: 'endpoint' };
+      if (answer) return finish(answer, 'endpoint');
     } catch {
       // Fall through to extractive.
     }
   }
 
   const answer = extractAnswerFallback(query, passages);
-  return { answer, citations, passages, mode: 'extractive' };
+  return finish(answer, 'extractive');
 }
 
 /**
@@ -404,6 +471,10 @@ export async function chatTurn(opts: ChatTurnOptions): Promise<{
   answer: string;
   citations: Citation[];
   manifest: ChatSourceManifestItem[];
+  /** Which synthesis stage produced the answer ('llm'/'endpoint'/'extractive'). */
+  mode: SynthesisResult['mode'];
+  /** Citations the answer text actually mentions (issue #199 follow-up). */
+  citationsUsed: Citation[];
 }> {
   const {
     query,
@@ -506,6 +577,7 @@ export async function chatTurn(opts: ChatTurnOptions): Promise<{
     answer: synth.answer,
     citations: synth.citations,
     manifest,
+    mode: synth.mode,
   };
 
   session.turns.push(turn);
@@ -527,6 +599,8 @@ export async function chatTurn(opts: ChatTurnOptions): Promise<{
     answer: turn.answer,
     citations: turn.citations,
     manifest: turn.manifest,
+    mode: turn.mode ?? 'extractive',
+    citationsUsed: extractUsedCitations(turn.answer, turn.citations),
   };
 }
 

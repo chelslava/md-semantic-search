@@ -42,12 +42,16 @@ export const WEBUI_HTML = `<!doctype html>
   <div id="meta"></div>
   <div id="answer" hidden>
     <div class="ans-head"><span class="ans-title">Answer</span><span id="ansmode"></span>
+      <button id="chatnew" type="button" hidden title="start a fresh chat session">new chat</button>
       <button id="ansclose" type="button" aria-label="close answer">×</button></div>
+    <div id="anshistory"></div>
     <div id="answertext"></div>
     <div id="answersrc"></div>
   </div>
   <ol id="results"></ol>
-  <div id="askrow"><button id="ask" type="button" title="Grounded answer via POST /ask (needs --llm-endpoint)">✦ Ask the notes</button><span id="askmsg"></span></div>
+  <div id="askrow"><button id="ask" type="button" title="Grounded answer via POST /ask (needs --llm-endpoint)">✦ Ask the notes</button>
+    <label id="chatrow" title="multi-turn: follow-up questions reuse retrieved context (POST /ask sessionId)"><input id="chatmode" type="checkbox"> chat</label>
+    <span id="askmsg"></span></div>
 </main>
 <footer><code>POST /search</code> · <a href="/help">api</a> · mdss web ui</footer>
 </body>
@@ -107,7 +111,13 @@ li.open .snippet { max-height:none }
 #answertext { white-space:pre-wrap; overflow-wrap:break-word }
 #answersrc { margin-top:.6rem; color:var(--mut); font-size:.82rem }
 #answersrc a { color:var(--acc); text-decoration:none; cursor:pointer }
-#askrow { display:flex; gap:.7rem; align-items:center; margin-top:.9rem }
+.turn { margin:.4rem 0; padding:.45rem .6rem; border-left:2px solid var(--line); font-size:.9rem }
+.turn .tq { display:block; color:var(--acc); margin-bottom:.15rem }
+.turn .ta { display:block; white-space:pre-wrap; overflow-wrap:break-word }
+#chatnew { background:none; border:1px solid var(--line); border-radius:.4rem;
+  color:var(--mut); cursor:pointer; font-size:.75rem; padding:.15rem .5rem }
+#chatrow { display:flex; gap:.3rem; align-items:center; color:var(--mut); font-size:.85rem; cursor:pointer }
+#askrow { display:flex; gap:.9rem; align-items:center; margin-top:.9rem }
 #ask { border:1px solid var(--acc); background:var(--card); color:var(--acc);
   border-radius:.6rem; padding:.45rem .9rem; cursor:pointer; font-size:.9rem }
 #ask:disabled { opacity:.55; cursor:wait }
@@ -273,6 +283,50 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
   var ansmode = document.getElementById('ansmode');
   var askAbort = null;
 
+  // chat mode (issue #199 follow-up): persistent sessions over POST /ask.
+  // The session id survives reloads for the browser session.
+  var chatMode = document.getElementById('chatmode');
+  var chatNew = document.getElementById('chatnew');
+  var historyEl = document.getElementById('anshistory');
+  var chatTurns = [];
+  var chatSessionId = sessionStorage.getItem('mdss_chat_session') || '';
+
+  function renderChatHistory() {
+    historyEl.innerHTML = '';
+    chatTurns.forEach(function (t) {
+      var div = document.createElement('div');
+      div.className = 'turn';
+      var tq = document.createElement('span');
+      tq.className = 'tq';
+      tq.textContent = 'Q: ' + t.q;
+      var ta = document.createElement('span');
+      ta.className = 'ta';
+      ta.textContent = t.a;
+      div.appendChild(tq);
+      div.appendChild(ta);
+      historyEl.appendChild(div);
+    });
+  }
+
+  function resetChat() {
+    chatTurns = [];
+    chatSessionId = '';
+    sessionStorage.removeItem('mdss_chat_session');
+    chatNew.hidden = true;
+    historyEl.innerHTML = '';
+  }
+
+  chatNew.addEventListener('click', function () {
+    resetChat();
+    answerText.textContent = '';
+    answerSrc.innerHTML = '';
+    ansmode.textContent = '';
+  });
+
+  chatMode.addEventListener('change', function () {
+    if (!chatMode.checked) resetChat();
+  });
+
   function renderAskSources(citations) {
     answerSrc.innerHTML = '';
     if (!citations || !citations.length) return;
@@ -290,7 +344,11 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
   function handleAskFrame(evtName, data) {
     var obj;
     try { obj = JSON.parse(data); } catch (e) { return; }
-    if (evtName === 'sources') {
+    if (evtName === 'session') {
+      chatSessionId = obj.id || chatSessionId;
+      sessionStorage.setItem('mdss_chat_session', chatSessionId);
+      chatNew.hidden = false;
+    } else if (evtName === 'sources') {
       renderAskSources(obj.citations || []);
     } else if (evtName === 'delta') {
       answerText.textContent += (obj.text || '');
@@ -301,6 +359,13 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
       ansmode.textContent = obj.mode === 'extractive' ? 'extractive fallback' : 'llm';
       renderAskSources(obj.citations || []);
       askMsg.textContent = '';
+      if (obj.sessionId) {
+        chatSessionId = obj.sessionId;
+        sessionStorage.setItem('mdss_chat_session', chatSessionId);
+        chatNew.hidden = false;
+        chatTurns.push({ q: answerEl.dataset.query || '', a: obj.answer });
+        renderChatHistory();
+      }
     } else if (evtName === 'error') {
       askMsg.textContent = 'error: ' + (obj.error || 'synthesis failed');
     }
@@ -314,15 +379,22 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
     askBtn.disabled = true;
     askMsg.textContent = 'thinking…';
     answerEl.hidden = false;
+    answerEl.dataset.query = query;
     ansmode.textContent = '';
     answerText.textContent = '';
     answerSrc.innerHTML = '';
+
+    var body = { query: query, k: 5 };
+    if (chatMode.checked) {
+      if (chatSessionId) body.sessionId = chatSessionId;
+      else body.chat = true;
+    }
 
     fetch('/ask', {
       method: 'POST',
       headers: headers(),
       signal: askAbort ? askAbort.signal : undefined,
-      body: JSON.stringify({ query: query, k: 5 })
+      body: JSON.stringify(body)
     }).then(function (res) {
       if (res.status === 401) { askKey('401 — this daemon requires an API key'); throw new Error('HTTP 401'); }
       if (!res.ok) {
