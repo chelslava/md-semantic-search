@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.1.0] - 2026-11-04
 
 ### Added
 - **Issue #223** — Watch rebuilds reuse the persisted HNSW graph instead of rebuilding it from scratch: `remapHnsw` re-numbers surviving nodes onto the new chunk indexing via `chunkHash` (vector reuse is hash-keyed, so every carried edge distance stays valid), tombstones removed chunks and inserts only the new ones; a full rebuild happens only on the first run, an engine/budget switch, a corrupt sidecar, or when no top-layer survivor can anchor the entry point. Recall after a remap+insert rebuild is pinned ≥ 0.90 vs brute force by tests; RESEARCH.md §17's revisit condition (b) is closed.
@@ -469,7 +469,8 @@ set; every switch is documented in RESEARCH.md §15–§17.
 ### Added
 - Initial release: local semantic search over a folder of Markdown files.
 
-[Unreleased]: https://github.com/chelslava/md-semantic-search/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/chelslava/md-semantic-search/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/chelslava/md-semantic-search/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/chelslava/md-semantic-search/compare/v1.1.0...v2.0.0
 [0.3.0]: https://github.com/chelslava/md-semantic-search/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/chelslava/md-semantic-search/compare/v0.1.0...v0.2.0
