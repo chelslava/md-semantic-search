@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { searchIndex, loadIndex, LoadedIndex, SearchResultHit } from './search.js';
 import { tokenize } from './lexical.js';
-import { fetchTimeoutMs } from './core.js';
+import { ChatProviderId, ResolvedChat, resolveChatProvider } from './providers.js';
 
 export interface Citation {
   file: string;
@@ -67,8 +67,14 @@ export interface AskOptions {
   offline?: boolean;
   llmEndpoint?: string;
   llmModel?: string;
+  /** issue #199: chat wire format for llmEndpoint — 'openai' (default) or 'ollama'. */
+  llmProvider?: ChatProviderId;
   llmFn?: (prompt: string) => Promise<string>;
   llmRequestFn?: (req: LlmStructuredRequest) => Promise<string>;
+  /** issue #199: incremental render hook — fires per token chunk while the LLM streams. */
+  onDelta?: (delta: string) => void;
+  /** issue #199: injection seam for tests/serve; built from llmEndpoint when absent. */
+  llmChat?: ResolvedChat;
   systemPrompt?: string;
   embedFn?: any;
 }
@@ -84,8 +90,14 @@ export interface ChatTurnOptions {
   offline?: boolean;
   llmEndpoint?: string;
   llmModel?: string;
+  /** issue #199: chat wire format for llmEndpoint — 'openai' (default) or 'ollama'. */
+  llmProvider?: ChatProviderId;
   llmFn?: (prompt: string) => Promise<string>;
   llmRequestFn?: (req: LlmStructuredRequest) => Promise<string>;
+  /** issue #199: incremental render hook — fires per token chunk while the LLM streams. */
+  onDelta?: (delta: string) => void;
+  /** issue #199: injection seam for tests/serve; built from llmEndpoint when absent. */
+  llmChat?: ResolvedChat;
   systemPrompt?: string;
   embedFn?: any;
   log?: (msg: string) => void;
@@ -258,6 +270,13 @@ export async function synthesizeAnswer(
     llmRequestFn?: (req: LlmStructuredRequest) => Promise<string>;
     llmEndpoint?: string;
     llmModel?: string;
+    /** issue #199: chat wire format for llmEndpoint — 'openai' (default) or 'ollama'. */
+    llmProvider?: ChatProviderId;
+    llmChat?: ResolvedChat;
+    /** issue #199: incremental render hook — fires per token chunk while the LLM streams. */
+    onDelta?: (delta: string) => void;
+    /** Cooperative cancel (serve /ask: client disconnected mid-stream). */
+    signal?: AbortSignal;
     systemPrompt?: string;
     conversationHistory?: string;
   } = {}
@@ -297,27 +316,30 @@ export async function synthesizeAnswer(
     return { answer, citations, passages, mode: 'llm' };
   }
 
-  if (options.llmEndpoint) {
-    try {
-      const resp = await fetch(`${options.llmEndpoint}/api/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        // issue #184: a hung Ollama endpoint must fall back to the extractive
-        // answer on the timeout, not hold the request for undici's ~300s
-        signal: AbortSignal.timeout(fetchTimeoutMs()),
-        body: JSON.stringify({
-          model: options.llmModel || 'llama3',
-          prompt: system + user,
-          stream: false,
-        }),
+  // issue #199: unified chat provider path. `/chat/completions` by default
+  // (same wire format HyDE uses — llama.cpp, LM Studio, vLLM, Ollama /v1 all
+  // speak it), Ollama-native `/api/generate` under `--llm-provider ollama`.
+  // Streaming deltas flow to onDelta; the full text is assembled for the
+  // returned result. Best-effort like the old endpoint path — a refusal or
+  // idle timeout falls through to the extractive answer.
+  if (options.llmChat || options.llmEndpoint) {
+    const chat =
+      options.llmChat ??
+      resolveChatProvider({
+        provider: options.llmProvider ?? 'openai',
+        model: options.llmModel,
+        baseUrl: options.llmEndpoint,
       });
-      if (resp.ok) {
-        const data: any = await resp.json();
-        const answer = data.response || data.text || '';
-        if (answer) return { answer, citations, passages, mode: 'endpoint' };
-      }
+    try {
+      const answer = await chat.complete({
+        system,
+        user,
+        ...(options.onDelta ? { onDelta: options.onDelta } : {}),
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+      if (answer) return { answer, citations, passages, mode: 'endpoint' };
     } catch {
-      // Fallback to extractive
+      // Fall through to extractive.
     }
   }
 
@@ -339,6 +361,9 @@ export async function askQuestion(opts: AskOptions): Promise<SynthesisResult> {
     llmRequestFn,
     llmEndpoint,
     llmModel,
+    llmProvider,
+    llmChat,
+    onDelta,
     systemPrompt,
     embedFn,
   } = opts;
@@ -363,6 +388,9 @@ export async function askQuestion(opts: AskOptions): Promise<SynthesisResult> {
     llmRequestFn,
     llmEndpoint,
     llmModel,
+    llmProvider,
+    llmChat,
+    onDelta,
     systemPrompt,
   });
 }
@@ -387,6 +415,9 @@ export async function chatTurn(opts: ChatTurnOptions): Promise<{
     llmRequestFn,
     llmEndpoint,
     llmModel,
+    llmProvider,
+    llmChat,
+    onDelta,
     systemPrompt,
     embedFn,
     log = () => {},
@@ -460,6 +491,9 @@ export async function chatTurn(opts: ChatTurnOptions): Promise<{
     llmRequestFn,
     llmEndpoint,
     llmModel,
+    llmProvider,
+    llmChat,
+    onDelta,
     systemPrompt,
     conversationHistory,
   });

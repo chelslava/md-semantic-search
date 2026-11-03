@@ -8,6 +8,7 @@ import { buildIndex } from '../dist/indexer.js';
 import {
   askQuestion, synthesizeAnswer, extractAnswerFallback,
   chatTurn, saveChatSession, loadChatSession, listChatSessions,
+  DEFAULT_RAG_SYSTEM_PROMPT,
 } from '../dist/rag.js';
 
 function safeRm(p) {
@@ -406,5 +407,155 @@ test('rag: hung Ollama endpoint falls back to the extractive answer on the fetch
     blackhole.close();
     blackhole.closeAllConnections?.();
     safeRm(root);
+  }
+});
+
+// ── issue #199: unified OpenAI-compatible chat provider + SSE streaming ──
+
+/** Local OpenAI-compatible SSE chat server; returns { url, calls, close }. */
+async function startFakeOpenAiChat(deltas) {
+  const calls = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      calls.push({ url: req.url, headers: req.headers, body: JSON.parse(body || '{}') });
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      for (const d of deltas) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: d } }] })}\n\n`);
+      }
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  return {
+    calls,
+    url: `http://127.0.0.1:${server.address().port}`,
+    close: () => { server.close(); server.closeAllConnections?.(); },
+  };
+}
+
+/** Local Ollama-native NDJSON server; returns { url, calls, close }. */
+async function startFakeOllamaGenerate(deltas) {
+  const calls = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      calls.push({ url: req.url, headers: req.headers, body: JSON.parse(body || '{}') });
+      res.writeHead(200, { 'content-type': 'application/x-ndjson' });
+      for (const d of deltas) res.write(`${JSON.stringify({ response: d, done: false })}\n`);
+      res.write(`${JSON.stringify({ done: true })}\n`);
+      res.end();
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  return {
+    calls,
+    url: `http://127.0.0.1:${server.address().port}`,
+    close: () => { server.close(); server.closeAllConnections?.(); },
+  };
+}
+
+test('rag: synthesizeAnswer streams via the openai chat path by default (issue #199)', async () => {
+  const fake = await startFakeOpenAiChat(['Hel', 'lo, ', 'notes']);
+  try {
+    const deltas = [];
+    const result = await synthesizeAnswer('q', [
+      { file: 'a.md', heading: 'H', title: 'T', score: 0.9, cosine: 0.9, snippet: 's' },
+    ], {
+      llmEndpoint: fake.url,
+      llmModel: 'qwen2.5',
+      onDelta: (d) => deltas.push(d),
+    });
+    assert.equal(result.mode, 'endpoint');
+    assert.equal(result.answer, 'Hello, notes');
+    assert.deepEqual(deltas, ['Hel', 'lo, ', 'notes'], 'deltas arrive before the promise settles');
+    // same wire format HyDE already speaks: {base}/chat/completions + messages split
+    assert.ok(fake.calls[0].url.endsWith('/chat/completions'), `got ${fake.calls[0].url}`);
+    assert.equal(fake.calls[0].body.messages[0].role, 'system');
+    assert.equal(fake.calls[0].body.messages[0].content, DEFAULT_RAG_SYSTEM_PROMPT);
+    assert.equal(fake.calls[0].body.messages[1].role, 'user');
+    assert.ok(fake.calls[0].body.messages[1].content.includes('Context:'));
+    assert.ok(fake.calls[0].body.messages[1].content.includes('Question: q'));
+    assert.equal(fake.calls[0].body.stream, true);
+    assert.equal(fake.calls[0].body.model, 'qwen2.5');
+  } finally {
+    fake.close();
+  }
+});
+
+test('rag: --llm-provider ollama keeps the legacy /api/generate wire format (issue #199)', async () => {
+  const fake = await startFakeOllamaGenerate(['leg', 'acy']);
+  try {
+    const deltas = [];
+    const result = await synthesizeAnswer('my question', [
+      { file: 'a.md', heading: 'H', title: 'T', score: 0.9, cosine: 0.9, snippet: 's' },
+    ], {
+      llmEndpoint: fake.url,
+      llmProvider: 'ollama',
+      llmModel: 'llama3',
+      onDelta: (d) => deltas.push(d),
+    });
+    assert.equal(result.mode, 'endpoint');
+    assert.equal(result.answer, 'legacy');
+    assert.deepEqual(deltas, ['leg', 'acy']);
+    assert.ok(fake.calls[0].url.endsWith('/api/generate'));
+    assert.equal(fake.calls[0].body.stream, true, 'upgraded from stream:false to streaming');
+    assert.equal(fake.calls[0].body.model, 'llama3');
+    // the single-string prompt stays byte-identical to the pre-#199 format
+    const user = fake.calls[0].body.prompt;
+    assert.ok(user.startsWith(DEFAULT_RAG_SYSTEM_PROMPT));
+    assert.ok(user.includes('Context:'));
+    assert.ok(user.includes('Question: my question'));
+  } finally {
+    fake.close();
+  }
+});
+
+test('rag: chat endpoint failure still degrades to the extractive answer (issue #199)', async () => {
+  const result = await synthesizeAnswer('rotate tokens', [
+    {
+      file: 'auth.md', heading: 'Tokens', title: 'Auth', score: 0.9, cosine: 0.9,
+      snippet: 'API tokens must be rotated every 90 days to maintain compliance.',
+    },
+  ], {
+    llmEndpoint: 'http://127.0.0.1:1/v1', // nothing listens there — connect fails fast
+  });
+  assert.equal(result.mode, 'extractive');
+  assert.ok(result.answer.includes('API tokens must be rotated'));
+});
+
+test('rag: llmChat injection seam bypasses endpoint construction (issue #199)', async () => {
+  const { resolveChatProvider } = await import('../dist/providers.js');
+  const seen = [];
+  const fake = await startFakeOpenAiChat(['injected']);
+  const chat = resolveChatProvider({
+    provider: 'openai', baseUrl: fake.url,
+    fetchImpl: async (url) => {
+      seen.push(url);
+      const { ReadableStream: RS } = await import('node:stream/web');
+      const enc = new TextEncoder();
+      const stream = new RS({
+        start(c) {
+          for (const d of ['data: {"choices":[{"delta":{"content":"injected"}}]}\n\n', 'data: [DONE]\n\n']) {
+            c.enqueue(enc.encode(d));
+          }
+          c.close();
+        },
+      });
+      return { ok: true, status: 200, body: stream, text: async () => '' };
+    },
+  });
+  try {
+    const result = await synthesizeAnswer('q', [
+      { file: 'a.md', heading: 'H', title: 'T', score: 0.9, cosine: 0.9, snippet: 's' },
+    ], { llmChat: chat });
+    assert.equal(result.mode, 'endpoint');
+    assert.equal(result.answer, 'injected');
+    assert.equal(seen.length, 1);
+  } finally {
+    fake.close();
   }
 });

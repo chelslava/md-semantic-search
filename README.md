@@ -409,6 +409,17 @@ mdss chat --db ./notes --session my-session-id "What about database failover?"
 ```
 
 - **Offline Extractive Synthesis**: Zero-dependency default extracts salient factual sentences with strict `[file › heading]` source provenance.
+- **OpenAI-compatible chat with SSE streaming** (issue #199): with `--llm-endpoint`, synthesis speaks the `/chat/completions` lingua franca — llama.cpp, LM Studio, vLLM, and Ollama (`.../v1`) all work **without code** — and answers **stream token-by-token** into `mdss ask`, `mdss chat`, the TUI RAG panel (`mdss search -i --rag`), and the web UI (`mdss serve` → ✦ Ask): the first token renders in milliseconds instead of after the whole generation.
+  ```bash
+  # llama.cpp / LM Studio / vLLM (OpenAI-compatible):
+  mdss ask --db ./notes "What is the token expiration policy?" \
+    --llm-endpoint http://127.0.0.1:8080/v1 --llm-model qwen2.5
+  # Ollama's OpenAI-compatible surface:
+  mdss chat --db ./notes --llm-endpoint http://127.0.0.1:11434/v1 --resume
+  # Ollama's native API (pre-#199 wire format, also streamed):
+  mdss ask --db ./notes "..." --llm-endpoint http://127.0.0.1:11434 --llm-provider ollama
+  ```
+  An endpoint that does not answer `/chat/completions` (404/405) is retried once on the Ollama-native `/api/generate`, so existing Ollama-root setups keep working with default flags; `--llm-provider` pins the wire format explicitly. A hung endpoint fails on the **idle timeout** (`MDSS_FETCH_TIMEOUT_MS` — armed on connect, reset on every token, issue #184), so a long generation is never killed mid-answer, and any failure degrades to the extractive synthesis.
 - **Persistent Sessions**: Multi-turn sessions are stored in `<indexDir>/sessions/<id>.json` preserving full conversation turns, retrieved chunk provenance manifests (file, heading, exact line numbers, chunk hashes), and model metadata.
 - **Context Carry-Over**: Follow-up turns re-rank and expand query tokens using prior conversational context.
 - **Interactive REPL Commands**: `/session` (info), `/sources` (manifest of last turn), `/help`, `/exit`.
@@ -445,6 +456,17 @@ curl localhost:8747/health          # → {ok, chunks, model, dim, built, watchi
 "rerank"?: bool}` and replies `{"results": [{file, title, heading, cosine,
 score, matches, snippet, rerankScore?}]}`. The CLI's `search --json` prints
 the same hit shape.
+
+**`POST /ask` — streamed grounded QA over SSE** (issue #199): start the daemon
+with `--llm-endpoint` (chat backend — llama.cpp, LM Studio, vLLM, Ollama `.../v1`)
+and `{"query": string, "k"?: number}` answers as `text/event-stream` frames:
+`sources` (citations from retrieval) → `delta` (`{"text": "…"}` per token) →
+`done` (`{answer, mode, citations}`; `mode` is `endpoint` for the LLM answer or
+`extractive` when it degraded). The same fairness gates as `/search` apply —
+rate limit `429`, concurrency `503` — and an LLM call holds one concurrency
+slot for its whole generation. Without `--llm-endpoint` the route answers
+`400` instead of silently degrading. The built-in web UI ships an
+**✦ Ask the notes** button that consumes this stream.
 
 Or from a script / editor extension:
 

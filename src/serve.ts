@@ -10,11 +10,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { buildIndex } from './indexer.js';
 import { loadIndex, searchIndex } from './search.js';
+import { synthesizeAnswer } from './rag.js';
 import { walkMarkdown, assertSafePath, getDocLines, ModelDescriptor } from './core.js';
 import { createFileWatcher, FileWatcher, classifyFsError, readWithRetry } from './watcher.js';
 import { WEBUI_HTML, WEBUI_JS, WEBUI_CSS } from './webui.js';
 import { handleMcpRequest, createClientChannel } from './mcp.js';
 import { findRelatedNotes } from './wikilinks.js';
+import { ChatProviderId } from './providers.js';
 
 const DEFAULT_PORT = 8747;
 const DEFAULT_HOST = '127.0.0.1';
@@ -45,6 +47,11 @@ export interface ServeState {
   sseConnections?: number;
   /** issue #111: serve the built-in web UI at `/` (default on). */
   ui?: boolean;
+  /** issue #199: chat endpoint backing POST /ask — absent → /ask returns 400. */
+  llmEndpoint?: string;
+  llmModel?: string;
+  llmProvider?: ChatProviderId;
+  systemPrompt?: string;
   /** issue #123: mount the Streamable HTTP MCP transport at /mcp (default off). */
   mcp?: boolean;
   mcpSessionId?: string;
@@ -88,6 +95,11 @@ export interface CreateServeOptions {
   ui?: boolean;
   /** issue #123: mount Streamable HTTP MCP at /mcp (default off; stdio stays default). */
   mcp?: boolean;
+  /** issue #199: chat endpoint for POST /ask SSE answer synthesis. */
+  llmEndpoint?: string;
+  llmModel?: string;
+  llmProvider?: ChatProviderId;
+  systemPrompt?: string;
   embedFn?: any;
   rerankFn?: any;
   log?: (msg: string) => void;
@@ -275,6 +287,10 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     _testFs,
     mcp = false,
     ui = true,
+    llmEndpoint,
+    llmModel,
+    llmProvider,
+    systemPrompt,
     embedFn,
     rerankFn,
     log = () => {},
@@ -302,6 +318,10 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     healthPublic,
     ui: ui !== false,
     mcp,
+    ...(llmEndpoint ? { llmEndpoint } : {}),
+    ...(llmModel ? { llmModel } : {}),
+    ...(llmProvider ? { llmProvider } : {}),
+    ...(systemPrompt ? { systemPrompt } : {}),
     allowedHosts,
     corsOrigins,
     limiter: new ServeLimiter(rateLimit, DEFAULT_RATE_BURST, maxConcurrency),
@@ -966,6 +986,115 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     return;
   }
 
+  // issue #199: grounded QA over SSE — a `sources` frame as soon as retrieval
+  // settles, streamed `delta` frames while the LLM answers, one `done` frame
+  // with the assembled result. Same fairness gates as /search (an LLM call
+  // holds a concurrency slot for its whole generation). Requires --llm-endpoint:
+  // over HTTP a missing chat backend is a 400, never a silent extractive degrade.
+  if (req.method === 'POST' && url.pathname === '/ask') {
+    const limited = state.limiter?.gate(req.socket.remoteAddress || 'unknown');
+    if (limited) {
+      res.setHeader('retry-after', String(limited.retryAfterSec));
+      json(res, 429, { error: 'rate limit exceeded — slow down', retryAfterSec: limited.retryAfterSec });
+      return;
+    }
+    if (!state.llmEndpoint) {
+      json(res, 400, { error: 'POST /ask requires an LLM chat endpoint — start mdss serve with --llm-endpoint' });
+      return;
+    }
+
+    const declared = req.headers['content-length'];
+    if (declared !== undefined) {
+      const n = Number(declared);
+      if (!Number.isInteger(n) || n < 0 || n > MAX_BODY_BYTES) {
+        json(res, 413, { error: `payload too large (limit ${MAX_BODY_BYTES} bytes)` });
+        return;
+      }
+    }
+    let body = '';
+    let tooLarge = false;
+    for await (const chunk of req) {
+      body += chunk;
+      if (body.length > MAX_BODY_BYTES) {
+        tooLarge = true;
+        break;
+      }
+    }
+    if (tooLarge) {
+      json(res, 413, { error: `payload too large (limit ${MAX_BODY_BYTES} bytes)` });
+      req.resume();
+      return;
+    }
+    let payload: Record<string, any>;
+    try {
+      payload = body ? JSON.parse(body) : {};
+    } catch (e: any) {
+      json(res, 400, { error: `invalid JSON body: ${e.message}` });
+      return;
+    }
+    const query = typeof payload.query === 'string' ? payload.query.trim() : '';
+    if (!query) {
+      json(res, 400, { error: 'missing "query" string in JSON body' });
+      return;
+    }
+    if (query.length > 2048) {
+      json(res, 400, { error: 'query exceeds maximum length of 2048 characters' });
+      return;
+    }
+    const k = Number.isInteger(payload.k) && payload.k > 0 ? payload.k : 5;
+
+    const release = state.limiter ? await state.limiter.acquireSlot() : null;
+    if (!release) {
+      res.setHeader('retry-after', '1');
+      json(res, 503, { error: 'server busy — search concurrency cap reached, queue full' });
+      return;
+    }
+
+    // Client disconnect must tear down the in-flight LLM call, not just stop
+    // writing frames — the slot releases in `finally` either way.
+    const clientAbort = new AbortController();
+    res.on('close', () => clientAbort.abort());
+    res.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-store',
+      'connection': 'keep-alive',
+    });
+    const sse = (event: string, data: unknown) => {
+      if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+    try {
+      const passages = await searchIndex({
+        loaded: state.loaded,
+        cacheDir: state.cacheDir,
+        query,
+        k,
+        offline: state.offline,
+        embedFn: state.embedFn,
+      });
+      sse('sources', {
+        citations: passages.map((p) => ({ file: p.file, heading: p.heading, score: p.score })),
+      });
+      const result = await synthesizeAnswer(query, passages, {
+        llmEndpoint: state.llmEndpoint,
+        ...(state.llmModel ? { llmModel: state.llmModel } : {}),
+        ...(state.llmProvider ? { llmProvider: state.llmProvider } : {}),
+        ...(state.systemPrompt ? { systemPrompt: state.systemPrompt } : {}),
+        onDelta: (d) => sse('delta', { text: d }),
+        signal: clientAbort.signal,
+      });
+      sse('done', { answer: result.answer, mode: result.mode, citations: result.citations });
+    } catch (e: any) {
+      // issue #182 discipline: raw errors can carry absolute paths — the
+      // frame stays generic, details go to the server log
+      process.stderr.write(`serve: /ask failed: ${e?.stack || e}\n`);
+      sse('error', { error: 'answer synthesis failed' });
+    } finally {
+      release();
+      res.end();
+    }
+    return;
+  }
+
   if (req.method === 'GET' && url.pathname === '/doc') {
     const file = url.searchParams.get('file');
     if (!file) {
@@ -1137,6 +1266,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       name: 'mdss serve',
       endpoints: [
         { method: 'POST', path: '/search', body: '{ "query": "...", "k": 6, "semanticOnly": false, "rerank": false }' },
+        { method: 'POST', path: '/ask', body: '{ "query": "...", "k": 5 } — SSE: sources/delta/done frames (needs --llm-endpoint, issue #199)' },
         { method: 'GET', path: '/doc?file=...&fromLine=1&maxLines=50' },
         { method: 'POST', path: '/related', body: '{ "file": "...", "k": 10, "semantic": true }' },
         { method: 'GET', path: '/health' },

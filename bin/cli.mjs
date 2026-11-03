@@ -118,6 +118,10 @@ function parseArgs(argv) {
     else if (a === '--auto-summarize') opts.autoSummarize = true;
     else if (a === '--llm-endpoint') opts.llmEndpoint = nextValue(argv, ++i, a);
     else if (a === '--llm-model') opts.llmModel = nextValue(argv, ++i, a);
+    else if (a === '--llm-provider') {
+      opts.llmProvider = nextValue(argv, ++i, a);
+      if (!['openai', 'ollama'].includes(opts.llmProvider)) die(`unknown --llm-provider "${opts.llmProvider}" - use openai|ollama`);
+    }
     else if (a === '--system-prompt') opts.systemPrompt = nextValue(argv, ++i, a);
     else if (a === '--session') opts.session = nextValue(argv, ++i, a);
     else if (a === '--resume') opts.resume = true;
@@ -211,6 +215,7 @@ const KNOWN_CONFIG_KEYS = new Set([
   'format', 'noVectors', 'no-vectors', 'output', 'workers', 'dimensions', 'dim', 'ann', 'nprobe', 'graphBoost', 'graph-boost', 'filter', 'quantize',
   'vault', 'vaults', 'rag', 'autoTag', 'auto-tag', 'autoSummarize', 'auto-summarize',
   'llmEndpoint', 'llm-endpoint', 'llmModel', 'llm-model', 'systemPrompt', 'system-prompt',
+  'llmProvider', 'llm-provider',
   'session', 'resume',
   'completions', 'open', 'dry-run', 'fix', 'yes', 'no-ui', 'noUi',
   'noQueryCache', 'no-query-cache',
@@ -226,7 +231,7 @@ const CONFIG_NETWORK_KEYS = new Set([
   'allowedHosts', 'allowed-hosts', 'corsOrigin', 'cors-origin',
   'rateLimit', 'rate-limit', 'maxConcurrency', 'max-concurrency',
   'healthPublic', 'health-public', 'mcp', 'llmEndpoint', 'llm-endpoint',
-  'llmModel', 'llm-model', 'embedder', 'embedder-model', 'embedder-base-url',
+  'llmModel', 'llm-model', 'llmProvider', 'llm-provider', 'embedder', 'embedder-model', 'embedder-base-url',
   'embedder-key-file', 'embedderModel', 'embedderBaseUrl', 'embedderKeyFile'
 ]);
 
@@ -444,6 +449,13 @@ Options:
                       ONE embed total; issue #125) or "hyde" (LLM-generated
                       passage via --llm-endpoint; degrades silently without it).
   --expand-passages <n>  prf feedback pool size (default 3, max 20).
+  --llm-endpoint <u>  OpenAI-compatible chat endpoint for ask/chat/serve /ask
+                      and --expand hyde: POST {base}/chat/completions
+                      (llama.cpp, LM Studio, vLLM, Ollama at .../v1).
+  --llm-provider <p>  Chat wire format for --llm-endpoint: "openai" (default,
+                      SSE streaming) or "ollama" (native /api/generate,
+                      NDJSON streaming) (issue #199).
+  --llm-model <m>     Provider-side chat model for --llm-endpoint.
   --open [N]          search: open the top (or Nth) hit in your editor at its
                       startLine — MDSS_EDITOR/VISUAL/EDITOR, then VS Code
                       --goto, then the GUI opener (issue #110). With --json on
@@ -462,6 +474,9 @@ Examples:
   mdss search --db ./docs "incident runbook" --path "docs/**" --since 2026-01-01
   mdss serve  --db ./docs --port 8747 --watch
   curl -X POST localhost:8747/search -d '{"query":"rotate api token","k":5}'
+  mdss ask    --db ./docs "how do tokens expire?" \\
+              --llm-endpoint http://127.0.0.1:8080/v1 --llm-model qwen2.5
+  mdss chat   --db ./docs --llm-endpoint http://127.0.0.1:11434/v1 --resume
 `;
 
 function formatDuration(sec) {
@@ -1168,7 +1183,29 @@ async function cmdTui(opts) {
     graphBoost: typeof opts.graphBoost === 'number' ? opts.graphBoost : undefined,
     rerank: !!opts.rerank,
     rag: !!opts.rag,
+    // issue #199: the RAG panel streams a real LLM answer when an endpoint
+    // is configured; without one it stays on the extractive fallback.
+    llmEndpoint: opts.llmEndpoint,
+    llmModel: opts.llmModel,
+    llmProvider: opts.llmProvider,
+    systemPrompt: opts.systemPrompt,
   });
+}
+
+/**
+ * issue #199: finish the answer render after synthesis. When LLM deltas
+ * already went to the terminal, only trailing whitespace is added; when the
+ * stream died mid-way and synthesis fell back to extractive, the fallback
+ * answer is printed under an explicit notice so the two texts can't blur.
+ */
+function finishAnswerRender(streamedChars, result, end = '\n\n') {
+  if (streamedChars === 0) {
+    process.stdout.write(`\n${result.answer}${end}`);
+  } else if (result.mode === 'endpoint') {
+    process.stdout.write(end);
+  } else {
+    process.stdout.write(`\n\n[llm stream interrupted — extractive fallback:]\n\n${result.answer}${end}`);
+  }
 }
 
 async function cmdAsk(opts) {
@@ -1184,6 +1221,7 @@ async function cmdAsk(opts) {
 
   if (opts.llmEndpoint) warnDataEgress('--llm-endpoint', opts.llmEndpoint);
   const { askQuestion } = await import('../dist/rag.js');
+  let streamedChars = 0;
   const result = await askQuestion({
     query,
     indexDir,
@@ -1193,6 +1231,10 @@ async function cmdAsk(opts) {
     ...(embedderOverrides.embedFn ? { embedFn: embedderOverrides.embedFn } : {}),
     llmEndpoint: opts.llmEndpoint,
     llmModel: opts.llmModel,
+    llmProvider: opts.llmProvider,
+    // issue #199: incremental render — first token lands immediately. JSON
+    // mode stays a single machine-readable write.
+    ...(opts.json ? {} : { onDelta: (d) => { streamedChars += d.length; process.stdout.write(d); } }),
     systemPrompt: opts.systemPrompt,
   });
 
@@ -1201,7 +1243,7 @@ async function cmdAsk(opts) {
     return;
   }
 
-  process.stdout.write(`\n${result.answer}\n\n`);
+  finishAnswerRender(streamedChars, result);
   if (result.citations && result.citations.length > 0) {
     process.stdout.write('Sources:\n');
     for (const c of result.citations) {
@@ -1247,6 +1289,7 @@ async function cmdChat(opts) {
   const query = opts._.join(' ').trim();
   // If one-shot query provided as argument:
   if (query) {
+    let streamedChars = 0;
     const res = await chatTurn({
       session,
       query,
@@ -1258,6 +1301,8 @@ async function cmdChat(opts) {
       ...(embedderOverrides.embedFn ? { embedFn: embedderOverrides.embedFn } : {}),
       llmEndpoint: opts.llmEndpoint,
       llmModel: opts.llmModel,
+      llmProvider: opts.llmProvider,
+      ...(opts.json ? {} : { onDelta: (d) => { streamedChars += d.length; process.stdout.write(d); } }),
       systemPrompt: opts.systemPrompt,
     });
 
@@ -1266,7 +1311,7 @@ async function cmdChat(opts) {
       return;
     }
 
-    process.stdout.write(`\n${res.answer}\n\n`);
+    finishAnswerRender(streamedChars, res);
     if (res.citations && res.citations.length > 0) {
       process.stdout.write('Sources:\n');
       for (const c of res.citations) {
@@ -1330,6 +1375,7 @@ async function cmdChat(opts) {
       }
 
       try {
+        let streamedChars = 0;
         const res = await chatTurn({
           session,
           query: line,
@@ -1341,10 +1387,14 @@ async function cmdChat(opts) {
           ...(embedderOverrides.embedFn ? { embedFn: embedderOverrides.embedFn } : {}),
           llmEndpoint: opts.llmEndpoint,
           llmModel: opts.llmModel,
+          llmProvider: opts.llmProvider,
+          // issue #199: REPL deltas stream as they arrive; session/history
+          // persistence still happens on the complete answer only.
+          onDelta: (d) => { streamedChars += d.length; process.stdout.write(d); },
           systemPrompt: opts.systemPrompt,
         });
 
-        process.stdout.write(`\n${res.answer}\n`);
+        finishAnswerRender(streamedChars, res, '\n');
         if (res.citations && res.citations.length > 0) {
           process.stdout.write('\nSources:\n');
           for (const c of res.citations) {
@@ -1566,12 +1616,21 @@ async function cmdServe(opts) {
   // Refuse to serve the whole knowledge base to the network unauthenticated (issue #121).
   validateBindSecurity({ host, hasApiKey: !!apiKey, allowUnsecured: !!opts.allowUnsecured });
 
+  // POST /ask egress (issue #199): the daemon forwards queries to the chat
+  // endpoint — same disclosure gate as the CLI ask/chat paths.
+  if (opts.llmEndpoint) warnDataEgress('--llm-endpoint', opts.llmEndpoint);
+
   const { server, state, close } = await createServe({
     db, indexDir, cacheDir,
     modelName: embedderOverrides.modelName || opts.model || DEFAULT_MODEL,
     ignore: opts.ignore,
     offline: resolveOffline(opts),
     ...(embedderOverrides.embedFn ? { embedFn: embedderOverrides.embedFn } : {}),
+    // issue #199: chat endpoint for POST /ask SSE synthesis.
+    ...(opts.llmEndpoint ? { llmEndpoint: opts.llmEndpoint } : {}),
+    ...(opts.llmModel ? { llmModel: opts.llmModel } : {}),
+    ...(opts.llmProvider ? { llmProvider: opts.llmProvider } : {}),
+    ...(opts.systemPrompt ? { systemPrompt: opts.systemPrompt } : {}),
     watch: !!opts.watch,
     watchInterval: opts.watchInterval,
     watchDelay: opts.watchDelay,
@@ -1622,6 +1681,7 @@ async function cmdServe(opts) {
     log(`  index: ${idx.chunks.length} chunks · model ${state.loaded.model.id}` +
       (state.watching ? ' · watching for changes' : ''));
     log(`  POST /search  {"query": "...", "k": 6}`);
+    if (state.llmEndpoint) log(`  POST /ask     {"query": "...", "k": 5} — SSE answer streams via ${state.llmEndpoint}`);
     log(`  GET  /health`);
     if (!isLoopbackHost(host) && !state.apiKey) {
       log('');

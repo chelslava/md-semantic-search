@@ -2,8 +2,9 @@ import readline from 'node:readline';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { loadIndex, searchIndex, SearchResultHit } from './search.js';
-import { extractAnswerFallback } from './rag.js';
+import { extractAnswerFallback, synthesizeAnswer } from './rag.js';
 import { parseFilter, FilterNode } from './filter.js';
+import { ChatProviderId } from './providers.js';
 
 export interface TuiOptions {
   indexDir: string;
@@ -24,6 +25,11 @@ export interface TuiOptions {
   rerank?: boolean;
   rerankPool?: number;
   rag?: boolean;
+  /** issue #199: stream a real LLM answer in the RAG panel when configured. */
+  llmEndpoint?: string;
+  llmModel?: string;
+  llmProvider?: ChatProviderId;
+  systemPrompt?: string;
   embedFn?: any;
   rerankFn?: any;
   debounceMs?: number;
@@ -110,6 +116,49 @@ export async function runTui(opts: TuiOptions): Promise<SearchResultHit | null> 
 
   let showRag = Boolean(opts.rag);
 
+  // issue #199: streaming RAG synthesis state. One run per query — deltas
+  // patch `ragText` and a throttled render repaints the panel mid-stream.
+  let ragText: string | null = null;
+  let ragKey = '';
+  let ragBusy = false;
+  let ragRenderTimer: NodeJS.Timeout | null = null;
+  const scheduleRagRender = () => {
+    if (ragRenderTimer) return;
+    ragRenderTimer = setTimeout(() => {
+      ragRenderTimer = null;
+      render();
+    }, 50);
+    ragRenderTimer.unref?.();
+  };
+  const maybeStartRag = () => {
+    if (!showRag || !opts.llmEndpoint || ragBusy) return;
+    const q = query.trim();
+    if (!q || q === ragKey) return;
+    ragKey = q;
+    ragBusy = true;
+    ragText = null;
+    synthesizeAnswer(q, results, {
+      llmEndpoint: opts.llmEndpoint,
+      llmModel: opts.llmModel,
+      llmProvider: opts.llmProvider,
+      systemPrompt: opts.systemPrompt,
+      onDelta: (d) => {
+        ragText = (ragText ?? '') + d;
+        scheduleRagRender();
+      },
+    })
+      .then((synth) => {
+        ragText = synth.answer;
+      })
+      .catch(() => {
+        ragText = extractAnswerFallback(q, results);
+      })
+      .finally(() => {
+        ragBusy = false;
+        scheduleRagRender();
+      });
+  };
+
   const render = () => {
     const rows = process.stdout.rows || 24;
     const cols = process.stdout.columns || 80;
@@ -164,8 +213,9 @@ export async function runTui(opts: TuiOptions): Promise<SearchResultHit | null> 
 
     // Render Preview or RAG synthesis
     if (showRag) {
+      maybeStartRag();
       buf += `\x1b[1m--- Grounded Answer Synthesis & Citations ---\x1b[0m\n`;
-      const answer = extractAnswerFallback(query, results);
+      const answer = ragText ?? extractAnswerFallback(query, results);
       const answerLines = answer.split('\n');
       for (let i = 0; i < previewHeight; i++) {
         if (i < answerLines.length) {
@@ -214,6 +264,10 @@ export async function runTui(opts: TuiOptions): Promise<SearchResultHit | null> 
 
     const cleanupTui = () => {
       process.stdout.removeListener('resize', onResize);
+      if (ragRenderTimer) {
+        clearTimeout(ragRenderTimer);
+        ragRenderTimer = null;
+      }
       if (process.stdin.isRaw) {
         process.stdin.setRawMode(false);
       }

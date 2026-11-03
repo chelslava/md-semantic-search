@@ -15,7 +15,8 @@ If you discover a security vulnerability in `md-semantic-search`, please report 
 | Opt-in | What leaves the machine | Where to | How to stay local |
 |---|---|---|---|
 | `--embedder openai` (or a non-loopback `--embedder-base-url`, incl. `OLLAMA_HOST`) | request texts — queries and note passages — as embedding input | the configured embeddings endpoint (default `https://api.openai.com/v1/embeddings`) | omit `--embedder` (local transformers.js), or point the embedder at a loopback URL (`http://127.0.0.1:11434` Ollama) |
-| `mdss ask --llm-endpoint` / `mdss chat --llm-endpoint` / `--expand hyde` | full RAG context blocks (note contents) + the question, assembled into one prompt; note the documented prompt-injection surface — the LLM receives note text verbatim | the configured chat endpoint (Ollama `/api/generate` or any OpenAI-compatible endpoint) | omit `--llm-endpoint` (extractive answers), or use a loopback endpoint (local Ollama/llama.cpp) |
+| `mdss ask --llm-endpoint` / `mdss chat --llm-endpoint` / `--expand hyde` | full RAG context blocks (note contents) + the question, assembled into one prompt; note the documented prompt-injection surface — the LLM receives note text verbatim | the configured chat endpoint (Ollama `/api/generate`, or any OpenAI-compatible endpoint via `/chat/completions`; wire format pinned by `--llm-provider`, issue #199) | omit `--llm-endpoint` (extractive answers), or use a loopback endpoint (local Ollama/llama.cpp) |
+| `mdss serve --llm-endpoint` → `POST /ask` (issue #199) | same RAG context blocks + the question, for every `/ask` request any API client (or the built-in web UI) makes | the configured chat endpoint — the daemon proxies the synthesis, so the egress choice is the operator's, not the querying client's | start `serve` without `--llm-endpoint` (route answers `400`) |
 
 Behavior:
 

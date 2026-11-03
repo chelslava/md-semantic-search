@@ -35,12 +35,19 @@ export const WEBUI_HTML = `<!doctype html>
   </searchbox>
   <filters>
     <input id="f-tag"   placeholder="tag">
-    <input id="f-type"   placeholder="type">
+    <input id="f-type"  placeholder="type">
     <input id="f-status" placeholder="status">
     <input id="f-limit"  type="number" min="1" max="50" placeholder="max/file">
   </filters>
   <div id="meta"></div>
+  <div id="answer" hidden>
+    <div class="ans-head"><span class="ans-title">Answer</span><span id="ansmode"></span>
+      <button id="ansclose" type="button" aria-label="close answer">×</button></div>
+    <div id="answertext"></div>
+    <div id="answersrc"></div>
+  </div>
   <ol id="results"></ol>
+  <div id="askrow"><button id="ask" type="button" title="Grounded answer via POST /ask (needs --llm-endpoint)">✦ Ask the notes</button><span id="askmsg"></span></div>
 </main>
 <footer><code>POST /search</code> · <a href="/help">api</a> · mdss web ui</footer>
 </body>
@@ -90,6 +97,21 @@ li.open .snippet { max-height:none }
 #authbar { display:flex; gap:.5rem; align-items:center; margin-bottom:.6rem;
   padding:.5rem .7rem; border:1px dashed var(--line); border-radius:.6rem }
 #authbar[hidden] { display:none }
+#answer { border:1px solid var(--line); background:var(--card); border-radius:.7rem;
+  padding:.8rem .95rem; margin:.8rem 0 0 }
+.ans-head { display:flex; align-items:center; gap:.6rem; margin-bottom:.4rem }
+.ans-title { font-weight:600 }
+#ansmode { color:var(--mut); font-size:.78rem }
+#ansclose { margin-left:auto; background:none; border:none; color:var(--mut);
+  cursor:pointer; font-size:1rem; line-height:1 }
+#answertext { white-space:pre-wrap; overflow-wrap:break-word }
+#answersrc { margin-top:.6rem; color:var(--mut); font-size:.82rem }
+#answersrc a { color:var(--acc); text-decoration:none; cursor:pointer }
+#askrow { display:flex; gap:.7rem; align-items:center; margin-top:.9rem }
+#ask { border:1px solid var(--acc); background:var(--card); color:var(--acc);
+  border-radius:.6rem; padding:.45rem .9rem; cursor:pointer; font-size:.9rem }
+#ask:disabled { opacity:.55; cursor:wait }
+#askmsg { color:var(--mut); font-size:.82rem }
 footer { margin-top:2rem; color:var(--mut); font-size:.8rem }
 `;
 
@@ -239,6 +261,106 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
       items[i].scrollIntoView({ block: 'nearest' });
     }
   }
+
+  // ── Ask the notes (issue #199): POST /ask → SSE sources/delta/done frames.
+  // EventSource can't POST, so the stream is read through a fetch reader with
+  // the same minimal frame split the server writes (event:/data:, blank line end).
+  var askBtn = document.getElementById('ask');
+  var askMsg = document.getElementById('askmsg');
+  var answerEl = document.getElementById('answer');
+  var answerText = document.getElementById('answertext');
+  var answerSrc = document.getElementById('answersrc');
+  var ansmode = document.getElementById('ansmode');
+  var askAbort = null;
+
+  function renderAskSources(citations) {
+    answerSrc.innerHTML = '';
+    if (!citations || !citations.length) return;
+    var label = document.createElement('div');
+    label.textContent = 'Sources:';
+    answerSrc.appendChild(label);
+    citations.forEach(function (c) {
+      var span = document.createElement('span');
+      span.className = 'answersrc-item';
+      span.textContent = c.file + (c.heading ? ' › ' + c.heading : '') + '  ';
+      answerSrc.appendChild(span);
+    });
+  }
+
+  function handleAskFrame(evtName, data) {
+    var obj;
+    try { obj = JSON.parse(data); } catch (e) { return; }
+    if (evtName === 'sources') {
+      renderAskSources(obj.citations || []);
+    } else if (evtName === 'delta') {
+      answerText.textContent += (obj.text || '');
+      askMsg.textContent = '';
+    } else if (evtName === 'done') {
+      // the assembled answer wins over accumulated deltas
+      if (typeof obj.answer === 'string' && obj.answer) answerText.textContent = obj.answer;
+      ansmode.textContent = obj.mode === 'extractive' ? 'extractive fallback' : 'llm';
+      renderAskSources(obj.citations || []);
+      askMsg.textContent = '';
+    } else if (evtName === 'error') {
+      askMsg.textContent = 'error: ' + (obj.error || 'synthesis failed');
+    }
+  }
+
+  askBtn.addEventListener('click', function () {
+    var query = q.value.trim();
+    if (!query) { askMsg.textContent = 'Type a question first.'; return; }
+    if (askAbort) askAbort.abort();
+    askAbort = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    askBtn.disabled = true;
+    askMsg.textContent = 'thinking…';
+    answerEl.hidden = false;
+    ansmode.textContent = '';
+    answerText.textContent = '';
+    answerSrc.innerHTML = '';
+
+    fetch('/ask', {
+      method: 'POST',
+      headers: headers(),
+      signal: askAbort ? askAbort.signal : undefined,
+      body: JSON.stringify({ query: query, k: 5 })
+    }).then(function (res) {
+      if (res.status === 401) { askKey('401 — this daemon requires an API key'); throw new Error('HTTP 401'); }
+      if (!res.ok) {
+        return res.json().catch(function () { return {}; }).then(function (j) {
+          throw new Error(j.error || ('HTTP ' + res.status));
+        });
+      }
+      var reader = res.body.getReader();
+      var dec = new TextDecoder();
+      var buf = '';
+      function pump() {
+        return reader.read().then(function (r) {
+          if (r.done) return;
+          buf += dec.decode(r.value, { stream: true });
+          var idx;
+          while ((idx = buf.indexOf('\\n\\n')) >= 0) {
+            var frame = buf.slice(0, idx);
+            buf = buf.slice(idx + 2);
+            var evtName = 'message';
+            var dataLines = [];
+            frame.split('\\n').forEach(function (line) {
+              if (line.lastIndexOf('event:', 0) === 0) evtName = line.slice(6).trim();
+              else if (line.lastIndexOf('data:', 0) === 0) dataLines.push(line.slice(5).replace(/^ /, ''));
+            });
+            if (dataLines.length) handleAskFrame(evtName, dataLines.join('\\n'));
+          }
+          return pump();
+        });
+      }
+      return pump();
+    }).catch(function (e) {
+      if (e && (e.name === 'AbortError' || e.code === 20)) return;
+      askMsg.textContent = 'error: ' + e.message;
+    }).then(function () {
+      askBtn.disabled = false;
+    });
+  });
+
 
   // theme: follow system until user overrides (persisted)
   var root = document.documentElement;

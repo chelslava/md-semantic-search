@@ -96,6 +96,7 @@ export const FLAGS: FlagSpec[] = [
   { name: '--resume', kind: 'flag' },
   { name: '--llm-endpoint', kind: 'value' },
   { name: '--llm-model', kind: 'value' },
+  { name: '--llm-provider', kind: 'value' },
   { name: '--system-prompt', kind: 'value' },
 ];
 

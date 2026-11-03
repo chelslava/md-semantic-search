@@ -11,6 +11,9 @@ Usage:
   mdss check  --db <dir> [--json]             Diagnose index/db/model cache (alias: doctor)
   mdss export --db <dir> [options]            Export index to JSONL / CSV / Parquet
   mdss search --db <dir> [options] "query"    Search by meaning
+  mdss related --db <dir> [options] <note>    Find related notes via graph links and similarity
+  mdss ask    --db <dir> [options] "question" Grounded QA synthesis with citations
+  mdss chat   --db <dir> [options]            Multi-turn persistent chat with citation manifest
   mdss serve  --db <dir> [--port <n>] [--host <ip>] [--watch]  Daemon: warm model + index
   mdss mcp    --db <dir> [--list-tools]       Start MCP server over stdio for LLM agents / IDEs
   mdss models                                  List available models
@@ -22,6 +25,7 @@ Options:
   --index-dir <dir>   Where to store the index (default: <db>/.mdss).
   --cache-dir <dir>   Model cache dir (default: ~/.cache/mdss, or MDSS_CACHE_DIR).
   --model <name|id>   Embedding model (default: e5-base). See `mdss models`.
+  --dimensions <n>    Truncate vector dimensions for Matryoshka/MRL models (alias: --dim).
   --workers <n>       Number of parallel batch workers for indexing (default: 1).
   --format <fmt>      Export format: jsonl (default), csv, parquet (export).
   --no-vectors        Omit vector embeddings from export (export).
@@ -91,6 +95,13 @@ Options:
                       ONE embed total; issue #125) or "hyde" (LLM-generated
                       passage via --llm-endpoint; degrades silently without it).
   --expand-passages <n>  prf feedback pool size (default 3, max 20).
+  --llm-endpoint <u>  OpenAI-compatible chat endpoint for ask/chat/serve /ask
+                      and --expand hyde: POST {base}/chat/completions
+                      (llama.cpp, LM Studio, vLLM, Ollama at .../v1).
+  --llm-provider <p>  Chat wire format for --llm-endpoint: "openai" (default,
+                      SSE streaming) or "ollama" (native /api/generate,
+                      NDJSON streaming) (issue #199).
+  --llm-model <m>     Provider-side chat model for --llm-endpoint.
   --open [N]          search: open the top (or Nth) hit in your editor at its
                       startLine — MDSS_EDITOR/VISUAL/EDITOR, then VS Code
                       --goto, then the GUI opener (issue #110). With --json on
@@ -109,4 +120,7 @@ Examples:
   mdss search --db ./docs "incident runbook" --path "docs/**" --since 2026-01-01
   mdss serve  --db ./docs --port 8747 --watch
   curl -X POST localhost:8747/search -d '{"query":"rotate api token","k":5}'
+  mdss ask    --db ./docs "how do tokens expire?" \
+              --llm-endpoint http://127.0.0.1:8080/v1 --llm-model qwen2.5
+  mdss chat   --db ./docs --llm-endpoint http://127.0.0.1:11434/v1 --resume
 ```
