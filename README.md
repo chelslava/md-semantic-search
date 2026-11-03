@@ -672,14 +672,14 @@ Add to your `claude_desktop_config.json`:
 | `--json` | Machine-readable output: `index` → build result JSON, `stats` → index stats JSON, `search` → hit list JSON (each hit includes `matches` — the query terms found in the chunk). |
 | `--semantic` | `search` only: pure vector ranking, skip lexical/RRF fusion (zero lexical tokenization). |
 | `--open [N]` | `search`: open the top (or Nth) hit in your editor at its `startLine` — `$MDSS_EDITOR`/`$VISUAL`/`$EDITOR`, VS Code `--goto`, or the GUI opener. With `--json` on a non-TTY prints the intent instead of launching (issue #110). |
-| `--fix` | `check`: apply safe auto-repairs — stale `.mdss.lock`, SHA-mismatched `vectors.bin` sidecar, corrupt `ivf.json`; rebuilds a corrupt index / recomputes `.hashes.json` when `--db` is available. Never touches source notes (issue #117). |
+| `--fix` | `check`: apply safe auto-repairs — stale `.mdss.lock`, SHA-mismatched `vectors.bin` sidecar, corrupt `ivf.json`/`hnsw.json`; rebuilds a corrupt index / recomputes `.hashes.json` when `--db` is available. Never touches source notes (issue #117). |
 | `--dry-run` | `check --fix`: print the planned repairs without mutating anything. |
 | `--rerank` | Re-rank the candidate pool with a cross-encoder (~144 MB default model, downloaded on first use). Slower, sharper results — see *Reranking* below. |
 | `--rerank-model <m>` | Reranker registry alias (issue #203): `bge-reranker-base` (default) or `gte-reranker-modernbert` (144 MB, 8k ctx, Apache-2.0); raw `id@revision` accepted. |
 | `--multi-query <n>` | Multi-query expansion (issue #203): N query variants (original + N−1 LLM paraphrases) fused by union-RRF; needs `--llm-endpoint`, degrades silently without it. |
 | `--graph-boost <n>` | Weight for Obsidian wikilink graph ranking and PageRank prior (search; default 0). Incorporates document centrality and 2-hop contextual propagation. |
 | `--filter <expr>` | Rich boolean filter across frontmatter tags and properties (e.g. `tag:engineering AND status != archived`). |
-| `--ann` | Approximate nearest neighbor search via IVF clustering (search; auto-enables for large corpora). |
+| `--ann [ivf\|hnsw]` | Approximate nearest neighbor search (search; auto-enables for large corpora). Engines (issue #201): `ivf` (k-means, the default sidecar) or `hnsw` (graph — no training phase, 100% measured recall at equal-or-lower query latency, `hnsw.json` sidecar, corrupt → brute-force fallback). Bare `--ann` prefers an existing sidecar. |
 | `--nprobe <n>` | Number of nearest centroid clusters to probe during ANN search (default 8). |
 | `--port <n>` | HTTP port for `serve` (default 8747, or `MDSS_PORT`). |
 | `--host <ip>` | Bind address for `serve` (default `127.0.0.1` — loopback only; use `0.0.0.0` to expose on the LAN, or `MDSS_HOST`). |

@@ -20,6 +20,7 @@ export interface RepairAction {
     | 'remove-stale-lock'
     | 'remove-broken-vectors-bin'
     | 'remove-corrupt-ivf'
+    | 'remove-corrupt-hnsw'
     | 'rebuild-index'
     | 'rewrite-hashes';
   detail: string;
@@ -130,13 +131,22 @@ export function planRepairs(indexDir: string, opts: ProbeOptions = {}): RepairPl
     }
   }
 
-  // --- 3. corrupt ivf.json (optional ANN sidecar; loader silently ignores it) ---
+  // --- 3. corrupt ANN sidecars (optional; loader silently ignores them) ---
   const ivfPath = path.join(indexDir, 'ivf.json');
   const ivfRaw = readJsonIfParsable(ivfPath);
   if (ivfRaw.ok === false) {
     plan.actions.push({
       action: 'remove-corrupt-ivf',
       detail: 'ivf.json is not valid JSON — removing it re-enables brute-force ANN fallback',
+    });
+  }
+  // issue #201: hnsw.json gets the same corrupt-sidecar treatment
+  const hnswPath = path.join(indexDir, 'hnsw.json');
+  const hnswRaw = readJsonIfParsable(hnswPath);
+  if (hnswRaw.ok === false) {
+    plan.actions.push({
+      action: 'remove-corrupt-hnsw',
+      detail: 'hnsw.json is not valid JSON — removing it re-enables brute-force ANN fallback',
     });
   }
 
@@ -248,6 +258,9 @@ export function applyRepairs(
             break;
           case 'remove-corrupt-ivf':
             fs.rmSync(path.join(indexDir, 'ivf.json'), { force: true });
+            break;
+          case 'remove-corrupt-hnsw':
+            fs.rmSync(path.join(indexDir, 'hnsw.json'), { force: true });
             break;
           case 'rewrite-hashes': {
             const hashes = recomputeHashes(opts.db!);

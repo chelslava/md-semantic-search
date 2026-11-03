@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 /**
- * ANN IVF Recall & Sweep Quality Gate Benchmark (issue #139).
- * Measures Recall@10 across nprobe in {1, 4, 8, 16} compared against exact brute-force sweep.
+ * ANN Recall & Latency Benchmark: IVF (issue #139) vs HNSW (issue #201).
+ * Recall@10 across nprobe {1,4,8,16} (IVF) and ef {16,32,64,128} (HNSW)
+ * against the exact brute-force sweep — the curves feed the default-engine
+ * decision documented in RESEARCH.md §17.
  */
 import { performance } from 'node:perf_hooks';
 import { trainIVF, searchIVFCandidates } from '../dist/ivf.js';
+import { buildHnsw, searchHnswCandidates } from '../dist/hnsw.js';
 import { cosine } from '../dist/core.js';
 
 function randomNormalizedVector(dim) {
@@ -101,6 +104,43 @@ export function runAnnRecallBenchmark(sizes = [1000, 5000], dim = 256) {
     }
 
     console.table(rows);
+
+    // ── HNSW (issue #201): recall/latency across ef ──
+    const tHnsw0 = performance.now();
+    const hnsw = buildHnsw(vectors, {
+      vectors,
+      distance: (a, b) => 1 - cosine(a, vectors[b]),
+    });
+    const hnswBuildMs = (performance.now() - tHnsw0).toFixed(2);
+    console.log(`HNSW built in ${hnswBuildMs} ms (M=16, no training phase)`);
+
+    const efs = [16, 32, 64, 128];
+    const hnswRows = [];
+    for (const ef of efs) {
+      let totalRecall = 0;
+      const latencies = [];
+      for (let q = 0; q < queryCount; q++) {
+        const query = queries[q];
+        const t0 = performance.now();
+        const candidateIndices = searchHnswCandidates(query, hnsw, vectors, { ef });
+        const candidateSet = new Set(candidateIndices);
+        const annScores = [...candidateSet].map((idx) => ({ idx, score: cosine(query, vectors[idx]) }));
+        annScores.sort((a, b) => b.score - a.score);
+        latencies.push(performance.now() - t0);
+        const annTop10 = annScores.slice(0, k).map((s2) => s2.idx);
+        const gt = groundTruth[q];
+        const hits = annTop10.filter((idx) => gt.has(idx)).length;
+        totalRecall += hits / k;
+      }
+      latencies.sort((a, b) => a - b);
+      hnswRows.push({
+        ef,
+        'recall@10': `${((totalRecall / queryCount) * 100).toFixed(1)}%`,
+        'p50Latency (ms)': latencies[Math.floor(latencies.length * 0.5)].toFixed(3),
+        'p95Latency (ms)': latencies[Math.floor(latencies.length * 0.95)].toFixed(3),
+      });
+    }
+    console.table(hnswRows);
   }
 }
 

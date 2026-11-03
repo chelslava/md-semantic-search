@@ -36,6 +36,7 @@ import {
 } from './lexical.js';
 import { embeddingAdapterFingerprint, legacyEmbeddingAdapterFingerprint } from './models.js';
 import { trainIVF, serializeIVF, ANN_THRESHOLD } from './ivf.js';
+import { buildHnsw, serializeHnsw, HnswIndex } from './hnsw.js';
 import { DocumentMetadata } from './frontmatter.js';
 import { serializeBinaryIndex } from './binary-format.js';
 import { defaultChunkTokenBudget } from './markdown-parser.js';
@@ -184,7 +185,8 @@ export interface BuildIndexOptions {
   maxRetries?: number;
   onProgress?: (done: number, total: number, chunksPerSec: number) => void;
   workers?: number;
-  ann?: boolean;
+  /** issue #201: ANN sidecar engine — `true`/`'ivf'` = ivf.json, `'hnsw'` = hnsw.json. */
+  ann?: boolean | 'ivf' | 'hnsw';
   quantize?: 'fp32' | 'int8';
   /**
    * issue #202: chunk budget in TOKENS (overrides the legacy char budget).
@@ -254,7 +256,7 @@ async function _buildIndexInner({
   dimensions?: number;
   onProgress?: (done: number, total: number, chunksPerSec: number) => void;
   workers?: number;
-  ann?: boolean;
+  ann?: boolean | 'ivf' | 'hnsw';
   quantize?: 'fp32' | 'int8';
   maxChunkTokens?: number;
 }): Promise<BuildIndexResult> {
@@ -647,15 +649,48 @@ async function _buildIndexInner({
     atomicWrite(vectorsBinPath, binBuffer);
   }
 
+  // issue #201: ANN sidecar engine — explicit 'hnsw' builds the graph
+  // instead of IVF; `true`/undefined/'ivf' keep the historical ivf.json path.
+  const annEngine = ann === 'hnsw' ? 'hnsw' : 'ivf';
+  const buildSidecar = Boolean(ann) || chunks.length >= ANN_THRESHOLD;
   const ivfPath = path.join(indexDir, 'ivf.json');
-  if (ann || chunks.length >= ANN_THRESHOLD) {
+  const hnswPath = path.join(indexDir, 'hnsw.json');
+  if (buildSidecar) {
     const rawVecs = chunks.map((c) => (c.vec instanceof Float32Array ? c.vec : Float32Array.from(c.vec as number[])));
-    const ivfIndex = trainIVF(rawVecs);
-    atomicWrite(ivfPath, JSON.stringify(serializeIVF(ivfIndex)));
-  } else if (fs.existsSync(ivfPath)) {
-    try {
-      fs.unlinkSync(ivfPath);
-    } catch {}
+    if (annEngine === 'hnsw') {
+      const hnswIndex: HnswIndex = buildHnsw(rawVecs, {
+        vectors: rawVecs,
+        // cosine distance (lower = closer) over the flat normalized vectors
+        distance: (a, b) => {
+          const bv = rawVecs[b];
+          let dot = 0;
+          for (let i = 0; i < a.length; i++) dot += (a as ArrayLike<number>)[i] * (bv as ArrayLike<number>)[i];
+          return 1 - dot;
+        },
+      });
+      atomicWrite(hnswPath, JSON.stringify(serializeHnsw(hnswIndex)));
+      if (fs.existsSync(ivfPath)) {
+        try {
+          fs.unlinkSync(ivfPath);
+        } catch {}
+      }
+    } else {
+      const ivfIndex = trainIVF(rawVecs);
+      atomicWrite(ivfPath, JSON.stringify(serializeIVF(ivfIndex)));
+      if (fs.existsSync(hnswPath)) {
+        try {
+          fs.unlinkSync(hnswPath);
+        } catch {}
+      }
+    }
+  } else {
+    for (const sidecar of [ivfPath, hnswPath]) {
+      if (fs.existsSync(sidecar)) {
+        try {
+          fs.unlinkSync(sidecar);
+        } catch {}
+      }
+    }
   }
 
   fs.unlinkSync(checkpointPath);

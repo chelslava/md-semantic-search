@@ -47,6 +47,7 @@ export const FLAGS: FlagSpec[] = [
   { name: '--health-public', kind: 'flag' },
   { name: '--allow-unsecured', kind: 'flag' },
   { name: '--ann', kind: 'flag' },
+  { name: '--ann', kind: 'value' },
   { name: '--canonical', kind: 'flag' },
   { name: '--rag', kind: 'flag' },
   { name: '--auto-tag', kind: 'flag' },

@@ -8,6 +8,7 @@ import { bm25Scores, matchingTerms, tokenize, fuzzyTitleAliasScores, LexicalInde
 import { collapseResults } from './collapse.js';
 import { DocumentMetadata } from './frontmatter.js';
 import { trainIVF, searchIVFCandidates, deserializeIVF, IVFIndex, ANN_THRESHOLD, DEFAULT_NPROBE } from './ivf.js';
+import { buildHnsw, searchHnswCandidates, deserializeHnsw, HnswIndex, DEFAULT_HNSW_EF } from './hnsw.js';
 import { buildRelationshipGraph, computePageRank, expandGraphNeighborhood, RelationshipGraph } from './wikilinks.js';
 import { evaluateFilter, FilterNode } from './filter.js';
 import { deserializeBinaryIndex } from './binary-format.js';
@@ -246,6 +247,8 @@ export interface RuntimeIndexState {
   model: ModelDescriptor;
   queryCache: QueryEmbeddingCache;
   ivf?: IVFIndex;
+  /** issue #201: optional HNSW graph sidecar (hnsw.json), parallel to ivf. */
+  hnsw?: HnswIndex;
   graph?: RelationshipGraph;
   pageRank?: Map<string, number>;
   /**
@@ -462,6 +465,7 @@ function snapshotRuntimeIndex(
     dim: number | undefined;
     model: ModelDescriptor;
     ivf?: IVFIndex;
+    hnsw?: HnswIndex;
     rawVectorsBuffer?: Float32Array | Int8Array;
   }
 ): RuntimeIndexState {
@@ -537,6 +541,7 @@ function snapshotRuntimeIndex(
     model: { ...validation.model },
     queryCache: new QueryEmbeddingCache(100),
     ivf: validation.ivf,
+    hnsw: validation.hnsw,
     chunkNorms,
   };
 }
@@ -652,6 +657,16 @@ export function loadIndex(indexDir: string, opts: { /** skip the (expensive) who
           ivf = deserializeIVF(raw);
         } catch {}
       }
+      // issue #201: optional HNSW sidecar — corrupt file degrades to brute
+      // force exactly like a corrupt ivf.json
+      const hnswPath = path.join(indexDir, 'hnsw.json');
+      let hnsw: HnswIndex | undefined;
+      if (fs.existsSync(hnswPath)) {
+        try {
+          const raw = JSON.parse(fs.readFileSync(hnswPath, 'utf8'));
+          hnsw = deserializeHnsw(raw, index.chunks.length);
+        } catch {}
+      }
 
       runtimeIndexStates.set(
         index,
@@ -660,6 +675,7 @@ export function loadIndex(indexDir: string, opts: { /** skip the (expensive) who
           dim: expectedDim,
           model,
           ivf,
+          hnsw,
           rawVectorsBuffer: deserialized.rawVectorsBuffer,
         })
       );
@@ -752,8 +768,16 @@ export function loadIndex(indexDir: string, opts: { /** skip the (expensive) who
       ivf = deserializeIVF(raw);
     } catch {}
   }
+  const hnswPath2 = path.join(indexDir, 'hnsw.json');
+  let hnsw: HnswIndex | undefined;
+  if (fs.existsSync(hnswPath2)) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(hnswPath2, 'utf8'));
+      hnsw = deserializeHnsw(raw, index.chunks.length);
+    } catch {}
+  }
 
-  runtimeIndexStates.set(index, snapshotRuntimeIndex(index, { schema: validated.schema, dim: expectedDim, model, ivf }));
+  runtimeIndexStates.set(index, snapshotRuntimeIndex(index, { schema: validated.schema, dim: expectedDim, model, ivf, hnsw }));
 
   return { index, model };
 }
@@ -809,8 +833,11 @@ export interface SearchOptions {
   multiQuery?: number;
   /** issue #203: reranker registry alias (`bge-reranker-base` default, `gte-reranker-modernbert`, ...). */
   rerankModel?: string;
-  ann?: boolean;
+  /** issue #201: ANN engine — `true` = default engine, or explicit 'ivf' | 'hnsw'. */
+  ann?: boolean | 'ivf' | 'hnsw';
   nprobe?: number;
+  /** issue #201: HNSW ef-search breadth (default 64). */
+  ef?: number;
   graphBoost?: number;
   filter?: string | FilterNode;
   dimensions?: number;
@@ -1031,7 +1058,17 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
 
   let semantic: Array<{ idx: number; score: number }>;
   let cosByIdx: Map<number, number> | undefined;
-  const useAnn = opts.ann ?? (runtime.ivf !== undefined && candidates.length >= ANN_THRESHOLD);
+  // issue #201: engine selection — explicit 'ivf'/'hnsw' wins; `true` picks
+  // whichever sidecar exists (hnsw preferred, then ivf); otherwise the
+  // automatic threshold path (sidecar present AND corpus above ANN_THRESHOLD)
+  const annOpt = opts.ann;
+  const autoAnn = annOpt === undefined || annOpt === false
+    ? Boolean(runtime.hnsw || runtime.ivf) && candidates.length >= ANN_THRESHOLD
+    : candidates.length >= ANN_THRESHOLD;
+  const useAnn = Boolean(annOpt) || autoAnn;
+  const annEngine: 'ivf' | 'hnsw' | undefined = useAnn
+    ? (annOpt === 'hnsw' || (annOpt !== 'ivf' && runtime.hnsw) ? 'hnsw' : 'ivf')
+    : undefined;
   // issue #190: with cached int8 norms the sweep computes the dot product alone
   const norms = runtime.chunkNorms;
   const sweepScore = (chunk: RuntimeChunk, idx: number): number =>
@@ -1042,15 +1079,33 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
   // a paraphrase must not recall into chunks the original's probe excluded
   const probed = useAnn && candidates.length >= ANN_THRESHOLD
     ? (() => {
-        if (!runtime.ivf) {
-          const rawVecs = chunks.map((c) => (c.vec instanceof Float32Array ? c.vec : dequantizeFromInt8(c.vec)));
-          runtime.ivf = trainIVF(rawVecs);
-        }
         const probedUnion = new Set<number>();
         for (const vec of qVecs) {
           const qVecF32 = vec instanceof Float32Array ? vec : Float32Array.from(vec);
-          for (const idx of searchIVFCandidates(qVecF32, runtime.ivf, opts.nprobe ?? DEFAULT_NPROBE)) {
-            probedUnion.add(idx);
+          if (annEngine === 'hnsw') {
+            // issue #201: HNSW graph search — built on the hot path only when
+            // the sidecar is missing (same semantics as the IVF sync train)
+            if (!runtime.hnsw) {
+              const rawVecs = chunks.map((c) => (c.vec instanceof Float32Array ? c.vec : dequantizeFromInt8(c.vec)));
+              runtime.hnsw = buildHnsw(rawVecs, {
+                vectors: rawVecs,
+                distance: (a, b) => {
+                  const bv = rawVecs[b];
+                  return 1 - (a as Float32Array).reduce((sum, x, i) => sum + x * (bv as ArrayLike<number>)[i], 0);
+                },
+              });
+            }
+            for (const idx of searchHnswCandidates(qVecF32, runtime.hnsw, chunks.map((c) => c.vec), { ef: opts.ef ?? DEFAULT_HNSW_EF })) {
+              probedUnion.add(idx);
+            }
+          } else {
+            if (!runtime.ivf) {
+              const rawVecs = chunks.map((c) => (c.vec instanceof Float32Array ? c.vec : dequantizeFromInt8(c.vec)));
+              runtime.ivf = trainIVF(rawVecs);
+            }
+            for (const idx of searchIVFCandidates(qVecF32, runtime.ivf, opts.nprobe ?? DEFAULT_NPROBE)) {
+              probedUnion.add(idx);
+            }
           }
         }
         return probedUnion;

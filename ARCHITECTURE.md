@@ -46,6 +46,7 @@ suites under `test/` that cover it (tests import the compiled `dist/*.js`).
 | `markdown-parser.ts` | Structural Markdown parser/chunker: headings, fenced code, tables, blockquotes, lists; token-budget splitting | `parseMarkdownBlocks`, `chunkMarkdownStructural`, `PARSER_VERSION` | `markdown-parser.test.mjs`, `fuzz.test.mjs` |
 | `wikilinks.ts` | Obsidian wikilinks + relative Markdown links → resolved relationship graph, related notes, PageRank | `extractLinks`, `resolveLinks`, `buildRelationshipGraph`, `computePageRank` | `wikilinks.test.mjs` |
 | `ivf.ts` | IVF clustering for approximate nearest neighbors above the brute-force threshold | `trainIVF`, `searchIVFCandidates`, `serializeIVF`, `ANN_THRESHOLD` | `ann.test.mjs` |
+| `hnsw.ts` | HNSW graph ANN (issue #201): incremental inserts, tombstone deletes, diversity-heuristic pruning, `hnsw.json` sidecar with hardened deserialization | `buildHnsw`, `insertHnsw`, `searchHnswCandidates`, `serializeHnsw`, `deserializeHnsw` | `hnsw.test.mjs` |
 | `models.ts` | Embedding model adapter registry: explicit prefixes/pooling/normalization/dim/dtype per model + adapter fingerprint hashing | `MODELS`, `resolveModel`, `normalizeAdapter`, `embeddingAdapterFingerprint` | `model-profile.test.mjs`, `providers.test.mjs` |
 | `metrics.ts` | Dependency-free retrieval evaluation metrics for the golden-set harness (nDCG, MRR, hit/recall@k, redundancy) | `ndcgAtK`, `reciprocalRank`, `queryMetrics`, `aggregateMetrics` | `metrics.test.mjs` |
 | `lexical.ts` | Persisted field-weighted BM25F postings (`bm25-v1`/`bm25-v2`), tokenizer, Damerau-Levenshtein fuzzy title/alias matching | `tokenize`, `bm25Scores`, `analyzeLexicalDocument`, `fuzzyTitleAliasScores` | `lexical.test.mjs`, `bm25f.test.mjs`, `fuzz.test.mjs` |
@@ -91,7 +92,7 @@ suites under `test/` that cover it (tests import the compiled `dist/*.js`).
 │   atomicWrite vectors.json  + vectors.json.sha256   (tmp + rename)       │
 │   atomicWrite .hashes.json                                               │
 │   serializeBinaryIndex → vectors.bin + .sha256     binary-format.ts      │
-│   chunks ≥ ANN_THRESHOLD(500) or --ann ⇒ ivf.json  ivf.ts                │
+│   chunks ≥ ANN_THRESHOLD(500) or --ann ⇒ ivf.json/hnsw.json  ivf/hnsw.ts  │
 │   fs.unlinkSync(.checkpoint.json)                ← publish complete      │
 │ }                                                                        │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -110,8 +111,9 @@ suites under `test/` that cover it (tests import the compiled `dist/*.js`).
      → diskQueryPut
      ▼
  candidates
-     brute-force cosine sweep  ──or──  IVF probe          ivf.ts
-     (auto IVF when chunks ≥ ANN_THRESHOLD = 500 or --ann, nprobe default 8)
+     brute-force cosine sweep  ──or──  ANN probe    ivf.ts / hnsw.ts
+     (auto sidecar when chunks ≥ ANN_THRESHOLD = 500 or --ann;
+      engine: ivf nprobe 8, or hnsw ef 64 via --ann hnsw / --ef)
      ▼
  scoring lanes
      dense cosine · bm25Scores (persisted bm25-v2 postings) ·
