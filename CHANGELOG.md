@@ -7,6 +7,13 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Issue #231** — OpenSSF Scorecard workflow (`.github/workflows/scorecard.yml`,
+  weekly + manual): independent supply-chain maturity signal published to the
+  GitHub Security dashboard and code scanning (SARIF). All GitHub Actions
+  across all workflows verified SHA-pinned; the scorecard job itself runs with
+  least-privilege permissions and `persist-credentials: false`. Manual
+  verification + open quick-wins (branch protection, CII badge, SAST) tracked
+  in the issue; SECURITY.md documents the program.
 - **Issue #229** — RAG answer-faithfulness benchmark (`bench/rag-faithfulness.mjs`): the first measured quality loop for `mdss ask`/`mdss chat` synthesis. 30 answerable queries (golden-set qrels as references) + 8 unanswerable over the frozen corpus; judge-free metrics — citation precision/recall of `citationsUsed`, sentence support rate, spurious-citation rate. Deterministic extractive profile has a committed baseline with a ±5pp drift gate; the LLM profile runs report-only via `MDSS_SMOKE_ENDPOINT`. First slice (RESEARCH.md §18): extractive precision 70.0% / recall 83.3% / support 67.6% — and the documented finding that the extractive fallback cannot refuse (spurious rate 100% by construction).
 - **Issue #228** — HNSW full-build acceleration attempt, closed as declined-with-measurements
   (RESEARCH.md §17): profiling shows **84–85% of build time is distance computation** on a

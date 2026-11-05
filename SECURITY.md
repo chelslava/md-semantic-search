@@ -54,6 +54,15 @@ Because Node 20 no longer receives security fixes, running mdss on it is
 exposure). CI tests only the maintained LTS lines (issue #224); the `engines`
 floor is lifted to `>=22` in the v3.0.0 major release.
 
+### OpenSSF Scorecard (issue #231)
+
+The repository runs the [OpenSSF Scorecard](https://github.com/ossf/scorecard)
+weekly (`.github/workflows/scorecard.yml`): results publish to the GitHub
+Security dashboard and to code scanning as SARIF. Every GitHub Action in every
+workflow is pinned to a commit SHA (a supply-chain requirement of the
+Dependency-Update and Token-Permissions checks). The current score, per-check
+results, and any open quick-wins are tracked in issue #231.
+
 ---
 
 ## Model Security & Custom Model Boundary

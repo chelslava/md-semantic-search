@@ -42,8 +42,8 @@ These are the only places where the retrieval stack may change; each has a measu
 - [x] **Default embedder decision** (#227): `granite-multilingual-311m` (Apache-2.0) is the new default — nDCG@10 0.8653 vs e5-base 0.7874 on golden v2; `embeddinggemma-300m` stays opt-in under the Gemma license veto (re-evaluation triggers in RESEARCH.md §15).
 - [x] **HNSW full-build acceleration** (#228): worker parallelism declined as structurally blocked; WASM SIMD dot-batch kernel shipped (×6 on pure batches, ×1.27 end-to-end, recall identical) — §17(a) revisit closed as declined-with-measurements; IVF stays the default engine.
 - [ ] **RAG answer quality bench** (#229): citation precision/recall, coverage, refusal correctness for `ask`/`chat` — the first measured quality loop for synthesis, report-only nightly.
-- [ ] **Integrations hygiene** (#230): alfred/raycast READMEs + tests, dedicated vscode tests, workspace artifact cleanup.
-- [ ] **OpenSSF Scorecard** (#231): scorecard workflow + SHA-pinned actions on top of the existing SBOM/provenance/audit stack.
+- [x] **Integrations hygiene** (#230): alfred/raycast READMEs + tests, dedicated vscode tests, workspace artifact cleanup.
+- [x] **OpenSSF Scorecard** (#231): scorecard workflow publishing to the Security dashboard; all actions SHA-pinned (verified across 8 workflows).
 
 ## v3.0.0 — Breaking platform floor (outlook)
 
