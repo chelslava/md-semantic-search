@@ -52,3 +52,50 @@ Design notes:
   dominated by embedding throughput and tracked by other means.
 - Run with `node --expose-gc bench/e2e.mjs` for GC-collected RSS snapshots
   (reported as `gcExposed` in the report either way).
+
+## Golden set v2 (issue #226)
+
+`scripts/run-bench.mjs` measures retrieval quality against
+`bench/fixtures/dev-golden.json` — a frozen 26-document RU/EN corpus
+(`bench/corpus/notes/`) and a hand-authored query set with graded qrels.
+
+Composition (`mdss-ru-en-golden-v2`): **204 queries** — 186 dev / 12 test /
+6 holdout; 100 RU / 104 EN; categories: `natural-question`, `paraphrase`,
+`keyword`, `identifier`, `alias`, `hard-negative`, plus the two v2 slices:
+
+- **`cross-lingual`** (27): the query language differs from the language of the
+  document that answers it — the tool's headline use case, reported as its own
+  bench line for the §15 default-embedder gate.
+- **`long-doc-section`** (21): questions answerable only from a deeply nested
+  section of a long document (the 10 v2 corpus docs carry frontmatter and
+  3–4-level heading trees) — the §12 late-chunking vs heading-path ablation gate.
+
+Grading convention: `3` = directly answers; `2` = the cross-language twin of the
+relevant doc, or a partial answer; `0` = a lexically close confuser that must
+NOT outrank the target (hard negatives are built from same-topic and cross-topic
+pairs, e.g. nginx TLS vs. сертификат-ротация, postgres vs. redis).
+
+Commands:
+
+```bash
+# offline sanity run (deterministic hash embedder, no baseline gate)
+node scripts/run-bench.mjs --fast --fake --slice dev
+
+# the nightly gate: real e5-base against the committed baseline
+node scripts/run-bench.mjs --slice dev --gate bench/fixtures/golden-baseline.json
+
+# after an intentional fixture/corpus change: re-measure and rewrite the baseline
+node scripts/run-bench.mjs --slice dev --update-baseline bench/fixtures/golden-baseline.json
+```
+
+Extending the set:
+
+1. Corpus changes (new/edited files under `bench/corpus/notes/`) change the
+   frozen `corpusHash` — `run-bench.mjs` refuses to run and prints the actual
+   fingerprint; paste it into the fixture (the hash is computed exactly like
+   `corpusFingerprint()` in `bench/fixture.mjs`: sha256 over
+   `path\0hash\0` in sorted path order).
+2. Author queries grounded in the actual document content, following the
+   grading convention above; every positive qrel must target an existing file.
+3. Re-measure with the real model and commit the new
+   `bench/fixtures/golden-baseline.json` together with the fixture change.

@@ -1,15 +1,15 @@
 {
-  "name": "mdss-ru-en-golden-48",
+  "name": "mdss-ru-en-golden-v2",
   "model": "e5-base",
   "slice": "dev",
   "k": 10,
-  "corpusHash": "6327c0f0486ea332ca71e4996432595e99830351da39ec6ccac308ece177dfa5",
-  "fixtureHash": "24abe2af178164810edddf194632474b264c13050798ee2f4064d6e3c91c415f",
+  "corpusHash": "8782e47c8cef74c51d317fe72003c5e44eff9cc47cf1ef8d8fda5dddc2a0e223",
+  "fixtureHash": "6de354c0db407bb82d47e6d9ba9e96cb48e1846a9722fbb41060b4a9c7e42772",
   "metrics": {
-    "ndcg": 0.8856,
-    "mrr": 0.8733,
-    "hit": 0.9792,
+    "ndcg": 0.7874,
+    "mrr": 0.7577,
+    "hit": 0.9301,
     "recall": 1
   },
-  "generatedAt": "2026-10-28"
+  "generatedAt": "2026-11-05"
 }

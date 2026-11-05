@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "name": "mdss-ru-en-golden-48",
+  "name": "mdss-ru-en-golden-v2",
   "corpusPath": "bench/corpus",
-  "corpusHash": "6327c0f0486ea332ca71e4996432595e99830351da39ec6ccac308ece177dfa5",
+  "corpusHash": "8782e47c8cef74c51d317fe72003c5e44eff9cc47cf1ef8d8fda5dddc2a0e223",
   "config": {
     "model": "e5-base",
     "schema": 3,
@@ -10,70 +10,3029 @@
     "fusion": "rrf"
   },
   "queries": [
-    { "id": "nq-01", "language": "ru", "text": "как повернуть ключ API", "category": "natural-question", "slice": "dev", "qrels": [{ "doc": "notes/api-tokens.md", "grade": 3 }, { "doc": "notes/model-cache.md", "grade": 0 }] },
-    { "id": "nq-02", "language": "en", "text": "how do I rotate the API token", "category": "natural-question", "slice": "dev", "qrels": [{ "doc": "notes/api-tokens.md", "grade": 3 }] },
-    { "id": "nq-03", "language": "ru", "text": "как добавить новый язык перевода", "category": "natural-question", "slice": "dev", "qrels": [{ "doc": "notes/переводы-i18n.md", "grade": 3 }] },
-    { "id": "nq-04", "language": "en", "text": "how do I add a new translation language", "category": "natural-question", "slice": "dev", "qrels": [{ "doc": "notes/переводы-i18n.md", "grade": 3 }] },
-    { "id": "nq-05", "language": "ru", "text": "почему зависает ввод в консоли windows", "category": "natural-question", "slice": "dev", "qrels": [{ "doc": "notes/windows-stdin.md", "grade": 3 }, { "doc": "notes/win32-stdin-wrap.md", "grade": 2 }] },
-    { "id": "nq-06", "language": "en", "text": "why does console input hang on windows", "category": "natural-question", "slice": "dev", "qrels": [{ "doc": "notes/win32-stdin-wrap.md", "grade": 3 }, { "doc": "notes/windows-stdin.md", "grade": 2 }] },
-    { "id": "nq-07", "language": "ru", "text": "как переключиться на резервный узел базы", "category": "natural-question", "slice": "dev", "qrels": [{ "doc": "notes/база-отказоустойчивость.md", "grade": 3 }, { "doc": "notes/failover-runbook.md", "grade": 2 }] },
-    { "id": "nq-08", "language": "en", "text": "how do I promote the standby database", "category": "natural-question", "slice": "dev", "qrels": [{ "doc": "notes/failover-runbook.md", "grade": 3 }, { "doc": "notes/база-отказоустойчивость.md", "grade": 2 }] },
-    { "id": "nq-09", "language": "ru", "text": "куда скачиваются веса модели", "category": "natural-question", "slice": "test", "qrels": [{ "doc": "notes/модель-кэш.md", "grade": 3 }] },
-    { "id": "nq-10", "language": "en", "text": "how do I rebuild the search index", "category": "natural-question", "slice": "holdout", "qrels": [{ "doc": "notes/vector-index.md", "grade": 3 }] },
-
-    { "id": "pp-01", "language": "en", "text": "rotate the api credential", "category": "paraphrase", "slice": "dev", "qrels": [{ "doc": "notes/api-tokens.md", "grade": 3 }] },
-    { "id": "pp-02", "language": "ru", "text": "сменить токен доступа", "category": "paraphrase", "slice": "dev", "qrels": [{ "doc": "notes/api-tokens.md", "grade": 3 }] },
-    { "id": "pp-03", "language": "en", "text": "localize the app into another language", "category": "paraphrase", "slice": "dev", "qrels": [{ "doc": "notes/переводы-i18n.md", "grade": 3 }] },
-    { "id": "pp-04", "language": "ru", "text": "перевести интерфейс на новый язык", "category": "paraphrase", "slice": "dev", "qrels": [{ "doc": "notes/переводы-i18n.md", "grade": 3 }] },
-    { "id": "pp-05", "language": "en", "text": "terminal input stuck after a pipe", "category": "paraphrase", "slice": "dev", "qrels": [{ "doc": "notes/win32-stdin-wrap.md", "grade": 3 }] },
-    { "id": "pp-06", "language": "ru", "text": "консоль не принимает ввод после пайпа", "category": "paraphrase", "slice": "dev", "qrels": [{ "doc": "notes/windows-stdin.md", "grade": 3 }] },
-    { "id": "pp-07", "language": "en", "text": "route reads to the replica during failover", "category": "paraphrase", "slice": "dev", "qrels": [{ "doc": "notes/failover-runbook.md", "grade": 3 }] },
-    { "id": "pp-08", "language": "ru", "text": "перенаправить запросы на реплику при отказе", "category": "paraphrase", "slice": "dev", "qrels": [{ "doc": "notes/база-отказоустойчивость.md", "grade": 3 }] },
-    { "id": "pp-09", "language": "en", "text": "backup the database every night", "category": "paraphrase", "slice": "test", "qrels": [{ "doc": "notes/backup-schedule.md", "grade": 3 }] },
-    { "id": "pp-10", "language": "ru", "text": "сделать ночную копию базы", "category": "paraphrase", "slice": "holdout", "qrels": [{ "doc": "notes/резервное-копирование.md", "grade": 3 }] },
-
-    { "id": "kw-01", "language": "en", "text": "api token rotation steps", "category": "keyword", "slice": "dev", "qrels": [{ "doc": "notes/api-tokens.md", "grade": 3 }] },
-    { "id": "kw-02", "language": "ru", "text": "ротация токена api", "category": "keyword", "slice": "dev", "qrels": [{ "doc": "notes/api-tokens.md", "grade": 3 }] },
-    { "id": "kw-03", "language": "en", "text": "translation status table", "category": "keyword", "slice": "dev", "qrels": [{ "doc": "notes/переводы-i18n.md", "grade": 3 }] },
-    { "id": "kw-04", "language": "ru", "text": "raw режим stdin", "category": "keyword", "slice": "dev", "qrels": [{ "doc": "notes/windows-stdin.md", "grade": 3 }] },
-    { "id": "kw-05", "language": "en", "text": "SetConsoleMode invalid handle", "category": "keyword", "slice": "dev", "qrels": [{ "doc": "notes/win32-stdin-wrap.md", "grade": 3 }] },
-    { "id": "kw-06", "language": "ru", "text": "аренда права записи", "category": "keyword", "slice": "dev", "qrels": [{ "doc": "notes/база-отказоустойчивость.md", "grade": 3 }] },
-    { "id": "kw-07", "language": "en", "text": "retention daily weekly monthly", "category": "keyword", "slice": "dev", "qrels": [{ "doc": "notes/backup-schedule.md", "grade": 3 }] },
-    { "id": "kw-08", "language": "ru", "text": "проверка восстановления бэкапа", "category": "keyword", "slice": "dev", "qrels": [{ "doc": "notes/резервное-копирование.md", "grade": 3 }] },
-    { "id": "kw-09", "language": "en", "text": "model cache directory", "category": "keyword", "slice": "test", "qrels": [{ "doc": "notes/model-cache.md", "grade": 3 }] },
-    { "id": "kw-10", "language": "ru", "text": "кэш моделей каталог", "category": "keyword", "slice": "test", "qrels": [{ "doc": "notes/модель-кэш.md", "grade": 3 }] },
-
-    { "id": "al-01", "language": "en", "text": "rotate the secret key", "category": "alias", "slice": "dev", "qrels": [{ "doc": "notes/api-tokens.md", "grade": 3 }] },
-    { "id": "al-02", "language": "ru", "text": "обновить секретный ключ", "category": "alias", "slice": "dev", "qrels": [{ "doc": "notes/api-tokens.md", "grade": 3 }] },
-    { "id": "al-03", "language": "en", "text": "translation files locales", "category": "alias", "slice": "dev", "qrels": [{ "doc": "notes/переводы-i18n.md", "grade": 3 }] },
-    { "id": "al-04", "language": "ru", "text": "файлы локализации", "category": "alias", "slice": "dev", "qrels": [{ "doc": "notes/переводы-i18n.md", "grade": 3 }] },
-    { "id": "al-05", "language": "en", "text": "console handle re-open", "category": "alias", "slice": "dev", "qrels": [{ "doc": "notes/win32-stdin-wrap.md", "grade": 3 }] },
-    { "id": "al-06", "language": "ru", "text": "переоткрыть дескриптор консоли", "category": "alias", "slice": "dev", "qrels": [{ "doc": "notes/win32-stdin-wrap.md", "grade": 3 }, { "doc": "notes/windows-stdin.md", "grade": 2 }] },
-    { "id": "al-07", "language": "en", "text": "replica promotion", "category": "alias", "slice": "dev", "qrels": [{ "doc": "notes/failover-runbook.md", "grade": 3 }] },
-    { "id": "al-08", "language": "ru", "text": "повышение реплики", "category": "alias", "slice": "dev", "qrels": [{ "doc": "notes/база-отказоустойчивость.md", "grade": 3 }] },
-    { "id": "al-09", "language": "en", "text": "off-site archive copy", "category": "alias", "slice": "test", "qrels": [{ "doc": "notes/backup-schedule.md", "grade": 3 }] },
-    { "id": "al-10", "language": "ru", "text": "копия архива в другом регионе", "category": "alias", "slice": "test", "qrels": [{ "doc": "notes/резервное-копирование.md", "grade": 3 }] },
-
-    { "id": "hn-01", "language": "en", "text": "where are model weights stored", "category": "hard-negative", "slice": "dev", "qrels": [{ "doc": "notes/model-cache.md", "grade": 3 }, { "doc": "notes/api-tokens.md", "grade": 0 }] },
-    { "id": "hn-02", "language": "ru", "text": "где хранятся веса модели", "category": "hard-negative", "slice": "dev", "qrels": [{ "doc": "notes/модель-кэш.md", "grade": 3 }] },
-    { "id": "hn-03", "language": "en", "text": "obsidian wiki link rename", "category": "hard-negative", "slice": "dev", "qrels": [{ "doc": "notes/markdown-obsidian.md", "grade": 3 }, { "doc": "notes/синхронизация-заметок.md", "grade": 2 }] },
-    { "id": "hn-04", "language": "ru", "text": "переименование страницы с вики-ссылками", "category": "hard-negative", "slice": "dev", "qrels": [{ "doc": "notes/синхронизация-заметок.md", "grade": 3 }, { "doc": "notes/markdown-obsidian.md", "grade": 2 }] },
-    { "id": "hn-05", "language": "en", "text": "nightly database dump", "category": "hard-negative", "slice": "dev", "qrels": [{ "doc": "notes/backup-schedule.md", "grade": 3 }, { "doc": "notes/failover-runbook.md", "grade": 0 }] },
-    { "id": "hn-06", "language": "ru", "text": "ночной дамп базы", "category": "hard-negative", "slice": "dev", "qrels": [{ "doc": "notes/резервное-копирование.md", "grade": 3 }, { "doc": "notes/база-отказоустойчивость.md", "grade": 0 }] },
-    { "id": "hn-07", "language": "en", "text": "index rebuild after model switch", "category": "hard-negative", "slice": "dev", "qrels": [{ "doc": "notes/vector-index.md", "grade": 3 }, { "doc": "notes/model-cache.md", "grade": 0 }] },
-    { "id": "hn-08", "language": "ru", "text": "переиндексация после смены модели", "category": "hard-negative", "slice": "dev", "qrels": [{ "doc": "notes/индекс-поиска.md", "grade": 3 }, { "doc": "notes/модель-кэш.md", "grade": 0 }] },
-    { "id": "hn-09", "language": "en", "text": "sync notes between machines", "category": "hard-negative", "slice": "test", "qrels": [{ "doc": "notes/синхронизация-заметок.md", "grade": 3 }] },
-    { "id": "hn-10", "language": "ru", "text": "синхронизация заметок между машинами", "category": "hard-negative", "slice": "holdout", "qrels": [{ "doc": "notes/синхронизация-заметок.md", "grade": 3 }] },
-
-    { "id": "id-01", "language": "en", "text": "MDSS_CACHE_DIR environment variable", "category": "identifier", "slice": "dev", "qrels": [{ "doc": "notes/model-cache.md", "grade": 3 }] },
-    { "id": "id-02", "language": "ru", "text": "переменная окружения MDSS_CACHE_DIR", "category": "identifier", "slice": "dev", "qrels": [{ "doc": "notes/модель-кэш.md", "grade": 3 }] },
-    { "id": "id-03", "language": "en", "text": "GET /health endpoint", "category": "identifier", "slice": "dev", "qrels": [{ "doc": "notes/http-server.md", "grade": 3 }] },
-    { "id": "id-04", "language": "ru", "text": "эндпоинт GET /health", "category": "identifier", "slice": "dev", "qrels": [{ "doc": "notes/локальный-сервер.md", "grade": 3 }] },
-    { "id": "id-05", "language": "en", "text": "SetConsoleMode ERROR_INVALID_HANDLE", "category": "identifier", "slice": "dev", "qrels": [{ "doc": "notes/win32-stdin-wrap.md", "grade": 3 }] },
-    { "id": "id-06", "language": "ru", "text": "ошибка ERROR_INVALID_HANDLE", "category": "identifier", "slice": "dev", "qrels": [{ "doc": "notes/windows-stdin.md", "grade": 3 }, { "doc": "notes/win32-stdin-wrap.md", "grade": 2 }] },
-    { "id": "id-07", "language": "en", "text": "pg_ctl promote command", "category": "identifier", "slice": "dev", "qrels": [{ "doc": "notes/failover-runbook.md", "grade": 3 }] },
-    { "id": "id-08", "language": "ru", "text": "команда pg_ctl promote", "category": "identifier", "slice": "dev", "qrels": [{ "doc": "notes/failover-runbook.md", "grade": 3 }, { "doc": "notes/база-отказоустойчивость.md", "grade": 2 }] },
-    { "id": "id-09", "language": "en", "text": "POST /search body cap 64kb", "category": "identifier", "slice": "test", "qrels": [{ "doc": "notes/http-server.md", "grade": 3 }] },
-    { "id": "id-10", "language": "ru", "text": "лимит 64 КБ на тело запроса", "category": "identifier", "slice": "holdout", "qrels": [{ "doc": "notes/локальный-сервер.md", "grade": 3 }] }
+    {
+      "id": "nq-01",
+      "language": "ru",
+      "text": "как повернуть ключ API",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/api-tokens.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/model-cache.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "nq-02",
+      "language": "en",
+      "text": "how do I rotate the API token",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/api-tokens.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "nq-03",
+      "language": "ru",
+      "text": "как добавить новый язык перевода",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/переводы-i18n.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "nq-04",
+      "language": "en",
+      "text": "how do I add a new translation language",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/переводы-i18n.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "nq-05",
+      "language": "ru",
+      "text": "почему зависает ввод в консоли windows",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/windows-stdin.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/win32-stdin-wrap.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "nq-06",
+      "language": "en",
+      "text": "why does console input hang on windows",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/win32-stdin-wrap.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/windows-stdin.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "nq-07",
+      "language": "ru",
+      "text": "как переключиться на резервный узел базы",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/база-отказоустойчивость.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/failover-runbook.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "nq-08",
+      "language": "en",
+      "text": "how do I promote the standby database",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/failover-runbook.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/база-отказоустойчивость.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "nq-09",
+      "language": "ru",
+      "text": "куда скачиваются веса модели",
+      "category": "natural-question",
+      "slice": "test",
+      "qrels": [
+        {
+          "doc": "notes/модель-кэш.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "nq-10",
+      "language": "en",
+      "text": "how do I rebuild the search index",
+      "category": "natural-question",
+      "slice": "holdout",
+      "qrels": [
+        {
+          "doc": "notes/vector-index.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "pp-01",
+      "language": "en",
+      "text": "rotate the api credential",
+      "category": "paraphrase",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/api-tokens.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "pp-02",
+      "language": "ru",
+      "text": "сменить токен доступа",
+      "category": "paraphrase",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/api-tokens.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "pp-03",
+      "language": "en",
+      "text": "localize the app into another language",
+      "category": "paraphrase",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/переводы-i18n.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "pp-04",
+      "language": "ru",
+      "text": "перевести интерфейс на новый язык",
+      "category": "paraphrase",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/переводы-i18n.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "pp-05",
+      "language": "en",
+      "text": "terminal input stuck after a pipe",
+      "category": "paraphrase",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/win32-stdin-wrap.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "pp-06",
+      "language": "ru",
+      "text": "консоль не принимает ввод после пайпа",
+      "category": "paraphrase",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/windows-stdin.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "pp-07",
+      "language": "en",
+      "text": "route reads to the replica during failover",
+      "category": "paraphrase",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/failover-runbook.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "pp-08",
+      "language": "ru",
+      "text": "перенаправить запросы на реплику при отказе",
+      "category": "paraphrase",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/база-отказоустойчивость.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "pp-09",
+      "language": "en",
+      "text": "backup the database every night",
+      "category": "paraphrase",
+      "slice": "test",
+      "qrels": [
+        {
+          "doc": "notes/backup-schedule.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "pp-10",
+      "language": "ru",
+      "text": "сделать ночную копию базы",
+      "category": "paraphrase",
+      "slice": "holdout",
+      "qrels": [
+        {
+          "doc": "notes/резервное-копирование.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "kw-01",
+      "language": "en",
+      "text": "api token rotation steps",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/api-tokens.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "kw-02",
+      "language": "ru",
+      "text": "ротация токена api",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/api-tokens.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "kw-03",
+      "language": "en",
+      "text": "translation status table",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/переводы-i18n.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "kw-04",
+      "language": "ru",
+      "text": "raw режим stdin",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/windows-stdin.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "kw-05",
+      "language": "en",
+      "text": "SetConsoleMode invalid handle",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/win32-stdin-wrap.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "kw-06",
+      "language": "ru",
+      "text": "аренда права записи",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/база-отказоустойчивость.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "kw-07",
+      "language": "en",
+      "text": "retention daily weekly monthly",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/backup-schedule.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "kw-08",
+      "language": "ru",
+      "text": "проверка восстановления бэкапа",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/резервное-копирование.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "kw-09",
+      "language": "en",
+      "text": "model cache directory",
+      "category": "keyword",
+      "slice": "test",
+      "qrels": [
+        {
+          "doc": "notes/model-cache.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "kw-10",
+      "language": "ru",
+      "text": "кэш моделей каталог",
+      "category": "keyword",
+      "slice": "test",
+      "qrels": [
+        {
+          "doc": "notes/модель-кэш.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "al-01",
+      "language": "en",
+      "text": "rotate the secret key",
+      "category": "alias",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/api-tokens.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "al-02",
+      "language": "ru",
+      "text": "обновить секретный ключ",
+      "category": "alias",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/api-tokens.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "al-03",
+      "language": "en",
+      "text": "translation files locales",
+      "category": "alias",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/переводы-i18n.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "al-04",
+      "language": "ru",
+      "text": "файлы локализации",
+      "category": "alias",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/переводы-i18n.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "al-05",
+      "language": "en",
+      "text": "console handle re-open",
+      "category": "alias",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/win32-stdin-wrap.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "al-06",
+      "language": "ru",
+      "text": "переоткрыть дескриптор консоли",
+      "category": "alias",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/win32-stdin-wrap.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/windows-stdin.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "al-07",
+      "language": "en",
+      "text": "replica promotion",
+      "category": "alias",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/failover-runbook.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "al-08",
+      "language": "ru",
+      "text": "повышение реплики",
+      "category": "alias",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/база-отказоустойчивость.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "al-09",
+      "language": "en",
+      "text": "off-site archive copy",
+      "category": "alias",
+      "slice": "test",
+      "qrels": [
+        {
+          "doc": "notes/backup-schedule.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "al-10",
+      "language": "ru",
+      "text": "копия архива в другом регионе",
+      "category": "alias",
+      "slice": "test",
+      "qrels": [
+        {
+          "doc": "notes/резервное-копирование.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "hn-01",
+      "language": "en",
+      "text": "where are model weights stored",
+      "category": "hard-negative",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/model-cache.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/api-tokens.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "hn-02",
+      "language": "ru",
+      "text": "где хранятся веса модели",
+      "category": "hard-negative",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/модель-кэш.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "hn-03",
+      "language": "en",
+      "text": "obsidian wiki link rename",
+      "category": "hard-negative",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/markdown-obsidian.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/синхронизация-заметок.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "hn-04",
+      "language": "ru",
+      "text": "переименование страницы с вики-ссылками",
+      "category": "hard-negative",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/синхронизация-заметок.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/markdown-obsidian.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "hn-05",
+      "language": "en",
+      "text": "nightly database dump",
+      "category": "hard-negative",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/backup-schedule.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/failover-runbook.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "hn-06",
+      "language": "ru",
+      "text": "ночной дамп базы",
+      "category": "hard-negative",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/резервное-копирование.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/база-отказоустойчивость.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "hn-07",
+      "language": "en",
+      "text": "index rebuild after model switch",
+      "category": "hard-negative",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/vector-index.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/model-cache.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "hn-08",
+      "language": "ru",
+      "text": "переиндексация после смены модели",
+      "category": "hard-negative",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/индекс-поиска.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/модель-кэш.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "hn-09",
+      "language": "en",
+      "text": "sync notes between machines",
+      "category": "hard-negative",
+      "slice": "test",
+      "qrels": [
+        {
+          "doc": "notes/синхронизация-заметок.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "hn-10",
+      "language": "ru",
+      "text": "синхронизация заметок между машинами",
+      "category": "hard-negative",
+      "slice": "holdout",
+      "qrels": [
+        {
+          "doc": "notes/синхронизация-заметок.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "id-01",
+      "language": "en",
+      "text": "MDSS_CACHE_DIR environment variable",
+      "category": "identifier",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/model-cache.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "id-02",
+      "language": "ru",
+      "text": "переменная окружения MDSS_CACHE_DIR",
+      "category": "identifier",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/модель-кэш.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "id-03",
+      "language": "en",
+      "text": "GET /health endpoint",
+      "category": "identifier",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/http-server.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "id-04",
+      "language": "ru",
+      "text": "эндпоинт GET /health",
+      "category": "identifier",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/локальный-сервер.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "id-05",
+      "language": "en",
+      "text": "SetConsoleMode ERROR_INVALID_HANDLE",
+      "category": "identifier",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/win32-stdin-wrap.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "id-06",
+      "language": "ru",
+      "text": "ошибка ERROR_INVALID_HANDLE",
+      "category": "identifier",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/windows-stdin.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/win32-stdin-wrap.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "id-07",
+      "language": "en",
+      "text": "pg_ctl promote command",
+      "category": "identifier",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/failover-runbook.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "id-08",
+      "language": "ru",
+      "text": "команда pg_ctl promote",
+      "category": "identifier",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/failover-runbook.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/база-отказоустойчивость.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "id-09",
+      "language": "en",
+      "text": "POST /search body cap 64kb",
+      "category": "identifier",
+      "slice": "test",
+      "qrels": [
+        {
+          "doc": "notes/http-server.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "id-10",
+      "language": "ru",
+      "text": "лимит 64 КБ на тело запроса",
+      "category": "identifier",
+      "slice": "holdout",
+      "qrels": [
+        {
+          "doc": "notes/локальный-сервер.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "nq-11",
+      "language": "en",
+      "text": "how do I roll back a bad Kubernetes deployment",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/k8s-rollout.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "xl-01",
+      "language": "ru",
+      "text": "как докатить канареечный релиз до 100 процентов трафика",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/k8s-rollout.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/ci-caching.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "ld-01",
+      "language": "en",
+      "text": "what happens when a canary analysis gate goes red",
+      "category": "long-doc-section",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/k8s-rollout.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/мониторинг-алерты.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "ld-02",
+      "language": "ru",
+      "text": "почему откат приложения не откатывает схему базы",
+      "category": "long-doc-section",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/k8s-rollout.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/postgres-vacuum.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "kw-11",
+      "language": "en",
+      "text": "maxSurge maxUnavailable rolling update",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/k8s-rollout.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "id-11",
+      "language": "en",
+      "text": "kubectl rollout undo --to-revision",
+      "category": "identifier",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/k8s-rollout.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "al-11",
+      "language": "en",
+      "text": "progressive delivery",
+      "category": "alias",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/k8s-rollout.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "nq-12",
+      "language": "en",
+      "text": "how do I issue a wildcard certificate for nginx",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/nginx-tls.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/ротация-сертификатов.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "xl-02",
+      "language": "ru",
+      "text": "что делает certbot дважды в сутки",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/nginx-tls.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "ld-03",
+      "language": "en",
+      "text": "why does an empty OCSP response not mean the certificate is invalid",
+      "category": "long-doc-section",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/nginx-tls.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/ротация-сертификатов.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "ld-04",
+      "language": "ru",
+      "text": "почему нельзя включать hsts на максимальный срок в первый день",
+      "category": "long-doc-section",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/nginx-tls.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/локальный-сервер.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "kw-12",
+      "language": "en",
+      "text": "tls 1.2 only no CBC cipher profile",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/nginx-tls.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "id-12",
+      "language": "en",
+      "text": "ssl_stapling on openssl s_client -status",
+      "category": "identifier",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/nginx-tls.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "hn-11",
+      "language": "en",
+      "text": "automated certificate renewal timer",
+      "category": "hard-negative",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/nginx-tls.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/ротация-сертификатов.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "nq-13",
+      "language": "en",
+      "text": "why does my postgres table keep growing after deletes",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/postgres-vacuum.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/redis-persistence.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "xl-03",
+      "language": "ru",
+      "text": "что возвращает место после удаления строк в базе",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/postgres-vacuum.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/redis-persistence.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "ld-05",
+      "language": "en",
+      "text": "why does autovacuum never reach a fifty million row table",
+      "category": "long-doc-section",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/postgres-vacuum.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "ld-06",
+      "language": "ru",
+      "text": "из-за чего база перестаёт принимать записи при приближении к двум миллиардам транзакций",
+      "category": "long-doc-section",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/postgres-vacuum.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/база-отказоустойчивость.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "kw-13",
+      "language": "en",
+      "text": "autovacuum_vacuum_scale_factor dead tuples",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/postgres-vacuum.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "id-13",
+      "language": "en",
+      "text": "pg_terminate_backend idle in transaction",
+      "category": "identifier",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/postgres-vacuum.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "hn-12",
+      "language": "en",
+      "text": "transaction id wraparound oldest xid monitoring",
+      "category": "hard-negative",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/postgres-vacuum.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/redis-persistence.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "nq-14",
+      "language": "en",
+      "text": "how does redis persist data to disk",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/redis-persistence.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/postgres-vacuum.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "xl-04",
+      "language": "ru",
+      "text": "когда редис переписывает append-only файл",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/redis-persistence.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "ld-07",
+      "language": "en",
+      "text": "how much data can appendfsync everysec lose on a crash",
+      "category": "long-doc-section",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/redis-persistence.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "ld-08",
+      "language": "ru",
+      "text": "почему на реплике тоже нужно включить персистентность",
+      "category": "long-doc-section",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/redis-persistence.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/база-отказоустойчивость.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "kw-14",
+      "language": "en",
+      "text": "rdb snapshot save schedule fork",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/redis-persistence.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "id-14",
+      "language": "en",
+      "text": "redis-check-rdb corrupt dump",
+      "category": "identifier",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/redis-persistence.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "al-12",
+      "language": "en",
+      "text": "aof rewrite incremental fsync",
+      "category": "alias",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/redis-persistence.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "nq-15",
+      "language": "en",
+      "text": "how do I speed up dependency install in CI",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/ci-caching.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/k8s-rollout.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "xl-05",
+      "language": "ru",
+      "text": "как раздать докер layer кэш между одноразовыми агентами сборки",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/ci-caching.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "ld-09",
+      "language": "en",
+      "text": "why should a CI cache key come from the lockfile instead of the branch",
+      "category": "long-doc-section",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/ci-caching.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "ld-10",
+      "language": "ru",
+      "text": "чем опасен кэш восстановленный из пулл-реквеста форка",
+      "category": "long-doc-section",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/ci-caching.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/ротация-сертификатов.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "kw-15",
+      "language": "en",
+      "text": "pnpm content-addressable store cache key",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/ci-caching.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "id-15",
+      "language": "en",
+      "text": "docker buildx cache-to type=registry",
+      "category": "identifier",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/ci-caching.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "al-13",
+      "language": "en",
+      "text": "build cache",
+      "category": "alias",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/ci-caching.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "nq-16",
+      "language": "ru",
+      "text": "как запретить подам ходить куда попало в кластере",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/k8s-сеть.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/k8s-rollout.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "xl-06",
+      "language": "en",
+      "text": "why do large packets hang in an overlay network",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/k8s-сеть.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/k8s-rollout.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "ld-11",
+      "language": "ru",
+      "text": "что меняется для пода после применения первой сетевой политики",
+      "category": "long-doc-section",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/k8s-сеть.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "ld-12",
+      "language": "en",
+      "text": "how do I check MTU problems beyond a plain ping",
+      "category": "long-doc-section",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/k8s-сеть.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/локальный-сервер.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "kw-16",
+      "language": "ru",
+      "text": "networkpolicy ingress egress правила",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/k8s-сеть.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "id-16",
+      "language": "ru",
+      "text": "ingressClassName выбор контроллера",
+      "category": "identifier",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/k8s-сеть.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "hn-13",
+      "language": "ru",
+      "text": "tls секрет для ингресса без пересоздания подов",
+      "category": "hard-negative",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/k8s-сеть.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/nginx-tls.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "nq-17",
+      "language": "ru",
+      "text": "как убрать ночные ложные срабатывания алертов",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/мониторинг-алерты.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/логирование-структуры.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "xl-07",
+      "language": "en",
+      "text": "why should alerts page on symptoms rather than causes",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/мониторинг-алерты.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "ld-13",
+      "language": "ru",
+      "text": "зачем правило ингибирования когда падает узел кластера",
+      "category": "long-doc-section",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/мониторинг-алерты.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "ld-14",
+      "language": "en",
+      "text": "what must an alert message template contain",
+      "category": "long-doc-section",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/мониторинг-алерты.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/логирование-структуры.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "kw-17",
+      "language": "ru",
+      "text": "порог длительность for 5m алерт",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/мониторинг-алерты.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "id-17",
+      "language": "ru",
+      "text": "эскалация через 15 минут ротация дежурств",
+      "category": "identifier",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/мониторинг-алерты.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "al-14",
+      "language": "ru",
+      "text": "дежурство",
+      "category": "alias",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/мониторинг-алерты.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "nq-18",
+      "language": "ru",
+      "text": "зачем проекту виртуальное окружение если есть системный python",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/python-venv.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "xl-08",
+      "language": "en",
+      "text": "what is the difference between pyenv and venv",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/python-venv.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/ci-caching.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "ld-15",
+      "language": "ru",
+      "text": "чем requirements.txt с диапазонами отличается от точных версий",
+      "category": "long-doc-section",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/python-venv.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "ld-16",
+      "language": "en",
+      "text": "why can two developers get different library versions without a lockfile",
+      "category": "long-doc-section",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/python-venv.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/ci-caching.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "kw-18",
+      "language": "ru",
+      "text": "pip-compile in txt пиннинг",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/python-venv.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "id-18",
+      "language": "ru",
+      "text": "файл .python-version в каталоге проекта",
+      "category": "identifier",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/python-venv.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "al-15",
+      "language": "ru",
+      "text": "виртуальное окружение",
+      "category": "alias",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/python-venv.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "nq-19",
+      "language": "ru",
+      "text": "как ротировать секрет без простоя сервисов",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/ротация-сертификатов.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/api-tokens.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "xl-09",
+      "language": "en",
+      "text": "what must you verify right after rotating a credential",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/ротация-сертификатов.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "ld-17",
+      "language": "ru",
+      "text": "как работает схема двойного ключа при ротации",
+      "category": "long-doc-section",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/ротация-сертификатов.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "ld-18",
+      "language": "en",
+      "text": "what belongs in the secret inventory record",
+      "category": "long-doc-section",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/ротация-сертификатов.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/мониторинг-алерты.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "kw-19",
+      "language": "ru",
+      "text": "срок действия клиентский сертификат 90 дней",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/ротация-сертификатов.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "id-19",
+      "language": "ru",
+      "text": "kubernetes.io/tls ротация секрета ингресса",
+      "category": "identifier",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/ротация-сертификатов.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/k8s-сеть.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "hn-14",
+      "language": "ru",
+      "text": "акме агент сам перевыпускает сертификат",
+      "category": "hard-negative",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/ротация-сертификатов.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/nginx-tls.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "nq-20",
+      "language": "ru",
+      "text": "как связать записи логов одного запроса между сервисами",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/логирование-структуры.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/мониторинг-алерты.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "xl-10",
+      "language": "en",
+      "text": "why are successful requests sampled while errors are always logged",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/логирование-структуры.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "ld-19",
+      "language": "ru",
+      "text": "что нужно логировать вместо email пользователя",
+      "category": "long-doc-section",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/логирование-структуры.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "ld-20",
+      "language": "en",
+      "text": "what do the log levels DEBUG INFO WARN ERROR decide",
+      "category": "long-doc-section",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/логирование-структуры.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/мониторинг-алерты.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "kw-20",
+      "language": "ru",
+      "text": "json строка поля ts level msg",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/логирование-структуры.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "id-20",
+      "language": "ru",
+      "text": "ретенция горячий индекс 7 дней архив",
+      "category": "identifier",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/логирование-структуры.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/резервное-копирование.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "al-16",
+      "language": "ru",
+      "text": "structured logs",
+      "category": "alias",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/логирование-структуры.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "nq-21",
+      "language": "en",
+      "text": "what should I do when a token leaks",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/api-tokens.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "kw-21",
+      "language": "ru",
+      "text": "минимальный скоуп токена",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/api-tokens.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "pp-11",
+      "language": "en",
+      "text": "keep credentials out of the repository",
+      "category": "paraphrase",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/api-tokens.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "nq-22",
+      "language": "en",
+      "text": "when does the nightly database dump run",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/backup-schedule.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/резервное-копирование.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "kw-22",
+      "language": "en",
+      "text": "restore drill sandbox cluster",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/backup-schedule.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "pp-12",
+      "language": "ru",
+      "text": "расписание резервных копий базы",
+      "category": "paraphrase",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/резервное-копирование.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/backup-schedule.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "kw-23",
+      "language": "en",
+      "text": "replication lag standby check",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/failover-runbook.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "pp-13",
+      "language": "ru",
+      "text": "поднять резервный узел базы данных",
+      "category": "paraphrase",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/база-отказоустойчивость.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/failover-runbook.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "nq-23",
+      "language": "en",
+      "text": "what do I verify before announcing database recovery",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/failover-runbook.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "nq-24",
+      "language": "en",
+      "text": "how do I expose the search daemon on the network",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/http-server.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/локальный-сервер.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "kw-24",
+      "language": "ru",
+      "text": "обратный прокси перед сервером поиска",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/локальный-сервер.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/http-server.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "kw-25",
+      "language": "en",
+      "text": "POST /search request body json",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/http-server.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "nq-25",
+      "language": "en",
+      "text": "how are wiki links resolved when a note is renamed",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/markdown-obsidian.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/синхронизация-заметок.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "kw-26",
+      "language": "ru",
+      "text": "yaml frontmatter теги алиасы даты",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/markdown-obsidian.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "hn-15",
+      "language": "ru",
+      "text": "переименование заметки и входящие ссылки",
+      "category": "hard-negative",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/markdown-obsidian.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/синхронизация-заметок.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "nq-26",
+      "language": "en",
+      "text": "how large is the first model download",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/model-cache.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/модель-кэш.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "kw-27",
+      "language": "ru",
+      "text": "удалить каталог кэша перекачка модели",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/модель-кэш.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/model-cache.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "pp-14",
+      "language": "en",
+      "text": "where do the quantized weights live",
+      "category": "paraphrase",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/model-cache.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/модель-кэш.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "nq-27",
+      "language": "ru",
+      "text": "когда индекс пересобирается целиком",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/индекс-поиска.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/vector-index.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "kw-28",
+      "language": "en",
+      "text": "checkpoint resume interrupted build",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/vector-index.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/индекс-поиска.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "pp-15",
+      "language": "ru",
+      "text": "векторы инвалидируются после смены модели",
+      "category": "paraphrase",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/индекс-поиска.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/vector-index.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "nq-28",
+      "language": "en",
+      "text": "why does closing the stdin wrapper break the console handle",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/win32-stdin-wrap.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/windows-stdin.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "kw-29",
+      "language": "ru",
+      "text": "GetStdHandle STD_INPUT_HANDLE переоткрытие",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/win32-stdin-wrap.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/windows-stdin.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "pp-16",
+      "language": "en",
+      "text": "read the pipe into a buffer before closing",
+      "category": "paraphrase",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/win32-stdin-wrap.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "nq-29",
+      "language": "ru",
+      "text": "что делать если консоль перестала принимать ввод",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/windows-stdin.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/win32-stdin-wrap.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "kw-30",
+      "language": "en",
+      "text": "redirected stdin pipe frozen input symptom",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/windows-stdin.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/win32-stdin-wrap.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "pp-17",
+      "language": "en",
+      "text": "keyboard input frozen but output still flows",
+      "category": "paraphrase",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/windows-stdin.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/win32-stdin-wrap.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "nq-30",
+      "language": "ru",
+      "text": "почему при переключении узла записи отклоняются с 503",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/база-отказоустойчивость.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/failover-runbook.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "kw-31",
+      "language": "en",
+      "text": "write lease 30 seconds renewal 10",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/база-отказоустойчивость.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "pp-18",
+      "language": "en",
+      "text": "single writer split brain protection",
+      "category": "paraphrase",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/база-отказоустойчивость.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "nq-31",
+      "language": "ru",
+      "text": "как продолжить прерванную переиндексацию",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/индекс-поиска.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/vector-index.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "kw-32",
+      "language": "en",
+      "text": "md5 skip unchanged files",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/vector-index.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/индекс-поиска.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "pp-19",
+      "language": "ru",
+      "text": "обновляемый индекс отбрасывает старую схему",
+      "category": "paraphrase",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/индекс-поиска.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "nq-32",
+      "language": "ru",
+      "text": "как безопасно открыть сервер поиска в сеть",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/локальный-сервер.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/http-server.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "kw-33",
+      "language": "en",
+      "text": "loopback bind reverse proxy firewall",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/локальный-сервер.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/http-server.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "pp-20",
+      "language": "ru",
+      "text": "лимит размера запроса и код ошибки",
+      "category": "paraphrase",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/локальный-сервер.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "nq-33",
+      "language": "ru",
+      "text": "что проверяет mdss check без загрузки модели",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/модель-кэш.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/model-cache.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "kw-34",
+      "language": "en",
+      "text": "file cache revision subdirectory layout",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/model-cache.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/модель-кэш.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "pp-21",
+      "language": "ru",
+      "text": "первый запуск тянет квантованные веса",
+      "category": "paraphrase",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/модель-кэш.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/model-cache.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "kw-35",
+      "language": "en",
+      "text": "placeholder strings keep placeholders intact",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/переводы-i18n.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "pp-22",
+      "language": "ru",
+      "text": "сборка падает из-за отсутствующего ключа перевода",
+      "category": "paraphrase",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/переводы-i18n.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "nq-34",
+      "language": "en",
+      "text": "how are dates localized in the app",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/переводы-i18n.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "nq-35",
+      "language": "ru",
+      "text": "где лежит ключ от копии во втором регионе",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/резервное-копирование.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/backup-schedule.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "kw-36",
+      "language": "en",
+      "text": "offsite weekly archive second region",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/резервное-копирование.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/backup-schedule.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "pp-23",
+      "language": "ru",
+      "text": "бэкап считается рабочим только после проверки",
+      "category": "paraphrase",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/резервное-копирование.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/backup-schedule.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "nq-36",
+      "language": "ru",
+      "text": "почему автокоммиты заметок отключены",
+      "category": "natural-question",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/синхронизация-заметок.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "kw-37",
+      "language": "en",
+      "text": "conflict markers resolve manually",
+      "category": "keyword",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/синхронизация-заметок.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "pp-24",
+      "language": "ru",
+      "text": "проверить ссылки после ручного переименования",
+      "category": "paraphrase",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/синхронизация-заметок.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/markdown-obsidian.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "xl-11",
+      "language": "ru",
+      "text": "токен без срока действия это забытый доступ",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/api-tokens.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "xl-12",
+      "language": "ru",
+      "text": "перевыпуск необработанного дескриптора ввода после чтения пайпа",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/win32-stdin-wrap.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/windows-stdin.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "xl-13",
+      "language": "ru",
+      "text": "хранение расписания ночных дампов базы",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/backup-schedule.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/резервное-копирование.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "xl-14",
+      "language": "ru",
+      "text": "проверить отставание реплики перед повышением",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/failover-runbook.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/база-отказоустойчивость.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "xl-15",
+      "language": "ru",
+      "text": "привязка демона к локальному адресу по умолчанию",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/http-server.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/локальный-сервер.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "xl-16",
+      "language": "ru",
+      "text": "вики-ссылка ломается при переименовании файла",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/markdown-obsidian.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/синхронизация-заметок.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "xl-17",
+      "language": "ru",
+      "text": "примерно 280 мегабайт весов при первом скачивании",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/model-cache.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/модель-кэш.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "xl-18",
+      "language": "ru",
+      "text": "смена адаптера встраивания требует полной пересборки",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/vector-index.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/индекс-поиска.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "xl-19",
+      "language": "en",
+      "text": "where the off-site copy key is stored",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/резервное-копирование.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/backup-schedule.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "xl-20",
+      "language": "en",
+      "text": "replication log divergence blocks automatic failover",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/база-отказоустойчивость.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/failover-runbook.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "xl-21",
+      "language": "en",
+      "text": "request body limit and error codes of the daemon",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/локальный-сервер.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/http-server.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "xl-22",
+      "language": "en",
+      "text": "locales status table full partial outdated",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/переводы-i18n.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "xl-23",
+      "language": "en",
+      "text": "manual pull and push without autocommit history noise",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/синхронизация-заметок.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "xl-24",
+      "language": "en",
+      "text": "console mode calls on an invalid handle",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/windows-stdin.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/win32-stdin-wrap.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "xl-25",
+      "language": "en",
+      "text": "index stored in the dot mdss directory of the notes",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/индекс-поиска.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/vector-index.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "xl-26",
+      "language": "en",
+      "text": "clear upgrade error for a newer index version",
+      "category": "cross-lingual",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/индекс-поиска.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/vector-index.md",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "hn-16",
+      "language": "en",
+      "text": "rotation of expired credentials before revocation",
+      "category": "hard-negative",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/api-tokens.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/ротация-сертификатов.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "hn-17",
+      "language": "ru",
+      "text": "продление аренды записи каждые десять секунд",
+      "category": "hard-negative",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/база-отказоустойчивость.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/k8s-rollout.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "hn-18",
+      "language": "en",
+      "text": "autovacuum cost delay tuning",
+      "category": "hard-negative",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/postgres-vacuum.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/redis-persistence.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "hn-19",
+      "language": "ru",
+      "text": "часовой мониторинг ошибок авторизации после замены ключа",
+      "category": "hard-negative",
+      "slice": "dev",
+      "qrels": [
+        {
+          "doc": "notes/ротация-сертификатов.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/api-tokens.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "kw-38",
+      "language": "en",
+      "text": "ingress controller classes one cluster",
+      "category": "keyword",
+      "slice": "test",
+      "qrels": [
+        {
+          "doc": "notes/k8s-сеть.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "pp-25",
+      "language": "ru",
+      "text": "окружение для одноразового скрипта",
+      "category": "paraphrase",
+      "slice": "test",
+      "qrels": [
+        {
+          "doc": "notes/python-venv.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "hn-20",
+      "language": "en",
+      "text": "nginx upstream keep-alive TIME_WAIT",
+      "category": "hard-negative",
+      "slice": "test",
+      "qrels": [
+        {
+          "doc": "notes/nginx-tls.md",
+          "grade": 3
+        },
+        {
+          "doc": "notes/локальный-сервер.md",
+          "grade": 0
+        }
+      ]
+    },
+    {
+      "id": "xl-27",
+      "language": "en",
+      "text": "hold a canary at five percent of replicas",
+      "category": "cross-lingual",
+      "slice": "test",
+      "qrels": [
+        {
+          "doc": "notes/k8s-rollout.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "nq-37",
+      "language": "ru",
+      "text": "как завернуть весь трафик на синюю версию разом",
+      "category": "natural-question",
+      "slice": "holdout",
+      "qrels": [
+        {
+          "doc": "notes/k8s-rollout.md",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "id": "ld-21",
+      "language": "en",
+      "text": "which settings keep the proxy from opening a TCP connection per request",
+      "category": "long-doc-section",
+      "slice": "holdout",
+      "qrels": [
+        {
+          "doc": "notes/nginx-tls.md",
+          "grade": 3
+        }
+      ]
+    }
   ]
 }

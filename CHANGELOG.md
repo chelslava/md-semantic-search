@@ -6,6 +6,22 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Issue #226** — Golden set v2: the frozen corpus grew to 26 documents
+  (10 new long-form RU/EN notes with frontmatter and 3–4-level heading trees)
+  and the query set to **204 graded queries (186 dev / 12 test / 6 holdout;
+  100 RU / 104 EN)** — 4× the dev slice that all ranking decisions were
+  calibrated on. Two new measured slices with per-category bench reporting:
+  `cross-lingual` (query language ≠ answering-document language — the §15
+  default-embedder gate) and `long-doc-section` (answers only in 3rd/4th-level
+  sections — the §12 late-chunking vs heading-path ablation gate). Hard
+  negatives rebuilt from same-topic/cross-topic confuser pairs (grade-0 qrels
+  that must not outrank the target). Fixture categories extended in
+  `bench/fixture.mjs`; e5-base re-measured on the real model — committed
+  baseline **nDCG@10 0.7874 · MRR 0.7577 · Hit@10 0.9301 · Recall@10 1.0**;
+  the #198 nightly gate runs against it. Methodology in bench/README.md and
+  RESEARCH.md §7.
+
 ### Changed
 - **Issue #224** — Node 20 EOL response: the CI test matrix now covers the
   maintained LTS lines **22 and 24** (was 20+22) and every other workflow runs

@@ -175,6 +175,29 @@ mdss index  --db ./your-wiki --model qwen3-embedding-0.6b
 mdss search --db ./your-wiki --semantic "the same paraphrase"
 ```
 
+### Expansion to golden set v2 (issue #226)
+
+The original 48-query dev slice was too thin to overturn a default (§15) and
+carried no long-document slice at all (§12). The v2 expansion re-measured
+everything on a frozen 26-document corpus and **204 queries** (186 dev /
+12 test / 6 holdout; 100 RU / 104 EN), adding two measured slices:
+
+- **`cross-lingual`** (n=27 dev): query language ≠ answering-document language
+  — the headline use case, now a first-class bench line.
+- **`long-doc-section`** (n=21 dev): answers live only in 3rd/4th-level sections
+  of long documents with frontmatter — the §12 heading-path ablation gate.
+- **Hard negatives** grew to 20, built from same-topic and cross-topic confuser
+  pairs (nginx-TLS vs сертификат-ротация, postgres vs redis, api-tokens vs
+  ротация-сертификатов) to keep reranker discrimination under test.
+
+e5-base (default, multilingual-e5-base, dev slice, k=10, real model):
+**nDCG@10 0.7874 · MRR 0.7577 · Hit@10 0.9301 · Recall@10 1.0000** — the
+committed `golden-baseline.json`. The v2 set is intentionally harder than v1
+(0.8856 on n=48): paraphrase/hard-negative/cross-lingual weight grew and the
+new categories reward fine-grained discrimination. The #198 nightly gate now
+runs against this baseline; the baseline is meaningful only for the same
+fixture+corpus hashes (recorded in the file).
+
 ## 9. Recommendations
 
 | If you want… | Use |

@@ -27,7 +27,8 @@
  *       "text": "the search query string",
  *       "category": "natural-question" | "keyword" | "identifier" |
  *                   "paraphrase" | "hierarchy" | "alias" | "broad" |
- *                   "relationship" | "hard-negative" | "other",
+ *                   "relationship" | "hard-negative" | "cross-lingual" |
+ *                   "long-doc-section" | "other",
  *       "slice": "dev" | "test" | "holdout",
  *       "qrels": [ { "doc": "path/to/file.md", "grade": 0 | 1 | 2 | 3 } ]
  *     }
@@ -51,6 +52,11 @@ const LANGUAGES = new Set(['en', 'ru', 'ru-en', 'en-ru']);
 const CATEGORIES = new Set([
   'natural-question', 'keyword', 'identifier', 'paraphrase', 'hierarchy',
   'alias', 'broad', 'relationship', 'hard-negative', 'other',
+  // Issue #226: 'cross-lingual' marks queries whose relevant docs answer in a
+  // different language than the query (the tool's headline use case, measured
+  // as its own bench line). 'long-doc-section' marks deep-section queries on
+  // multi-level documents — the §12 late-chunking / heading-path ablation gate.
+  'cross-lingual', 'long-doc-section',
 ]);
 
 /** Ordered slice names; also the key order of the returned `slices` view. */
