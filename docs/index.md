@@ -11,7 +11,10 @@
 
 ## Installation
 
-Requires **Node.js ≥ 18**.
+Requires **Node.js ≥ 20.9**. CI tests the maintained LTS lines (Node 22 and 24).
+Node 20 reached end-of-life on 2026-04-30: it still runs, but every command
+prints a deprecation warning on stderr (silence with `MDSS_NO_NODE_WARNING=1`),
+and v3.0.0 will require Node ≥ 22.
 
 ```bash
 # Global CLI

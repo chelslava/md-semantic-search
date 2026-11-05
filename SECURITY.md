@@ -41,6 +41,19 @@ waiver** in `scripts/audit-ci.mjs` (issue #122): each waiver carries a `reason`
 and an `expires` date; an expired waiver FAILS the audit gate and forces
 conscious re-triage.
 
+### Runtime (Node.js) Patch Policy
+
+| Node line | Status | mdss support |
+|---|---|---|
+| 24 | LTS | Tested in CI |
+| 22 | Maintenance LTS (EOL 2027-04-30) | Tested in CI |
+| 20.9–20.x | **EOL since 2026-04-30** — no security patches | Runs; every command prints a stderr deprecation warning (silence with `MDSS_NO_NODE_WARNING=1`); dropped in v3.0.0 |
+
+Because Node 20 no longer receives security fixes, running mdss on it is
+**unsupported for security-sensitive deployments** (a multi-user `mdss serve`
+exposure). CI tests only the maintained LTS lines (issue #224); the `engines`
+floor is lifted to `>=22` in the v3.0.0 major release.
+
 ---
 
 ## Model Security & Custom Model Boundary

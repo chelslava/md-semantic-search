@@ -2,8 +2,11 @@ name: ci
 
 # Run the test suite and a cheap syntax lint on every push / PR.
 # Tests use a fake embedder (no model download), so the suite is network-free
-# and fast. Node >=20.9 is the minimum supported by the CLI (see README);
-# the floor follows sharp 0.35.x via @huggingface/transformers 4.3.x.
+# and fast. CI targets the maintained LTS lines: Node 22 (Maintenance LTS,
+# EOL 2027-04) and Node 24 (LTS). The published `engines` floor stays >=20.9
+# for now with a stderr deprecation warning at runtime (issue #224); dropping
+# Node 20 from `engines` is planned for v3.0.0 — Node 20 reached EOL on
+# 2026-04-30 and no longer receives security patches.
 
 on:
   push:
@@ -25,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [20, 22]
+        node: [22, 24]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -58,7 +61,7 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install dependencies
         run: npm ci
@@ -82,7 +85,7 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install dependencies
         run: npm ci
@@ -109,7 +112,7 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install dependencies
         run: npm ci
@@ -127,7 +130,7 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install dependencies
         run: npm ci

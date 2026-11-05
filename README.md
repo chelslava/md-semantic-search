@@ -109,8 +109,15 @@ measurements that shaped its defaults.
 
 ## Install
 
-Requires **Node.js ≥ 18**. Native dependencies ship as prebuilt binaries — no
-compiler toolchain needed on any platform.
+Requires **Node.js ≥ 20.9**. Supported runtimes:
+
+| Runtime | Status | Support |
+|---|---|---|
+| **Node 22, 24** | Maintained LTS lines | Tested in CI |
+| **Node 20.9–20.x** | EOL since 2026-04-30 | Runs, prints a deprecation warning on stderr; dropped in **v3.0.0** |
+
+Native dependencies ship as prebuilt binaries — no compiler toolchain needed
+on any platform.
 
 Run on demand with `npx` (no install):
 

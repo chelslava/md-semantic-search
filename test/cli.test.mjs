@@ -851,3 +851,70 @@ test('cli: data egress notice fires for remote endpoints, never for loopback (is
     else process.env.MDSS_NO_EGRESS_WARNING = orig;
   }
 });
+
+test('cli: nodeDeprecationNotice fires for pre-22 runtimes, never for maintained LTS (issue #224)', async () => {
+  const { nodeDeprecationNotice } = await import('../bin/cli.mjs');
+
+  const v20 = nodeDeprecationNotice('v20.19.0');
+  assert.match(v20, /Node v20\.19\.0 is deprecated/);
+  assert.match(v20, /end-of-life on 2026-04-30/);
+  assert.match(v20, /Node >= 22 from v3\.0\.0/);
+  assert.match(v20, /MDSS_NO_NODE_WARNING/);
+  assert.match(nodeDeprecationNotice('v20.9.0'), /deprecated/, 'engines floor v20.9 still warns');
+  assert.match(nodeDeprecationNotice('v21.7.3'), /deprecated/, 'non-LTS odd majors warn too');
+  assert.match(nodeDeprecationNotice('garbage'), /deprecated/, 'unparseable versions fail loud');
+
+  assert.equal(nodeDeprecationNotice('v22.12.0'), null);
+  assert.equal(nodeDeprecationNotice('v24.14.1'), null);
+  assert.equal(nodeDeprecationNotice('v25.0.0'), null, 'newer majors are fine');
+
+  const orig = process.env.MDSS_NO_NODE_WARNING;
+  process.env.MDSS_NO_NODE_WARNING = '1';
+  try {
+    assert.equal(nodeDeprecationNotice('v20.19.0'), null, 'MDSS_NO_NODE_WARNING=1 silences the notice');
+  } finally {
+    if (orig === undefined) delete process.env.MDSS_NO_NODE_WARNING;
+    else process.env.MDSS_NO_NODE_WARNING = orig;
+  }
+});
+
+test('cli: main() writes the deprecation notice to stderr BEFORE any stdout output (issue #224)', async () => {
+  const { main, VERSION, nodeDeprecationNotice } = await import('../bin/cli.mjs');
+  const notice = nodeDeprecationNotice('v20.19.0');
+  assert.ok(notice, 'sanity: the simulated v20 runtime produces a notice');
+
+  const origVersion = process.version;
+  const origArgv = process.argv;
+  const origStdout = process.stdout.write;
+  const origStderr = process.stderr.write;
+  const stderrLines = [];
+  const stdoutWrites = [];
+  // Simulate the EOL runtime: main() must consult process.version, not the
+  // runner's version, so the stub lands before the call.
+  Object.defineProperty(process, 'version', { value: 'v20.19.0', configurable: true });
+  process.argv = ['node', 'cli.mjs', '--version'];
+  process.stdout.write = (chunk) => { stdoutWrites.push(chunk); return true; };
+  process.stderr.write = (chunk) => { stderrLines.push(chunk); return true; };
+  try {
+    await main();
+  } finally {
+    Object.defineProperty(process, 'version', { value: origVersion, configurable: true });
+    process.argv = origArgv;
+    process.stdout.write = origStdout;
+    process.stderr.write = origStderr;
+  }
+  assert.equal(stderrLines.length, 1, 'exactly one stderr line');
+  assert.match(stderrLines[0], /Node v20\.19\.0 is deprecated/);
+  assert.equal(stdoutWrites.join(''), `${VERSION}\n`, 'stdout is byte-identical to a non-warning run');
+});
+
+test('cli: --version subprocess stderr carries no deprecation noise on maintained LTS (issue #224)', () => {
+  const m = /^v(\d+)\./.exec(process.version);
+  if (m && Number(m[1]) < 22) return; // the warning is EXPECTED on EOL runtimes
+  const r = runCli(['--version']);
+  assert.equal(r.status, 0);
+  // The contract is "no deprecation line", not "empty stderr": local toolchains
+  // may add their own warnings (cert stores, antivirus, npm shims).
+  assert.doesNotMatch(r.stderr, /is deprecated/);
+  assert.match(r.stdout.trim(), /^\d+\.\d+\.\d+$/, 'stdout unchanged');
+});

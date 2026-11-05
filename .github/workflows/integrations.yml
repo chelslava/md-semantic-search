@@ -44,7 +44,7 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Verify extension version matches tag
         working-directory: integrations/vscode
@@ -88,7 +88,7 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Verify manifest version matches tag
         run: node scripts/check-integration-manifests.mjs && node -e "

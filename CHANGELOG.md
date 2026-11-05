@@ -4,6 +4,21 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Issue #224** — Node 20 EOL response: the CI test matrix now covers the
+  maintained LTS lines **22 and 24** (was 20+22) and every other workflow runs
+  on Node 22. The published `engines` floor stays `>=20.9.0` for now; running
+  on a pre-22 runtime prints a one-line deprecation warning to **stderr**
+  (`MDSS_NO_NODE_WARNING=1` silences it) while stdout — including `--json`,
+  TUI and MCP stdio modes — stays byte-identical. Dropping Node 20 from
+  `engines` (a breaking bump, as 18 → 20.9 in v2.0.0) is planned for **v3.0.0**.
+  The Docker image was already on `node:22-alpine`; README, docs and
+  SECURITY.md document the runtime support table and the v3.0.0 drop plan.
+  For security-sensitive deployments (multi-user `mdss serve`) Node 20 is
+  explicitly unsupported — it receives no security patches since 2026-04-30.
+
 ## [2.1.0] - 2026-11-04
 
 ### Added

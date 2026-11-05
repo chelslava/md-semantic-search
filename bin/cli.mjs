@@ -558,6 +558,26 @@ function logErr(s) {
 }
 
 // ---------------------------------------------------------------------------
+// Node end-of-life notice (issue #224): Node 20 reached EOL on 2026-04-30 and
+// no longer receives security patches, but the published `engines` floor stays
+// >=20.9 until v3.0.0 (a hard bump is breaking — see 18 -> 20.9 in v2.0.0).
+// Running on a pre-22 runtime prints one stderr line per command; stdout stays
+// byte-identical for --json, TUI and MCP stdio consumers. Silenced via env.
+// ---------------------------------------------------------------------------
+
+export function nodeDeprecationNotice(version = process.version) {
+  if (process.env.MDSS_NO_NODE_WARNING === '1') return null;
+  const m = /^v(\d+)\./.exec(version);
+  const major = m ? Number(m[1]) : Number.NaN;
+  if (Number.isFinite(major) && major >= 22) return null;
+  return (
+    `⚠ Node ${version} is deprecated: Node 20 reached end-of-life on 2026-04-30 and gets no security patches.\n` +
+    `  mdss will require Node >= 22 from v3.0.0. Upgrade: https://nodejs.org/en/download\n` +
+    `  Set MDSS_NO_NODE_WARNING=1 to silence this notice.`
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Data egress notice (issue #183): two opt-in paths send PRIVATE note content
 // to non-loopback destinations — external embedders and the RAG LLM bridge.
 // The default local pipeline never transmits anything; the notice fires once
@@ -1903,6 +1923,9 @@ async function cmdRelated(opts) {
 }
 
 async function main() {
+  const deprecation = nodeDeprecationNotice();
+  if (deprecation) process.stderr.write(deprecation + '\n');
+
   const argv = process.argv.slice(2);
   const opts = parseArgs(argv);
   const configPath = findConfigFile(opts.config);
