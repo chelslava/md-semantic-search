@@ -35,3 +35,34 @@ Execute the standalone scale test directly from the repository:
 ```bash
 node bench/benchmark-1m.mjs 100000
 ```
+
+## 4. RAG Answer Faithfulness (issue #229)
+
+`bench/rag-faithfulness.mjs` measures the quality of the synthesis loop behind
+`mdss ask` / `mdss chat` against the frozen golden corpus: 30 answerable
+queries (reference docs come from the golden set qrels) and 8 unanswerable
+queries (no relevant doc exists). Metrics are deterministic — no LLM judge:
+
+| Metric | Definition |
+|---|---|
+| citation precision | share of used citations pointing at a golden doc |
+| citation recall   | share of golden docs cited by the answer |
+| support rate      | share of answer sentences containing a golden-doc content term (groundedness proxy) |
+| spurious rate     | unanswerable queries where the answer cites any corpus doc (fabricated grounding) |
+
+The extractive profile (offline, deterministic) has a committed baseline with
+a ±5pp drift gate; the LLM profile runs report-only against
+`MDSS_SMOKE_ENDPOINT`:
+
+```bash
+node bench/rag-faithfulness.mjs                                  # extractive + fake embedder, gate vs baseline
+node bench/rag-faithfulness.mjs --model granite-multilingual-311m  # real embedder, report-only
+node bench/rag-faithfulness.mjs --endpoint http://127.0.0.1:8080/v1  # adds the LLM profile
+```
+
+First measured slice (extractive, fake embedder, k=6): citation precision
+70.0% · recall 83.3% · support 67.6%; extractive synthesis never refuses —
+spurious-citation rate 100% on unanswerable queries, which is the documented
+trade-off of the zero-dependency fallback and the number an LLM profile
+should improve on.
+

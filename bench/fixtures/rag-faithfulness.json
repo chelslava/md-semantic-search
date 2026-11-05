@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "name": "mdss-rag-faithfulness-v1",
+  "note": "Issue #229. Answerable queries reference dev-golden.json ids — the qrels there define the golden (reference) docs; unanswerable queries have no relevant doc in the corpus by construction.",
+  "answerableGoldenIds": [
+    "nq-11", "nq-12", "nq-13", "nq-14", "nq-15", "nq-16", "nq-17", "nq-18", "nq-19", "nq-20",
+    "nq-22", "nq-24", "nq-26", "nq-28", "nq-30", "nq-33", "nq-35",
+    "xl-01", "xl-06", "xl-09", "xl-19", "xl-22",
+    "ld-01", "ld-05", "ld-11", "ld-17",
+    "kw-11", "kw-16", "id-13", "al-12"
+  ],
+  "unanswerable": [
+    { "id": "un-01", "language": "en", "text": "how do I bake sourdough bread at home" },
+    { "id": "un-02", "language": "ru", "text": "как приготовить борщ на большую семью" },
+    { "id": "un-03", "language": "en", "text": "what is the best marathon training plan for beginners" },
+    { "id": "un-04", "language": "ru", "text": "как настроить гитару по фортепиано" },
+    { "id": "un-05", "language": "en", "text": "which car tires should I buy for winter driving" },
+    { "id": "un-06", "language": "ru", "text": "сколько стоит страховка квартиры в год" },
+    { "id": "un-07", "language": "en", "text": "how do I file quarterly income taxes as a freelancer" },
+    { "id": "un-08", "language": "ru", "text": "какие книги почитать про садоводство зимой" }
+  ]
+}

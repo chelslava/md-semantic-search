@@ -9,6 +9,7 @@ Performance and quality measurement tools for `md-semantic-search`.
 | `mrl-recall.mjs` | MRL truncated-dimension recall gate (issue #139). | nightly |
 | `benchmark-1m.mjs` | 1M-vector fp32/int8 sweep micro-benchmark. | manual |
 | `run-bench.mjs` (in `scripts/`) | Golden-set retrieval quality (nDCG/MRR/Recall) with the committed baseline gate (issue #198). | nightly + PR gate |
+| `rag-faithfulness.mjs` | RAG answer faithfulness — citation precision/recall, support rate, spurious-citation rate for the synthesis loop (issue #229). Deterministic metrics, no LLM judge. | nightly, report-only |
 
 ## e2e latency (issue #196)
 

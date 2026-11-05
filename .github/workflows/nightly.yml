@@ -47,6 +47,13 @@ jobs:
       - name: Golden-set retrieval gate (issue #198)
         run: node scripts/run-bench.mjs --slice dev --gate bench/fixtures/golden-baseline.json --cache-dir "$MDSS_NIGHTLY_CACHE_DIR"
 
+      - name: RAG answer-faithfulness report (issue #229, report-only)
+        run: node bench/rag-faithfulness.mjs --json >> $GITHUB_STEP_SUMMARY
+
+      - name: RAG faithfulness via real LLM backend (issue #229; needs repo variable MDSS_SMOKE_ENDPOINT)
+        if: ${{ vars.MDSS_SMOKE_ENDPOINT != '' }}
+        run: node bench/rag-faithfulness.mjs --endpoint "${{ vars.MDSS_SMOKE_ENDPOINT }}" --json >> $GITHUB_STEP_SUMMARY
+
       - name: E2E latency benchmark report + regression gate (issue #196)
         run: node bench/e2e.mjs --compare bench/fixtures/e2e-latency-baseline.json --tolerance-pct 20
         # The committed baseline is machine-relative (bench/fixtures/e2e-latency-baseline.json

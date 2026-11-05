@@ -517,3 +517,43 @@ node bench/ann-recall.mjs                 # IVF + HNSW curves side by side
 mdss index --db ./notes --ann hnsw        # hnsw.json sidecar
 mdss search --db ./notes --ann hnsw "query"
 ```
+
+## 18. RAG Answer Faithfulness — First Measured Slice (Issue #229)
+
+`bench/rag-faithfulness.mjs` closes the measurement gap in the synthesis loop:
+30 answerable queries (reference docs = the golden set qrels) and 8
+unanswerable queries over the frozen 26-doc corpus, with judge-free metrics —
+citation precision/recall of `citationsUsed` against the golden docs, a
+support rate (answer sentences containing a golden-doc content term), and a
+spurious-citation rate for the unanswerable set. Deterministic, unit-tested,
+no LLM in the metric path.
+
+| Profile | Citation precision | Citation recall | Support rate | Spurious rate (unanswerable) | p50 |
+|---|---|---|---|---|---|
+| extractive · fake embedder · k=6 (committed baseline, ±5pp gate) | 70.0% | 83.3% | 67.6% | 100% | 1 ms |
+| extractive · granite-311m · k=6 | 73.3% | 85.0% | 68.3% | 100% | 36 ms |
+
+Two honest findings:
+
+1. **The extractive fallback cannot refuse.** On unanswerable queries it
+   cites whatever the retriever surfaced (spurious rate 100% by construction —
+   the fallback's contract is "answer from passages", and it has no
+   refusal stage). This is the documented trade-off of the zero-dependency
+   mode; the LLM profile (`--endpoint`, nightly report-only via
+   `MDSS_SMOKE_ENDPOINT`) is where refusal behavior becomes measurable.
+2. **Support ≈ 68%** — a third of extractive answer sentences are rhetorical
+   glue (headers, connectors) rather than golden-doc content. This is the
+   baseline an LLM-synthesis profile should beat without losing citation
+   precision.
+
+The nightly runs both profiles report-only (the fake-embedder run also gates
+against `bench/fixtures/rag-faithfulness-baseline.json` at ±5pp to catch
+unintended changes in the deterministic extractive path).
+
+### Reproducing
+
+```bash
+node bench/rag-faithfulness.mjs                                     # deterministic baseline path
+node bench/rag-faithfulness.mjs --model granite-multilingual-311m   # real-embedder extractive
+node bench/rag-faithfulness.mjs --endpoint http://127.0.0.1:8080/v1 # + LLM profile
+```

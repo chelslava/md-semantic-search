@@ -1,0 +1,21 @@
+{
+  "name": "mdss-rag-faithfulness-v1",
+  "metrics": {
+    "name": "extractive",
+    "answerable": {
+      "runs": 30,
+      "citationPrecision": 0.7,
+      "citationRecall": 0.8333333333333334,
+      "supportRate": 0.6756349206349207,
+      "p50LatencyMs": 1
+    },
+    "unanswerable": {
+      "runs": 8,
+      "citationPrecision": 0,
+      "citationRecall": null,
+      "supportRate": null,
+      "p50LatencyMs": 1,
+      "spuriousCitationRate": 1
+    }
+  }
+}
