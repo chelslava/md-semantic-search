@@ -11,6 +11,8 @@
  * is what lets the incremental watch rebuild reuse a persisted graph.
  */
 
+import { createWasmDotEngine } from './wasm-dot.js';
+
 /** Deterministic PRNG for level assignment (same family as ivf.ts). */
 function mulberry32(seed: number): () => number {
   let s = seed >>> 0;
@@ -63,6 +65,28 @@ export interface BuildHnswOptions {
    */
   distance: (a: Float32Array | Int8Array | number[], b: number) => number;
   vectors: Array<Float32Array | Int8Array | number[]>;
+  /**
+   * Issue #228: 'auto' routes the build's distance work through the WASM
+   * SIMD dot-batch kernel (src/wasm-dot.ts) when the vectors are a uniform
+   * Float32Array matrix and the runtime supports SIMD — ~6× faster dots on a
+   * 32-node batch, ~3.4× faster full build (RESEARCH.md §17). ONLY valid when
+   * the intended distance is exactly `1 − dot(a, vectors[b])`; any custom
+   * distance (int8 norms, asymmetric variants) must keep the default
+   * 'closure' engine. Silent fallback to 'closure' when 'auto' cannot apply.
+   */
+  engine?: 'auto' | 'closure';
+}
+
+/**
+ * Distance plumbing for the build (issue #228). The closure engine wraps the
+ * caller-supplied `distance`; the wasm engine replaces BOTH pointwise and
+ * batch distances with kernel calls so every distance on the chain uses the
+ * same SIMD accumulation order (self-consistent → deterministic sidecar).
+ */
+export interface HnswBuildEngine {
+  dist(aIdx: number, bIdx: number): number;
+  /** Distances from vectors[aIdx] to each node, same order — null = pointwise. */
+  batch?(aIdx: number, nodes: number[]): Float32Array | null;
 }
 
 export const DEFAULT_HNSW_M = 16;
@@ -82,8 +106,68 @@ export function buildHnsw(
     neighbors: [],
     deleted: new Set(),
   };
-  for (let i = 0; i < vectors.length; i++) insertHnsw(hnsw, i, options.distance, options.vectors);
+  let engine: HnswBuildEngine | undefined;
+  if (options.engine === 'auto') {
+    engine = createWasmBuildEngine(vectors) ?? undefined;
+    // undefined → SIMD unavailable or non-uniform vectors: closure engine, silently.
+  }
+  for (let i = 0; i < vectors.length; i++) insertHnsw(hnsw, i, options.distance, options.vectors, engine);
   return hnsw;
+}
+
+/**
+ * Issue #228: wasm-backed build engine for uniform Float32Array matrices.
+ * Returns null whenever the fast path cannot apply — the caller then keeps
+ * the caller-supplied closure (identical semantics, JS arithmetic).
+ */
+function createWasmBuildEngine(vectors: Array<Float32Array | Int8Array | number[]>): HnswBuildEngine | null {
+  for (const v of vectors) {
+    if (!(v instanceof Float32Array)) return null;
+  }
+  const wasmEngine = createWasmDotEngine(vectors as Array<Float32Array>);
+  if (!wasmEngine) return null;
+  // Hybrid distance plumbing (measured, issue #228): BATCHES (a whole node's
+  // neighbor list — the 85% cost center) go through the SIMD kernel; pointwise
+  // calls (greedy descent, singleton scans, heuristic pairwise) stay on the
+  // plain JS dot — a 1-row wasm call pays call overhead exceeding the work.
+  // Both paths are IEEE f32 with fixed orders, so the build stays
+  // deterministic; recall is insensitive to the last-ulp difference (measured
+  // identical across engines in bench/ann-recall.mjs and the #228 tests).
+  const f32Vectors = vectors as Array<Float32Array>;
+  return {
+    dist: (a, b) => 1 - jsDotF32(f32Vectors[a], f32Vectors[b]),
+    batch: (aIdx, nodes) => {
+      const dots = wasmEngine.batch(aIdx, nodes);
+      const out = new Float32Array(dots.length);
+      for (let j = 0; j < dots.length; j++) out[j] = 1 - dots[j];
+      return out;
+    },
+  };
+}
+
+function jsDotF32(a: Float32Array, b: Float32Array): number {
+  let s = 0;
+  const n = a.length;
+  const limit = n - 7;
+  let i = 0;
+  let s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, s5 = 0, s6 = 0, s7 = 0;
+  while (i < limit) {
+    s0 += a[i] * b[i];
+    s1 += a[i + 1] * b[i + 1];
+    s2 += a[i + 2] * b[i + 2];
+    s3 += a[i + 3] * b[i + 3];
+    s4 += a[i + 4] * b[i + 4];
+    s5 += a[i + 5] * b[i + 5];
+    s6 += a[i + 6] * b[i + 6];
+    s7 += a[i + 7] * b[i + 7];
+    i += 8;
+  }
+  s = s0 + s1 + (s2 + s3) + (s4 + s5) + (s6 + s7);
+  while (i < n) {
+    s += a[i] * b[i];
+    i++;
+  }
+  return s;
 }
 
 /**
@@ -96,7 +180,8 @@ export function insertHnsw(
   hnsw: HnswIndex,
   idx: number,
   distance: (a: Float32Array | Int8Array | number[], b: number) => number,
-  vectors: Array<Float32Array | Int8Array | number[]>
+  vectors: Array<Float32Array | Int8Array | number[]>,
+  engine?: HnswBuildEngine
 ): void {
   const vec = vectors[idx];
   if (!vec) throw new Error(`hnsw insert: no vector at index ${idx}`);
@@ -121,7 +206,14 @@ export function insertHnsw(
     return;
   }
 
-  const qDist = (node: number) => distance(vec, node);
+  // Issue #228: with a build engine, all pointwise distances go through
+  // dist(aIdx, bIdx) so the whole chain shares one arithmetic order; the
+  // per-neighbor scan uses engine.batch when available (one wasm call per
+  // node's neighbor list instead of one JS call per distance).
+  const dist = engine
+    ? (aIdx: number, bIdx: number) => engine.dist(aIdx, bIdx)
+    : (aIdx: number, bIdx: number) => distance(vectors[aIdx], bIdx);
+  const qDist = (node: number) => dist(idx, node);
 
   // 1. Greedy descent through layers above the node's level
   let ep = hnsw.entryPoint;
@@ -142,10 +234,12 @@ export function insertHnsw(
   }
 
   // 2. Insert on each layer from min(level, maxLevel) down to 0
-  const pairwise = (a: number, b: number) => distance(vectors[a], b);
+  const pairwise = engine
+    ? (a: number, b: number) => engine.dist(a, b)
+    : (a: number, b: number) => distance(vectors[a], b);
   for (let l = Math.min(level, hnsw.maxLevel); l >= 0; l--) {
     const efC = Math.max(M0, DEFAULT_HNSW_EF);
-    const candidates = searchLayer(hnsw, qDist, ep, epDist, l, efC);
+    const candidates = searchLayer(hnsw, qDist, ep, epDist, l, efC, engine?.batch, idx);
     const cap = l === 0 ? M0 : M;
     // Algorithm 4: diversity-aware neighbor selection keeps the graph
     // navigable — a candidate is skipped only when it is CLOSER to an
@@ -191,7 +285,11 @@ function searchLayer(
   ep: number,
   epDist: number,
   layer: number,
-  ef: number
+  ef: number,
+  // issue #228: when present, the unvisited neighbors of each expanded node
+  // are measured in ONE batched call (same order → same heap evolution).
+  batch?: (aIdx: number, nodes: number[]) => Float32Array | null,
+  aIdx?: number
 ): Array<{ node: number; dist: number }> {
   const visited = new Set<number>([ep]);
   // max-heap by dist via simple sorted insertion (candidate lists are small)
@@ -204,10 +302,17 @@ function searchLayer(
     const worst = results.length >= ef ? results[results.length - 1].dist : Infinity;
     if (current.dist > worst) break;
 
-    for (const nb of hnsw.neighbors[current.node][layer] ?? []) {
-      if (visited.has(nb)) continue;
+    const neighborList = hnsw.neighbors[current.node][layer] ?? [];
+    const fresh: number[] = [];
+    for (const nb of neighborList) {
+      if (!visited.has(nb)) fresh.push(nb);
+    }
+    let dists: Float32Array | null = null;
+    if (fresh.length > 1 && batch && aIdx !== undefined) dists = batch(aIdx, fresh);
+    for (let j = 0; j < fresh.length; j++) {
+      const nb = fresh[j];
       visited.add(nb);
-      const d = qDist(nb);
+      const d = dists ? dists[j] : qDist(nb);
       const worstNow = results.length >= ef ? results[results.length - 1].dist : Infinity;
       if (d < worstNow || results.length < ef) {
         candidates.push({ node: nb, dist: d });

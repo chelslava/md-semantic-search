@@ -28,9 +28,9 @@ These are the only places where the retrieval stack may change; each has a measu
 | Gate | Question | Trigger / blocker | Tracked by |
 |---|---|---|---|
 | RESEARCH §15 | ~~Should `embeddinggemma-300m` replace `e5-base` as the default embedder?~~ **Resolved (#227):** default → `granite-multilingual-311m` (Apache-2.0); gemma opt-in under license veto. | — | closed |
-| RESEARCH §17 | Should HNSW become the default ANN engine? | Full graph build ~20× costlier than IVF; watch-reuse closed by #223 | #228 |
+| RESEARCH §17 | ~~Should HNSW become the default ANN engine?~~ **Declined (#228):** build acceleration measured at ×1.27 end-to-end (kernel ×6 on batches) — the order-of-magnitude trigger is unreachable; IVF stays default. | — | closed |
 | RESEARCH §12 | Late chunking vs heading-path context? | Ablation slice now exists (#226 `long-doc-section`) — read the measured result | #226 (data) → #228 (profiling) |
-| RESEARCH §13 | WASM SIMD dot-product kernels? | Profile >50k chunks — >40% of warm latency in JS float math | #228 |
+| RESEARCH §13 | WASM SIMD dot-product kernels? | Profile >50k chunks — >40% of warm latency in JS float math | #228 (build-side kernel shipped; sweep-side gate unchanged) |
 
 ---
 
@@ -40,7 +40,7 @@ These are the only places where the retrieval stack may change; each has a measu
 - [x] **Roadmap current** (#225): this document; obsolete v0.x milestones closed.
 - [x] **Golden set 48 → 186 dev** (#226): balanced RU/EN, explicit cross-lingual and long-doc slices, hard negatives from confuser pairs; #198 gate re-baselined.
 - [x] **Default embedder decision** (#227): `granite-multilingual-311m` (Apache-2.0) is the new default — nDCG@10 0.8653 vs e5-base 0.7874 on golden v2; `embeddinggemma-300m` stays opt-in under the Gemma license veto (re-evaluation triggers in RESEARCH.md §15).
-- [ ] **HNSW full-build parallelism** (#228): worker_threads / WASM SIMD; gate — ≥3× build speedup at Recall@10 ≥ 0.99, deterministic sidecar; closes or declines the §17(a) revisit condition.
+- [x] **HNSW full-build acceleration** (#228): worker parallelism declined as structurally blocked; WASM SIMD dot-batch kernel shipped (×6 on pure batches, ×1.27 end-to-end, recall identical) — §17(a) revisit closed as declined-with-measurements; IVF stays the default engine.
 - [ ] **RAG answer quality bench** (#229): citation precision/recall, coverage, refusal correctness for `ask`/`chat` — the first measured quality loop for synthesis, report-only nightly.
 - [ ] **Integrations hygiene** (#230): alfred/raycast READMEs + tests, dedicated vscode tests, workspace artifact cleanup.
 - [ ] **OpenSSF Scorecard** (#231): scorecard workflow + SHA-pinned actions on top of the existing SBOM/provenance/audit stack.

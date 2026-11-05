@@ -701,7 +701,11 @@ async function _buildIndexInner({
         }
       }
       if (!hnswIndex) {
-        hnswIndex = buildHnsw(rawVecs, { vectors: rawVecs, distance: hnswDistance(rawVecs) });
+        // issue #228: 'auto' routes the full build through the WASM SIMD
+        // dot-batch kernel when the vectors are a uniform Float32Array matrix
+        // (the hnswDistance closure below is exactly 1 − dot, so semantics
+        // match); otherwise buildHnsw silently keeps the closure path.
+        hnswIndex = buildHnsw(rawVecs, { vectors: rawVecs, distance: hnswDistance(rawVecs), engine: 'auto' });
       }
       atomicWrite(hnswPath, JSON.stringify(serializeHnsw(hnswIndex)));
       if (fs.existsSync(ivfPath)) {

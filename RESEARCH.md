@@ -478,6 +478,38 @@ corpora keeps **IVF as the default engine**; the criterion's second branch
    at 100% already at ef 16 on the bench corpora — the default leaves
    headroom for noisier real-world distributions).
 
+### Full-build acceleration attempt (issue #228 — revisit condition (a) closed as DECLINED)
+
+Profiling the full build (dim 256): **84–85% of wall time is distance
+computation** — 16.5k calls/node at n=5000, 18.9k at n=20000 — all on a
+sequential dependency chain (node *i*'s graph state depends on every prior
+insert). Two accelerators were measured:
+
+1. **worker_threads parallelism — structurally blocked.** A per-hop distance
+   batch is ~13 µs of work; a worker roundtrip (postMessage + await) costs
+   ~0.1–0.3 ms — 10–20× the work per hop. Batching across hops is impossible
+   without breaking the dependency chain, and concurrent insertion breaks the
+   byte-identical-sidecar determinism contract. Declined.
+2. **WASM SIMD dot-batch kernel (`src/wasm-dot.ts`) — shipped, gate missed.**
+   363 bytes of hand-written WAT (SIMD128 mul/add, one call per node's
+   neighbor list, JS fallback on compile failure). Microbenchmark: **×6.0**
+   over the unrolled JS dot on a 32-dot batch (dim 256). End-to-end full
+   build (equally-warmed interleaved medians): **×1.27 at n=5000 and n=20000**
+   — the beam mostly expands 1–2 fresh neighbors per hop, so batching rarely
+   amortizes, and bookkeeping (visited sets, heap sorts) is untouched. An
+   order-optimistic first-run pairing (cold closure vs warm wasm) showed
+   ×2.10/×2.88 — the honest equally-warmed number is ×1.27. **Recall@10 is
+   identical across engines** (70.6%/40.0% paired at 5k/20k); per-engine
+   byte-identical rebuilds are pinned by tests. The kernel stays wired as
+   `buildHnsw(..., { engine: 'auto' })` in the indexer (strictly faster,
+   zero risk) but does not change the engine decision.
+
+**Conclusion:** the original (a) trigger — "an order of magnitude cheaper" —
+is not reachable by either accelerator. IVF remains the default ANN engine;
+HNSW remains opt-in with the #223 watch-reuse path. The auto-flip condition
+would need an algorithmic change (deferred-distance beam) or a native kernel,
+both out of scope for this project's zero-native-deps constraint.
+
 ### Reproducing
 
 ```bash

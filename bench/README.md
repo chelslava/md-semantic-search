@@ -5,7 +5,7 @@ Performance and quality measurement tools for `md-semantic-search`.
 | Script | What it measures | Runs in CI |
 |---|---|---|
 | `e2e.mjs` | **End-to-end latency** (issue #196): `loadIndex` cold/warm, query latency P50/P95/P99 across search profiles (hybrid / semantic / ANN / miss), RSS — on a deterministic generated corpus. Regression gate via `--compare` (+20% tolerance default). | nightly: report always; `--compare` gate when the `MDSS_E2E_COMPARE=1` repo variable is set |
-| `ann-recall.mjs` | ANN (IVF) recall vs brute-force sweep quality gate. | nightly |
+| `ann-recall.mjs` | ANN (IVF) recall vs brute-force sweep quality gate; also prints the HNSW wasm-engine full-build speedup vs the closure path (issue #228, gate ≥3×). | nightly |
 | `mrl-recall.mjs` | MRL truncated-dimension recall gate (issue #139). | nightly |
 | `benchmark-1m.mjs` | 1M-vector fp32/int8 sweep micro-benchmark. | manual |
 | `run-bench.mjs` (in `scripts/`) | Golden-set retrieval quality (nDCG/MRR/Recall) with the committed baseline gate (issue #198). | nightly + PR gate |

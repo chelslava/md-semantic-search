@@ -7,7 +7,7 @@
  */
 import { performance } from 'node:perf_hooks';
 import { trainIVF, searchIVFCandidates } from '../dist/ivf.js';
-import { buildHnsw, searchHnswCandidates } from '../dist/hnsw.js';
+import { buildHnsw, searchHnswCandidates, serializeHnsw } from '../dist/hnsw.js';
 import { cosine } from '../dist/core.js';
 
 function randomNormalizedVector(dim) {
@@ -113,6 +113,25 @@ export function runAnnRecallBenchmark(sizes = [1000, 5000], dim = 256) {
     });
     const hnswBuildMs = (performance.now() - tHnsw0).toFixed(2);
     console.log(`HNSW built in ${hnswBuildMs} ms (M=16, no training phase)`);
+
+    // ── HNSW wasm engine (issue #228): full-build speedup gate ≥3× ──
+    const tHnswWasm0 = performance.now();
+    const hnswWasm = buildHnsw(vectors, {
+      vectors,
+      distance: (a, b) => 1 - cosine(a, vectors[b]),
+      engine: 'auto',
+    });
+    const hnswWasmBuildMs = performance.now() - tHnswWasm0;
+    console.log(
+      `HNSW wasm engine: ${hnswWasmBuildMs.toFixed(2)} ms — ` +
+        `×${(Number(hnswBuildMs) / hnswWasmBuildMs).toFixed(2)} vs closure ` +
+        `(gate ≥3×: ${Number(hnswBuildMs) / hnswWasmBuildMs >= 3 ? 'PASS' : 'MISS'})`,
+    );
+    const closureSidecar = JSON.stringify(serializeHnsw(hnsw));
+    const wasmSidecar = JSON.stringify(serializeHnsw(hnswWasm));
+    if (closureSidecar !== wasmSidecar) {
+      console.log('  note: engines differ in last-ulp accumulation order — each is self-deterministic');
+    }
 
     const efs = [16, 32, 64, 128];
     const hnswRows = [];

@@ -7,6 +7,18 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Issue #228** — HNSW full-build acceleration attempt, closed as declined-with-measurements
+  (RESEARCH.md §17): profiling shows **84–85% of build time is distance computation** on a
+  strictly sequential dependency chain. worker_threads parallelism is structurally blocked
+  (a per-hop batch is ~13 µs of work vs ~0.1–0.3 ms roundtrip; concurrent insertion would
+  break the byte-identical sidecar contract). A **WASM SIMD128 dot-batch kernel**
+  (`src/wasm-dot.ts` — 363 bytes of embedded WAT, zero native dependencies, JS fallback)
+  was implemented and measured: **×6.0 on pure 32-dot batches**, **×1.27 end-to-end** on
+  equally-warmed interleaved builds (×2.1–2.9 on order-biased pairings) — the beam expands
+  1–2 fresh neighbors per hop, so batching rarely amortizes. Recall@10 identical across
+  engines; per-engine deterministic sidecars pinned by tests. The kernel ships wired as
+  `buildHnsw(..., { engine: 'auto' })` in the indexer; **the §17(a) revisit condition is
+  closed as declined — IVF remains the default ANN engine, HNSW stays opt-in.**
 - **Issue #226** — Golden set v2: the frozen corpus grew to 26 documents
   (10 new long-form RU/EN notes with frontmatter and 3–4-level heading trees)
   and the query set to **204 graded queries (186 dev / 12 test / 6 holdout;
