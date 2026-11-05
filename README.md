@@ -515,7 +515,7 @@ against a loopback allowlist (`403` otherwise) so DNS-rebinding pages cannot rea
 and CORS stays fully off unless you pass `--cors-origin`. `/health` exposes the live counters
 (`in_flight`, `queued`, `rejected_total`).
 
-### Web UI (built-in, `--ui`)
+### Web UI (built-in; disable with `--no-ui`)
 
 By default `mdss serve` also serves a **zero-dependency web UI at `/`** — a keyboard-first search page
 with live debounced results, term highlighting, score bars, tag/type/status filters, dark/light theme

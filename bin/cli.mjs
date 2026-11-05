@@ -412,8 +412,13 @@ Options:
   --output <file>     Output file path (export, default: stdout).
   --ignore <glob>     Skip files/paths (repeatable). e.g. --ignore "log.md".
   --path <glob>       Search only files matching glob (repeatable). e.g. --path "docs/**".
+  --vault <dir>       Federated multi-vault search (repeatable): fuse results from
+                      --db and every --vault, each with its own index in
+                      <vault>/.mdss (search/serve).
   --since <date>      Search only files modified at/after date (YYYY-MM-DD or ISO).
   --k <n>             Number of results (search, default 6).
+  --max-per-file <n>  Collapse results to at most n passages per file
+                      (search; alias: --max-per-doc).
   --json              Machine-readable output (index, stats, search).
   --semantic          Pure vector ranking, skip lexical/RRF fusion (search).
   --rerank            Re-rank candidates with a cross-encoder (search; ~280MB model).
@@ -494,6 +499,12 @@ Options:
                       SSE streaming) or "ollama" (native /api/generate,
                       NDJSON streaming) (issue #199).
   --llm-model <m>     Provider-side chat model for --llm-endpoint.
+  --rag               tui: enable the interactive RAG panel — ask the vault from
+                      inside the TUI; streams a real LLM answer when
+                      --llm-endpoint is set, extractive fallback otherwise.
+  --session <id>      chat: use (or create) a named persistent session —
+                      multi-turn context with a reproducible source manifest.
+  --resume            chat: resume the most recent session.
   --open [N]          search: open the top (or Nth) hit in your editor at its
                       startLine — MDSS_EDITOR/VISUAL/EDITOR, then VS Code
                       --goto, then the GUI opener (issue #110). With --json on

@@ -1,123 +1,62 @@
-# Product Roadmap: Towards v1.0.0
+# Product Roadmap
 
-`md-semantic-search` has evolved from a single-file script into a hybrid, multi-modal Markdown retrieval engine with pure TypeScript compilation, Spherical K-Means IVF clustering, an official Obsidian plugin, and a dedicated static documentation site.
+`md-semantic-search` is a local-first, Markdown-native hybrid retrieval engine: dense multilingual embeddings + field-aware BM25F + fuzzy lookup fused by RRF, optional cross-encoder reranking, an ANN layer (IVF / HNSW), and a citation-first RAG surface — all offline, zero infra, one JSON index. Every retrieval default is backed by a measurement in [RESEARCH.md](https://github.com/chelslava/md-semantic-search/blob/main/RESEARCH.md).
 
-This document outlines the strategic analysis, architectural milestones, and delivery roadmap leading to the **v1.0.0 LTS (Long-Term Support)** release.
-
----
-
-## 🎯 Vision & Guiding Principles
-
-1. **100% Local & Zero-Cloud**: No API keys, no telemetry, no cloud vector databases. All computations execute on device.
-2. **Native Markdown First**: Full awareness of Markdown semantics — frontmatter YAML, heading hierarchies, code blocks, tables, and Obsidian `[[wikilinks]]`.
-3. **Instant Latency & Low Memory**: Cold searches within single-digit milliseconds; memory-efficient vector compression and zero-copy binary indexing.
-4. **Frictionless Integration**: Seamless workflows across CLI, TUI, Obsidian, VS Code, MCP (Model Context Protocol), and local LLMs (RAG).
+The plan below follows the project's operating principle: **no speculative features** — work either maintains the platform, grows the measurement base, or closes an explicitly defined decision gate. The active execution backlog lives in the [v2.2.0 milestone](https://github.com/chelslava/md-semantic-search/milestone/9) with the pinned [navigator issue](https://github.com/chelslava/md-semantic-search/issues/232).
 
 ---
 
-## 🗺️ Release Roadmap to v1.0.0
+## Where we are — v2.1.0 (2026-11-04)
 
-```text
-v0.5.0 (Current) ──► v0.6.0 (Graph & Contextual Retrieval)
-                          │
-                          ▼
-                     v0.7.0 (Zero-Copy mmap & Multi-Vault Federation)
-                          │
-                          ▼
-                     v0.8.0 (VS Code & IDE Ecosystem)
-                          │
-                          ▼
-                     v0.9.0 (Local Offline RAG & Synthesis)
-                          │
-                          ▼
-                     v1.0.0 (Production LTS & Spec Freeze)
-```
+| Capability | State | Measured in |
+|---|---|---|
+| Hybrid retrieval (dense + BM25F + fuzzy → RRF) | default | RESEARCH §5, §7 |
+| ANN — IVF (default) + HNSW (opt-in, watch-reuse) | shipped | §13, §17 |
+| Reranker registry, `gte-reranker-modernbert` default | shipped | §16 |
+| Multi-query expansion, HyDE, PRF, recency, graph boost | shipped | §5, §16 |
+| Token-budget chunking (RU parity) | shipped | #202 |
+| MRL dimension selection, int8 quantization | shipped | §11, §14 |
+| MCP 2025-11-25 — negotiation, ping, client sampling | shipped | #146, #197 |
+| RAG — `ask`/`chat`, OpenAI-compatible SSE, citations, sessions | shipped | #147, #199 |
+| Surfaces — CLI, TUI, daemon HTTP, web UI, Obsidian, VS Code, Windows tray, Docker | shipped | #126, #135, #165 |
+| Golden-set regression gate + e2e latency gate (nightly) | shipped | #196, #198 |
 
----
+## Open decision gates
 
-### 📍 Milestone 1: v0.6.0 — Graph-Augmented & Contextual Retrieval
+These are the only places where the retrieval stack may change; each has a measurable trigger defined in RESEARCH.md.
 
-**Goal**: Transform lexical + vector retrieval into a connected knowledge-graph search with deep contextual awareness.
-
-- [ ] **Graph-Augmented Ranking (PageRank & 2-Hop Spreading)**:
-  - Incorporate Obsidian `[[wikilinks]]` directly into retrieval scoring.
-  - Compute in-memory PageRank / link-centrality priors to boost authoritative hub notes.
-  - 2-hop neighborhood expansion: surface contextually linked chunks when direct query similarity is borderline.
-- [ ] **Contextual Chunker 2.0 (Anthropic-Style Context Injection)**:
-  - Prepend document metadata (title, top-level headings, tags) to chunk bodies before embedding to prevent context loss in isolated sub-sections.
-  - Protected block parsers: ensure Markdown tables, callout admonitions (`> [!NOTE]`), and fenced code blocks are never split across chunk boundaries.
-- [ ] **Rich Frontmatter Filter Expressions**:
-  - Expressive query filters: `--filter "tag:engineering AND status != archived AND date >= 2026-01-01"`.
+| Gate | Question | Trigger / blocker | Tracked by |
+|---|---|---|---|
+| RESEARCH §15 | Should `embeddinggemma-300m` replace `e5-base` as the default embedder? | Golden set too thin (48 dev queries) + Gemma license analysis | #226 → #227 |
+| RESEARCH §17 | Should HNSW become the default ANN engine? | Full graph build ~20× costlier than IVF; watch-reuse closed by #223 | #228 |
+| RESEARCH §12 | Late chunking vs heading-path context? | Requires a long-document ablation slice that does not exist yet | #226 |
+| RESEARCH §13 | WASM SIMD dot-product kernels? | Profile >50k chunks — >40% of warm latency in JS float math | #228 |
 
 ---
 
-### 📍 Milestone 2: v0.7.0 — Zero-Copy Storage & Multi-Vault Federation
+## v2.2.0 — Platform Modernization & Decision Gates (target: December 2026)
 
-**Goal**: Scale horizontally to $500\text{k}+$ chunks with sub-millisecond cold starts and multi-directory support.
+- [ ] **Node 20 EOL response** (#224): CI matrix on maintained LTS lines 22/24; runtime deprecation warning for pre-22; `engines` floor stays `>=20.9` until v3.0.0.
+- [ ] **Roadmap current** (#225): this document; obsolete v0.x milestones closed.
+- [ ] **Golden set 48 → 180+** (#226): balanced RU/EN, explicit cross-lingual pairs, hard negatives, a long-document ablation slice; recalibrated #198 gate.
+- [ ] **Default embedder decision** (#227): Gemma license analysis + measurement on the grown golden set; either the default switches (with migration notes) or the refusal is documented with re-evaluation criteria.
+- [ ] **HNSW full-build parallelism** (#228): worker_threads / WASM SIMD; gate — ≥3× build speedup at Recall@10 ≥ 0.99, deterministic sidecar; closes or declines the §17(a) revisit condition.
+- [ ] **RAG answer quality bench** (#229): citation precision/recall, coverage, refusal correctness for `ask`/`chat` — the first measured quality loop for synthesis, report-only nightly.
+- [ ] **Integrations hygiene** (#230): alfred/raycast READMEs + tests, dedicated vscode tests, workspace artifact cleanup.
+- [ ] **OpenSSF Scorecard** (#231): scorecard workflow + SHA-pinned actions on top of the existing SBOM/provenance/audit stack.
 
-- [ ] **Zero-Copy Memory-Mapped Index (`vectors.bin`)**:
-  - Binary index format supporting `mmap` / typed array views without JSON parse overhead.
-  - Near-instantaneous daemon and CLI startup times on multi-gigabyte vaults.
-- [ ] **Scalar & Product Quantization (Int8 / Bit-Vectors)**:
-  - Compress Float32 embeddings by $4\times$ (down to 1 byte per dimension) with $<1\%$ loss in nDCG@10.
-  - SIMD-accelerated dot product loops for int8 quantization.
-- [ ] **Multi-Vault & Workspace Federation**:
-  - Aggregate searching across multiple discrete Markdown repositories:
-    ```bash
-    mdss search --vault ./wiki --vault ./work-notes --vault ./research "query"
-    ```
+## v3.0.0 — Breaking platform floor (outlook)
 
----
+- [ ] `engines` floor → **Node ≥ 22** (breaking; the 18 → 20.9 precedent in v2.0.0). Announced via the #224 deprecation warning well in advance.
+- [ ] Absorb whatever the §15/§17 gates decide — a default-embedder or default-engine switch ships here if the migration UX requires a major.
 
-### 📍 Milestone 3: v0.8.0 — Ecosystem & IDE Integrations
+## Deferred by triggers (not scheduled)
 
-**Goal**: Bring semantic search to every developer environment and knowledge workspace.
-
-- [ ] **Official VS Code Extension**:
-  - Sidebar search panel with markdown syntax highlighting, keyboard shortcuts, and inline passage peek.
-  - Command palette quick-open: `MDSS: Semantic Search Notes`.
-- [ ] **Desktop Launchers (Raycast / Alfred / Flow Launcher)**:
-  - Raycast script commands and extensions for instant OS-level note discovery.
-- [ ] **Real-Time Cross-Platform File Watcher**:
-  - Zero-polling event integration (`fsevents` on macOS, `ReadDirectoryChangesW` on Windows, `inotify` on Linux) with smart write-burst debouncing.
+- **Late chunking** — prototype only if the #226 ablation slice shows a measured context-recall deficit of heading-path contextualization (§12).
+- **Learned sparse (SPLADE-family)** — BM25F is sufficient at the current corpus scale; revisit if target corpora grow an order of magnitude.
+- **WASM SIMD sweep kernels** — only if the #228 profiling shows the §13 trigger condition.
+- **Vector databases / distributed indexes** — out of the project segment (10k–50k chunks, zero-infra), unchanged.
 
 ---
 
-### 📍 Milestone 4: v0.9.0 — Local Offline RAG & Answer Synthesis
-
-**Goal**: Enable private, zero-network question answering and note synthesis directly from the CLI and MCP.
-
-- [ ] **Offline Question Answering (`mdss ask "query"`)**:
-  - Integrated local LLM inference via Transformers.js / ONNX Runtime Web or local runners (Ollama / llama.cpp bridge).
-  - Accurate citations: synthesizes answers strictly grounded in retrieved chunks with exact file/heading provenance.
-- [ ] **Auto-Summarization & Semantic Tagging**:
-  - Automatic note summary generation and keyword tagging on index build.
-- [ ] **Interactive RAG Mode in TUI**:
-  - Chat interface inside the TUI (`mdss tui --rag`) allowing interactive conversation with the vault.
-
----
-
-### 📍 Milestone 5: v1.0.0 — Production LTS & API Specification Freeze
-
-**Goal**: Enterprise-grade stability, long-term support, and reproducible evaluation.
-
-- [ ] **API & Schema v4 LTS Freeze**:
-  - Guaranteed backward compatibility for index formats, CLI arguments, and TypeScript library APIs.
-- [ ] **Comprehensive 1M-Chunk Benchmark Suite**:
-  - Rigorous latency, RAM, and nDCG@10 evaluation against Qdrant, ChromaDB, and ripgrep on large-scale real-world corpora.
-- [ ] **Zero-Vulnerability Production Security Audit**:
-  - Upstream dependency hardening and isolated execution sandboxing.
-- [ ] **Complete Multi-Language Documentation**:
-  - Interactive tutorials, video walkthroughs, and developer SDK documentation.
-
----
-
-## 📊 Summary of Target Milestones
-
-| Version | Focus Area | Key Deliverables | Estimated Release |
-| :--- | :--- | :--- | :--- |
-| **v0.6.0** | **Graph & Context** | Wikilink PageRank ranking, Contextual Chunking 2.0, Frontmatter DSL filters | Q3 2026 |
-| **v0.7.0** | **Scale & Storage** | Memory-mapped `vectors.bin`, Int8 quantization, Multi-vault federation | Q3 2026 |
-| **v0.8.0** | **Integrations** | VS Code extension, Raycast extension, OS-native file watchers | Q4 2026 |
-| **v0.9.0** | **Local RAG** | Offline `mdss ask`, Local LLM answer synthesis, TUI Chat | Q4 2026 |
-| **v1.0.0** | **LTS Stability** | Schema v4 LTS freeze, 1M chunk benchmarks, Security certification | Q1 2027 |
+*History: the v0.5 → v1.0.0 plan that led here is preserved in [git history](https://github.com/chelslava/md-semantic-search/commits/main/docs/roadmap.md); its milestones (graph retrieval, zero-copy storage, IDE integrations, local RAG, LTS freeze) all shipped between v1.0.0 and v2.1.0.*
