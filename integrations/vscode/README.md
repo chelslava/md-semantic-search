@@ -13,3 +13,29 @@ Ensure the local `mdss serve` daemon is running:
 ```bash
 mdss serve --db ./your-notes
 ```
+
+## Configuration
+
+| Setting | Meaning |
+|---|---|
+| `mdss.daemonUrl` | daemon address (default `http://127.0.0.1:8747`) |
+| `mdss.apiKey` | **deprecated** — migrate to SecretStorage |
+| `MDSS: Set API Key` command | stores the Bearer token in VS Code SecretStorage (encrypted per-account); preferred over the raw setting (issue #182) |
+
+The same contract as every other launcher: the daemon URL and API key apply
+uniformly to QuickPick search, the sidebar, and the Ask panel — all requests
+route through the Extension Host (issue #165).
+
+## Building from source
+
+Build artifacts (`out/`, `*.vsix`) are gitignored — release VSIX builds are
+produced by CI from the `integrations/vscode/vX.Y.Z` tag. To build locally:
+
+```bash
+cd integrations/vscode
+npm install
+npx tsc -p tsconfig.json        # compile out/
+npx vsce package                # produce md-semantic-search-vscode-<version>.vsix
+```
+
+Keep the tree clean: don't commit `out/` or `.vsix` files.

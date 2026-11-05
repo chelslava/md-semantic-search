@@ -27,6 +27,13 @@
       "title": "Daemon URL",
       "description": "Address of local mdss serve daemon",
       "default": "http://127.0.0.1:8747"
+    },
+    {
+      "name": "apiKey",
+      "type": "password",
+      "required": false,
+      "title": "API Key",
+      "description": "Bearer token when the daemon runs with --api-key"
     }
   ],
   "dependencies": {
