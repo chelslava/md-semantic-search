@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.1] - 2026-11-06
+
+### Fixed
+- **Issue #227 follow-up** — `mdss models` labeled `e5-base` as "Default":
+  the adapter's note text was not updated when the default moved to
+  `granite-multilingual-311m` in 2.2.0 (the "(default)" star on granite was
+  correct; only the stale e5-base description was). The note now reads
+  "Pre-2.2.0 default".
+
 ## [2.2.0] - 2026-11-06
 
 **Upgrade notes:** the default embedding model changed from `e5-base` to

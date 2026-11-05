@@ -55,7 +55,7 @@ export const MODELS: Record<string, ModelAdapter> = {
     dtype: 'q8',
     maxTokens: 512,
     family: 'e5',
-    note: 'Default. ~280MB. Solid multilingual + cross-lingual balance.',
+    note: 'Pre-2.2.0 default. ~280MB. Solid multilingual + cross-lingual balance.',
   },
   'e5-large': {
     id: 'Xenova/multilingual-e5-large',
