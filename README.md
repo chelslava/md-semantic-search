@@ -33,7 +33,7 @@ measurements that shaped its defaults.
 
 - 🔌 **Any folder, anywhere.** Point `--db` at any directory of `.md`/`.markdown`
   files. It does **not** have to live inside this project. Recursive by default.
-- 🌍 **Cross-lingual.** Multilingual embeddings (default `multilingual-e5-base`).
+- 🌍 **Cross-lingual.** Multilingual embeddings (default `granite-multilingual-311m`, Apache-2.0).
 - 🧭 **Markdown-aware context.** Each embedding includes the full active heading
   path (`title > h1 > h2 > ...`), so a deeply nested passage remains searchable
   by its parent topics without an LLM-generated context step.
@@ -667,7 +667,7 @@ Add to your `claude_desktop_config.json`:
 | `--db <dir>` | Folder of `.md` files (or set `MDSS_DB`). Can be anywhere on disk. |
 | `--index-dir <dir>` | Where to store the index (default: `<db>/.mdss`). |
 | `--cache-dir <dir>` | Model cache dir. Default: `$XDG_CACHE_HOME/mdss` if set, else `~/.cache/mdss` on **all** platforms (so on Windows that's `C:\Users\<you>\.cache\mdss` — *not* `%LOCALAPPDATA%`; override with `MDSS_CACHE_DIR`). |
-| `--model <name\|id>` | Embedding model (default `e5-base`). See `mdss models`. |
+| `--model <name\|id>` | Embedding model (default `granite-multilingual-311m`). See `mdss models`. |
 | `--workers <n>` | Number of parallel batch workers for embedding (default: 1). |
 | `--format <fmt>` | Export format: `jsonl` (default), `csv`, `parquet` (`export`). |
 | `--no-vectors` | Omit embeddings from export (`export`). |
@@ -793,26 +793,26 @@ mdss models
 | Alias | Model | Dim | Notes |
 |-------|-------|-----|-------|
 | `e5-small` | `Xenova/multilingual-e5-small` | 384 | Fastest (~120 MB). **Weak cross-lingual** — see RESEARCH. |
-| `e5-base` ⭐ | `Xenova/multilingual-e5-base` | 768 | Default. Best balance. |
+| `e5-base` | `Xenova/multilingual-e5-base` | 768 | Default before v2.2.0. Apache-2.0, MIT-style terms. |
 | `e5-large` | `Xenova/multilingual-e5-large` | 1024 | ~2.2 GB, higher quality. |
 | `bge-m3` | `Xenova/bge-m3` | 1024 | ~2.3 GB. Best cross-lingual separation in tests. |
 | `qwen3-embedding-0.6b` | `onnx-community/Qwen3-Embedding-0.6B-ONNX` | 1024 | ~613 MB q8. Opt-in; instruction-prefixed queries and last-token pooling. |
-| `granite-multilingual-311m` | `onnx-community/granite-embedding-311m-multilingual-r2-ONNX` | 768 | ~298 MB q8. IBM Granite r2 — ModernBERT 8k context, CLS pooling, Apache-2.0 (issue #200). |
-| `embeddinggemma-300m` | `onnx-community/embeddinggemma-300m-ONNX` | 768 | ~300 MB q8. Google EmbeddingGemma — pre-pooled output, MRL dims 64–768, Gemma license (issue #200). |
+| `granite-multilingual-311m` ⭐ | `onnx-community/granite-embedding-311m-multilingual-r2-ONNX` | 768 | **Default.** ~298 MB q8. IBM Granite r2 — ModernBERT 8k context, CLS pooling, **Apache-2.0**. Measured nDCG@10 0.8653 on golden v2 (issue #227). |
+| `embeddinggemma-300m` | `onnx-community/embeddinggemma-300m-ONNX` | 768 | ~300 MB q8. Measured leader (nDCG@10 0.8691) but **license-blocked from being the npm default**: Gemma Terms of Use, not MIT/Apache (issue #227). |
 
 Switching models invalidates the stored vectors automatically — the next
 `index` run does a full rebuild.
 
 Weights are downloaded in quantized (q8) form when the model repo ships them
-(e5-base is ~280 MB instead of ~1.1 GB fp32).
+(the default granite is ~298 MB).
 
-The Qwen3 alias is pinned to a tested model revision and automatically applies
-the retrieval instruction required for queries; indexed passages remain
-unprefixed. Its upstream benchmark is promising, but it has not replaced
-`e5-base` as the default because the project corpus has not been benchmarked
-against it yet. This is experimental enablement rather than completion of issue
-#50: release provenance and the versioned RU/EN benchmark remain tracked by
-#55 and #56 (the explicit model adapter contract landed in #60).
+Why granite is the default (issue #227): measured on the 186-query golden set
+v2 against the incumbent e5-base — **granite 0.8653 vs e5-base 0.7874 nDCG@10**
+with the same size class and a fully permissive Apache-2.0 license. The strictly
+better `embeddinggemma-300m` (0.8691) is a two-thousandths edge over granite but
+carries Google's Gemma Terms of Use; making it the npm default would impose
+those terms on every user, so it stays the recommended opt-in. Full decision
+record and per-category tables: RESEARCH.md §15.
 
 ### How to add a model
 

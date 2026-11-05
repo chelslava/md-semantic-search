@@ -307,34 +307,54 @@ golden set (#56) before any default change.
 
 ### Golden-Set Results (frozen corpus, hash `dev-golden.json`)
 
-| Model (alias) | q8 size | nDCG@10 (dev, n=48) | MRR | Hit@10 | Recall@10 | nDCG (test) | nDCG (holdout) |
-|---|---|---|---|---|---|---|---|
-| `e5-base` (baseline) | ~280 MB | 0.8797 | 0.8628 | 0.979 | 1.000 | 1.0000 | 0.9077 |
-| `granite-multilingual-311m` | ~298 MB | 0.8761 | 0.8559 | 0.979 | 1.000 | 1.0000 | 0.9077 |
-| `embeddinggemma-300m` | ~300 MB | **0.9002** | **0.8837** | **1.000** | 1.000 | 1.0000 | 0.9077 |
+Original n=48 fixture (historical):
 
-- **Non-inferiority (#198 tolerance: drop ≤ 0.01):** granite passes (−0.0036);
-  embeddinggemma **exceeds** the baseline (+0.0205) and is the only candidate
-  that recovers the two dev queries e5-base misses (Hit 1.000).
-- **Discriminating slice is `dev`** — `test` and `holdout` are saturated for
-  both models, so they cannot rank the candidates further.
+| Model (alias) | q8 size | nDCG@10 (dev, n=48) | MRR | Hit@10 | Recall@10 |
+|---|---|---|---|---|---|
+| `e5-base` (baseline) | ~280 MB | 0.8797 | 0.8628 | 0.979 | 1.000 |
+| `granite-multilingual-311m` | ~298 MB | 0.8761 | 0.8559 | 0.979 | 1.000 |
+| `embeddinggemma-300m` | ~300 MB | **0.9002** | **0.8837** | **1.000** | 1.000 |
 
-### Decision
+Re-measured on **golden set v2** (issue #226 — 186 dev queries, k=10, real
+models, this closed the "thin fixture" blocker):
 
-1. **Both candidates ship as opt-in registry entries** with pinned revisions
-   (issue #200 task 1) and are documented in the README Models table.
-2. **The default stays `e5-base`.** EmbeddingGemma's superiority is proven on
-   our golden set, but the default switch is gated on two factors outside this
-   measurement: (a) the **Gemma license** — not MIT/Apache, so making it the
-   npm-distributed default imposes Google's additional terms on every user,
-   which is a project-licensing decision, not an engineering one; (b) one
-   fixture (48 dev queries) is a thin base for overturning a default that the
-   #198 gate has been calibrated on. Re-evaluate if/when the golden set grows.
-   **Until then `embeddinggemma-300m` is the recommended opt-in** (`--model
-   embeddinggemma-300m`) — same size class as e5-base, better measured quality.
-3. **Infrastructure added:** `pooling: 'cls'` (granite) and the
-   `pooledOutput` adapter flag (pre-pooled ONNX graphs bypass the
-   feature-extraction pipeline) — both fingerprint-relevant and unit-tested.
+| Model (alias) | nDCG@10 | MRR | Hit@10 | Recall@10 | License | Size |
+|---|---|---|---|---|---|---|
+| `e5-base` (incumbent) | 0.7874 | 0.7577 | 0.9301 | 1.000 | MIT | ~280 MB |
+| `qwen3-embedding-0.6b` | 0.8519 | 0.8401 | 0.9462 | 1.000 | Apache-2.0 | ~613 MB |
+| `granite-multilingual-311m` | 0.8653 | 0.8495 | 0.9624 | 1.000 | **Apache-2.0** | ~298 MB |
+| `embeddinggemma-300m` | **0.8691** | **0.8594** | **0.9677** | 1.000 | Gemma ToU | ~300 MB |
+
+Per-category (v2 dev): granite **beats** embeddinggemma on `cross-lingual`
+(0.7766 vs 0.7552) and `paraphrase` (0.8829 vs 0.8751); embeddinggemma leads on
+`long-doc-section` (0.8443 vs 0.8087); hard-negative and identifier are tied.
+The v2 set amplified the gap to the incumbent (harder paraphrase/hard-negative
+weight), so the "thin fixture" concern resolved in favor of a switch.
+
+### Decision (final, issue #227 — revisits the 2026-10 decision above)
+
+1. **The default moves `e5-base` → `granite-multilingual-311m`** (v2.2.0):
+   measured +0.078 nDCG@10 over the incumbent on the expanded set, same size
+   class, **Apache-2.0**, 8k ModernBERT context. The #198 nightly gate baseline
+   was re-taken with granite (0.8653) and verified deterministic.
+2. **`embeddinggemma-300m` remains the recommended opt-in, not the default.**
+   The Gemma Terms of Use are not MIT/Apache-compatible; making it the
+   npm-distributed default would impose Google's additional terms (attribution,
+   Prohibited Use Policy, derivative-model obligations) on every user of an
+   MIT-licensed tool. Precedent: sentence-transformers / fastembed ship
+   permissive defaults and list Gemma models as opt-in. Re-evaluation triggers:
+   (a) an EmbeddingGemma successor under Apache-2.0 with a transformers.js
+   artifact (EmbeddingGemma 2 was announced on that path), or (b) a measured
+   quality gap on our set that grows beyond the license trade-off.
+3. **`qwen3-embedding-0.6b` stays opt-in** — Apache-2.0 but 2× the download of
+   granite at lower measured quality (0.8519).
+4. **Migration:** the adapter fingerprint change invalidates existing indexes —
+   the first `mdss index` after upgrade re-embeds the corpus (identical chunk
+   texts do NOT reuse vectors across models; vectors are model-scoped). Users
+   pinned by bandwidth or reproducibility keep the old behavior with
+   `--model e5-base`. `pooling: 'cls'` (granite) and the `pooledOutput` flag
+   (gemma) were already shipped in #200; both fingerprint-relevant and
+   unit-tested.
 
 ### Reproducing
 
@@ -342,7 +362,11 @@ golden set (#56) before any default change.
 node scripts/run-bench.mjs --model e5-base --slice dev
 node scripts/run-bench.mjs --model granite-multilingual-311m --slice dev
 node scripts/run-bench.mjs --model embeddinggemma-300m --slice dev
+node scripts/run-bench.mjs --model qwen3-embedding-0.6b --slice dev
 ```
+
+(Bare `node scripts/run-bench.mjs --slice dev` now measures the granite
+default and regenerates the committed baseline with `--update-baseline`.)
 
 ---
 

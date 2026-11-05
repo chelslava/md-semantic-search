@@ -131,7 +131,12 @@ export const MODELS: Record<string, ModelAdapter> = {
   },
 };
 
-export const DEFAULT_MODEL = 'e5-base';
+// Issue #227: granite-multilingual-311m is the default — Apache-2.0 (the
+// measured leader embeddinggemma-300m is license-blocked from being an npm
+// default by the Gemma Terms of Use) and measured +0.078 nDCG@10 over e5-base
+// on the 186-query golden set v2 (RESEARCH.md §15). Same size class (~298 MB
+// q8), 8k ModernBERT context. e5-base stays a registered alias.
+export const DEFAULT_MODEL = 'granite-multilingual-311m';
 export const POOLING: Pooling[] = ['mean', 'last_token', 'none', 'cls'];
 const POOLING_SET = new Set<string>(POOLING);
 

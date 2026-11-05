@@ -180,11 +180,12 @@ test('cli: --help prints usage and exits 0', () => {
 test('cli: models lists the registry and exits 0', () => {
   const r = runCli(['models']);
   assert.equal(r.status, 0);
-  assert.ok(r.stdout.includes('e5-base'), 'default model listed');
+  assert.ok(r.stdout.includes('granite-multilingual-311m'), 'default model listed');
+  assert.ok(r.stdout.includes('e5-base'), 'legacy default still registered');
   assert.ok(r.stdout.includes('bge-m3'), 'bge-m3 listed');
 });
 
-test('cli: models lists the Qwen3 profile and retains e5-base as default', () => {
+test('cli: models lists the Qwen3 profile and granite as default (issue #227)', () => {
   // Given
   const expectedAlias = 'qwen3-embedding-0.6b';
   const expectedId = 'onnx-community/Qwen3-Embedding-0.6B-ONNX';
@@ -194,7 +195,7 @@ test('cli: models lists the Qwen3 profile and retains e5-base as default', () =>
 
   // Then
   assert.equal(r.status, 0);
-  assert.match(r.stdout, /e5-base \(default\)/);
+  assert.match(r.stdout, /granite-multilingual-311m \(default\)/);
   assert.ok(r.stdout.includes(expectedAlias), 'Qwen3 alias listed');
   assert.ok(r.stdout.includes(expectedId), 'Qwen3 repository id listed');
   assert.match(r.stdout, /qwen3-embedding-0\.6b[^]*?dim 1024/);

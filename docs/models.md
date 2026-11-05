@@ -1,24 +1,48 @@
 # Supported Embedding & Reranking Models
 
-`md-semantic-search` supports quantized ONNX embedding and cross-encoder reranking models running locally via `@xenova/transformers`.
+Every model is an explicit, pinned adapter in `src/models.ts` / `src/rerank.ts`,
+running locally via `@huggingface/transformers` (ONNX, q8). `mdss models` prints
+the live registry — this page mirrors it (last synced with issue #227).
 
 ## Embedding Models
 
-| Alias | Model ID | Dimensions | Languages | Description |
-|---|---|---|---|---|
-| `e5-small` *(default)* | `Xenova/multilingual-e5-small` | 384 | 100+ | Lightweight & fast, ideal for general notes |
-| `e5-base` | `Xenova/multilingual-e5-base` | 768 | 100+ | High semantic accuracy for complex technical vaults |
-| `bge-m3` | `Xenova/bge-m3` | 1024 | 100+ | Multi-lingual, dense + sparse representation |
-| `bge-small` | `Xenova/bge-small-en-v1.5` | 384 | English | Fast and accurate for English-only vaults |
-| `bge-base` | `Xenova/bge-base-en-v1.5` | 768 | English | Balanced English retrieval |
-| `minilm` | `Xenova/all-MiniLM-L6-v2` | 384 | English | Ultra-lightweight English embeddings |
-| `qwen3` | `Xenova/Qwen2.5-Coder-0.5B` | 896 | Multi | Code & markdown technical documentation |
+Golden-set v2 = the 186-query dev slice (RESEARCH.md §7/§15, issue #226).
 
----
+| Alias | Model ID | Dim | Size (q8) | License | Golden v2 nDCG@10 |
+|---|---|---|---|---|---|
+| `granite-multilingual-311m` ⭐ *(default)* | `onnx-community/granite-embedding-311m-multilingual-r2-ONNX` | 768 | ~298 MB | Apache-2.0 | 0.8653 |
+| `embeddinggemma-300m` | `onnx-community/embeddinggemma-300m-ONNX` | 768 (MRL 64–768) | ~300 MB | Gemma ToU | 0.8691 |
+| `qwen3-embedding-0.6b` | `onnx-community/Qwen3-Embedding-0.6B-ONNX` | 1024 (MRL 32–1024) | ~613 MB | Apache-2.0 | 0.8519 |
+| `e5-base` | `Xenova/multilingual-e5-base` | 768 | ~280 MB | MIT | 0.7874 |
+| `e5-large` | `Xenova/multilingual-e5-large` | 1024 | ~2.2 GB | MIT | not re-measured on v2 |
+| `bge-m3` | `Xenova/bge-m3` | 1024 (MRL) | ~2.3 GB | MIT | not re-measured on v2 |
+| `e5-small` | `Xenova/multilingual-e5-small` | 384 | ~120 MB | MIT | not re-measured on v2 |
+
+### Default choice (issue #227)
+
+- `granite-multilingual-311m` is the default since v2.2.0: **+0.078 nDCG@10**
+  over the incumbent `e5-base` at the same size class, Apache-2.0, 8k-token
+  ModernBERT context.
+- `embeddinggemma-300m` is the measured leader but is **license-blocked from
+  being an npm default**: the Gemma Terms of Use are not MIT/Apache-compatible,
+  so shipping it as the default would impose Google's additional terms on every
+  user. It remains the recommended opt-in (`--model embeddinggemma-300m`).
+- Switching models invalidates stored vectors (adapter fingerprint) — the next
+  `index` run re-embeds. Upgrading from ≤ v2.1.0 defaults means a one-time full
+  re-embed of the corpus.
 
 ## Cross-Encoder Rerankers
 
-When `--rerank` is enabled, candidate search hits are re-evaluated by a cross-encoder model scoring query-document pairs together for maximum precision:
+Enabled with `--rerank`; the registry alias is chosen with `--rerank-model`.
 
-- `bge-reranker-base` (`Xenova/bge-reranker-base`)
-- `ms-marco-minilm` (`Xenova/ms-marco-MiniLM-L-6-v2`)
+| Alias | Model ID | Size (q8) | License | Notes |
+|---|---|---|---|---|
+| `gte-reranker-modernbert` *(default)* | `Alibaba-NLP/gte-reranker-modernbert-base` | ~144 MB | Apache-2.0 | ModernBERT 8k context. Golden set nDCG@10 0.9318 vs 0.8839 (issue #203). |
+| `bge-reranker-base` | `Xenova/bge-reranker-base` | ~278 MB | Apache-2.0 | Pre-#203 default, kept for reproducibility. |
+
+## Adding a model
+
+Every supported model is an explicit adapter (`src/models.ts`) with a pinned
+revision and measured fingerprint-relevant fields (pooling, prefixes, dtype).
+See ARCHITECTURE.md "Adding a model" checklist and RESEARCH.md §15 for the
+measurement gate a default-model candidate must pass.

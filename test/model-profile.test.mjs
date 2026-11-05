@@ -202,7 +202,7 @@ test('adapters expose explicit vector-producing semantics (structural fields)', 
     assert.equal(typeof m.id, 'string', `${name} id`);
     assert.equal(typeof m.queryPrefix, 'string', `${name} queryPrefix`);
     assert.equal(typeof m.passagePrefix, 'string', `${name} passagePrefix`);
-    assert.ok(['mean', 'last_token', 'none'].includes(m.pooling), `${name} pooling`);
+    assert.ok(['mean', 'last_token', 'none', 'cls'].includes(m.pooling), `${name} pooling`);
     assert.equal(typeof m.dim, 'number', `${name} dim`);
     assert.equal(typeof m.normalize, 'boolean', `${name} normalize`);
     assert.equal(m.unknownAdapter, undefined, `${name} is a usable adapter`);

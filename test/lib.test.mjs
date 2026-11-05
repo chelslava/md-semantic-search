@@ -36,7 +36,7 @@ test('exports map: package root exposes the library API (issue #14)', () => {
   // because the named import above already fails the file if a symbol is
   // missing (issue #29).
   assert.ok(MODELS['e5-base'], 'MODELS registry exposed');
-  assert.equal(DEFAULT_MODEL, 'e5-base');
+  assert.equal(DEFAULT_MODEL, 'granite-multilingual-311m');
   assert.equal(typeof tokenize, 'function');
   assert.equal(typeof encodeVec, 'function');
   assert.equal(typeof decodeVec, 'function');

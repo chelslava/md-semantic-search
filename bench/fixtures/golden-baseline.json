@@ -1,14 +1,14 @@
 {
   "name": "mdss-ru-en-golden-v2",
-  "model": "e5-base",
+  "model": "granite-multilingual-311m",
   "slice": "dev",
   "k": 10,
   "corpusHash": "8782e47c8cef74c51d317fe72003c5e44eff9cc47cf1ef8d8fda5dddc2a0e223",
   "fixtureHash": "6de354c0db407bb82d47e6d9ba9e96cb48e1846a9722fbb41060b4a9c7e42772",
   "metrics": {
-    "ndcg": 0.7874,
-    "mrr": 0.7577,
-    "hit": 0.9301,
+    "ndcg": 0.8653,
+    "mrr": 0.8495,
+    "hit": 0.9624,
     "recall": 1
   },
   "generatedAt": "2026-11-05"

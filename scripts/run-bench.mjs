@@ -37,6 +37,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { loadFixture, corpusFingerprint } from '../bench/fixture.mjs';
 import { queryMetrics, aggregateMetrics } from '../dist/metrics.js';
+import { DEFAULT_MODEL } from '../dist/models.js';
 import { buildIndex, loadIndex, searchIndex } from '../dist/index.js';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -94,7 +95,7 @@ function sha256(data) {
 function parseArgs(argv) {
   const args = {
     fixture: path.join(REPO, 'bench/fixtures/dev-golden.json'),
-    slice: 'dev', k: 10, model: 'e5-base',
+    slice: 'dev', k: 10, model: DEFAULT_MODEL,
     indexDir: null, cacheDir: null, json: false, fast: false, fake: false,
     gate: null, updateBaseline: null,
     // issue #203: reranker/multi-query measurement passthrough

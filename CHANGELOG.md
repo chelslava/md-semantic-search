@@ -23,6 +23,22 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
   RESEARCH.md §7.
 
 ### Changed
+- **Issue #227** — **Default embedding model: `e5-base` → `granite-multilingual-311m`**
+  (IBM Granite r2, Apache-2.0, ~298 MB q8, ModernBERT 8k context, CLS pooling).
+  Measured on the 186-query golden set v2 against the incumbent: **granite
+  nDCG@10 0.8653 vs e5-base 0.7874** (+0.078), MRR 0.8495 vs 0.7577, Hit@10
+  0.9624 vs 0.9301, Recall@10 1.0 both. The strictly measured leader
+  `embeddinggemma-300m` (0.8691) stays the recommended opt-in, **not** the
+  default: the Gemma Terms of Use are not MIT/Apache-compatible and an npm
+  default would impose them on every user — with re-evaluation triggers
+  documented (an Apache-2.0 EmbeddingGemma successor or a decisive quality
+  gap). `qwen3-embedding-0.6b` stays opt-in (Apache-2.0 but 2× the download at
+  lower measured quality). **Upgrade note:** the adapter fingerprint change
+  invalidates existing indexes — the first `mdss index` after upgrade performs
+  a one-time full re-embed (~298 MB model download on first use). Pin
+  `--model e5-base` to keep the pre-2.2.0 behavior and skip the re-embed.
+  The #198 nightly gate baseline was re-taken with granite (0.8653) and
+  verified deterministic; full decision record in RESEARCH.md §15.
 - **Issue #224** — Node 20 EOL response: the CI test matrix now covers the
   maintained LTS lines **22 and 24** (was 20+22) and every other workflow runs
   on Node 22. The published `engines` floor stays `>=20.9.0` for now; running
