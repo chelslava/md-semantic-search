@@ -4,7 +4,14 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.2.0] - 2026-11-06
+
+**Upgrade notes:** the default embedding model changed from `e5-base` to
+`granite-multilingual-311m` (issue #227) — the first `mdss index` after the
+upgrade performs a one-time full re-embed (~298 MB model download on first
+use); pin `--model e5-base` to keep the pre-2.2.0 behavior and skip the
+re-embed. CI now tests the maintained LTS lines (Node 22/24); Node 20 still
+runs but prints a deprecation warning (issue #224) and is dropped in v3.0.0.
 
 ### Added
 - **Issue #231** — OpenSSF Scorecard workflow (`.github/workflows/scorecard.yml`,
