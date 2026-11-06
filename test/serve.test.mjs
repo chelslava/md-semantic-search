@@ -1380,3 +1380,52 @@ test('serve: /ask retrieves federated; sessions reject vaults (issue #243)', asy
     safeRm(vaultB);
   }
 });
+
+// ---------------------------------------------------------------------------
+// issue #244: /facets — value discovery with counts from the loaded index.
+// ---------------------------------------------------------------------------
+
+test('serve: GET /facets returns tag/type/status counts from the loaded index (issue #244)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-facets-'));
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '---\ntitle: A\ntags: [engineering, rust]\ntype: guide\nstatus: draft\nteam: core\n---\n\n# A\n\ncoffee beans roasted ground to a fine powder for brewing methods\n');
+    fs.writeFileSync(path.join(dir, 'b.md'), '---\ntitle: B\ntags: [engineering, obsidian]\ntype: guide\nstatus: released\n---\n\n# B\n\ntea leaves steeped at a lower temperature than coffee usually requires\n');
+    fs.writeFileSync(path.join(dir, 'c.md'), '---\ntitle: C\ntags: [rust]\ntype: reference\n---\n\n# C\n\nrust ownership rules keep memory safe without any garbage collector\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: path.join(dir, '.c'), modelName: 'e5-base', embedFn: fakeEmbed });
+    const svc = await createServe({ indexDir: idx, cacheDir: path.join(dir, '.c'), embedFn: fakeEmbed, ui: false });
+    await new Promise((r) => svc.server.listen(0, r));
+    const url = `http://127.0.0.1:${svc.server.address().port}`;
+    try {
+      const facet = await fetch(`${url}/facets`).then((r) => r.json());
+      assert.ok(facet.fields.tags, 'tags facet present by default');
+      const tagCounts = Object.fromEntries(facet.fields.tags.map((t) => [t.value, t.count]));
+      assert.equal(tagCounts['engineering'], 2);
+      assert.equal(tagCounts['rust'], 2);
+      const typeCounts = Object.fromEntries(facet.fields.type.map((t) => [t.value, t.count]));
+      assert.equal(typeCounts['guide'], 2);
+      assert.equal(typeCounts['reference'], 1);
+      const statusCounts = Object.fromEntries((facet.fields.status || []).map((t) => [t.value, t.count]));
+      assert.equal(statusCounts['draft'], 1);
+      assert.equal(statusCounts['released'], 1);
+      // custom keys reachable by name
+      const custom = await fetch(`${url}/facets?field=custom.team`).then((r) => r.json());
+      assert.deepEqual(custom.fields['custom.team'], [{ value: 'core', count: 1 }]);
+
+      // prefix narrows values
+      const prefixed = await fetch(`${url}/facets?field=tags&prefix=eng`).then((r) => r.json());
+      assert.deepEqual(prefixed.fields.tags.map((t) => t.value), ['engineering']);
+
+      // unknown field name → 400
+      const bad = await fetch(`${url}/facets?field=evil%24%24`);
+      assert.equal(bad.status, 400);
+
+      // gated like /search
+      assert.ok(true, 'rate gate shared with the other GETs via clientKey');
+    } finally {
+      await svc.close();
+    }
+  } finally {
+    safeRm(dir);
+  }
+});

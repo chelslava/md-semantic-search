@@ -34,12 +34,16 @@ export const WEBUI_HTML = `<!doctype html>
       placeholder='Search by meaning — press "/" to focus' autocomplete="off">
   </searchbox>
   <div id="vaultrow" hidden title="federated vaults — click to scope the search"></div>
+  <div id="tagchips" hidden title="most common tags — click to filter"></div>
   <filters>
-    <input id="f-tag"   placeholder="tag">
-    <input id="f-type"  placeholder="type">
-    <input id="f-status" placeholder="status">
+    <input id="f-tag"   placeholder="tag" list="dl-tag">
+    <input id="f-type"  placeholder="type" list="dl-type">
+    <input id="f-status" placeholder="status" list="dl-status">
     <input id="f-limit"  type="number" min="1" max="50" placeholder="max/file">
   </filters>
+  <datalist id="dl-tag"></datalist>
+  <datalist id="dl-type"></datalist>
+  <datalist id="dl-status"></datalist>
   <div id="meta"></div>
   <div id="answer" hidden>
     <div class="ans-head"><span class="ans-title">Answer</span><span id="ansmode"></span>
@@ -88,6 +92,11 @@ header { display:flex; justify-content:space-between; align-items:center; paddin
 .vchip.active { border-color:var(--acc); color:var(--acc) }
 .hit-vault { font-size:.72rem; border:1px solid var(--line); border-radius:.4rem;
   padding:.05rem .4rem; color:var(--mut) }
+#tagchips { display:flex; gap:.35rem; margin-top:.6rem; flex-wrap:wrap }
+#tagchips[hidden] { display:none }
+.tchip { border:1px solid var(--line); border-radius:1rem; background:var(--card); color:var(--mut);
+  cursor:pointer; font-size:.78rem; padding:.15rem .6rem }
+.tchip:hover, .tchip.active { border-color:var(--acc); color:var(--acc) }
 filters { display:flex; gap:.5rem; margin-top:.6rem; flex-wrap:wrap }
 filters input { flex:1 1 7rem; min-width:0; padding:.4rem .6rem; border:1px solid var(--line);
   border-radius:.5rem; background:var(--card); color:var(--fg); font-size:.85rem }
@@ -485,6 +494,41 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
         row.appendChild(b);
       });
     }
-  }).catch(function () { healthEl.textContent = ''; });
+  }).catch(function () { healthEl.textContent = '' });
+
+  // issue #244: facet discovery — top tags as clickable chips, type/status
+  // values as datalist suggestions with counts
+  api('/facets?field=tags,type,status&limit=12').then(function (f) {
+    var chips = document.getElementById('tagchips');
+    var tagFacet = (f.fields && f.fields.tags) || [];
+    if (tagFacet.length) {
+      chips.hidden = false;
+      tagFacet.forEach(function (t) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'tchip';
+        b.textContent = t.value + ' (' + t.count + ')';
+        b.addEventListener('click', function () {
+          var input = document.getElementById('f-tag');
+          var active = input.value.trim() === t.value;
+          input.value = active ? '' : t.value;
+          b.classList.toggle('active', !active);
+          run();
+        });
+        chips.appendChild(b);
+      });
+    }
+    [['type', 'dl-type'], ['status', 'dl-status']].forEach(function (pair) {
+      var dl = document.getElementById(pair[1]);
+      var facet = (f.fields && f.fields[pair[0]]) || [];
+      dl.innerHTML = '';
+      facet.forEach(function (entry) {
+        var opt = document.createElement('option');
+        opt.value = entry.value;
+        opt.label = entry.value + ' (' + entry.count + ')';
+        dl.appendChild(opt);
+      });
+    });
+  }).catch(function () { /* facets are a discovery nicety — never block search */ });
 })();
 `;

@@ -1376,6 +1376,75 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     return;
   }
 
+  // issue #244: facet value discovery — tag/type/status/project (+ custom
+  // keys) value → count maps computed from the loaded runtime index. No model,
+  // no FS walk, O(chunks) in memory; derived from state.loaded so watch
+  // rebuilds refresh it automatically. Feeds the web UI chips.
+  if (req.method === 'GET' && url.pathname === '/facets') {
+    const limited = state.limiter?.gate(clientKey(req, state));
+    if (limited) {
+      res.setHeader('retry-after', String(limited.retryAfterSec));
+      json(res, 429, { error: 'rate limit exceeded — slow down', retryAfterSec: limited.retryAfterSec });
+      return;
+    }
+    const fields = new Set<string>();
+    for (const raw of url.searchParams.getAll('field')) {
+      for (const f of raw.split(',')) {
+        const name = f.trim();
+        if (!name) continue;
+        if (!/^[a-zA-Z_][a-zA-Z0-9_.-]*$/.test(name) || name.includes('..')) {
+          json(res, 400, { error: `invalid field name: "${name}"` });
+          return;
+        }
+        fields.add(name);
+      }
+    }
+    if (fields.size === 0) {
+      for (const f of ['tags', 'type', 'status', 'project']) fields.add(f);
+    }
+    const prefix = (url.searchParams.get('prefix') || '').toLowerCase();
+    const limitRaw = Number(url.searchParams.get('limit'));
+    const limit = Number.isInteger(limitRaw) && limitRaw > 0 && limitRaw <= 500 ? limitRaw : 50;
+    try {
+      const chunks = state.loaded.index.chunks;
+      const counters = new Map<string, Map<string, number>>();
+      for (const f of fields) counters.set(f, new Map());
+      const bump = (field: string, rawValue: unknown): void => {
+        if (rawValue === undefined || rawValue === null || rawValue === '') return;
+        const values = Array.isArray(rawValue) ? rawValue : [rawValue];
+        const counter = counters.get(field)!;
+        for (const value of values) {
+          const str = String(value);
+          if (!str) continue;
+          counter.set(str, (counter.get(str) || 0) + 1);
+        }
+      };
+      for (const c of chunks) {
+        const meta = c.meta || {};
+        for (const f of fields) {
+          if (f === 'tags' || f === 'aliases') bump(f, meta[f]);
+          else if (f === 'type' || f === 'status' || f === 'project' || f === 'canonicalRef') bump(f, meta[f]);
+          else if (f.startsWith('custom.') && meta.custom) bump(f, meta.custom[f.slice('custom.'.length)]);
+          else if (meta.custom && meta.custom[f] !== undefined) bump(f, meta.custom[f]);
+        }
+      }
+      const facetOutput: Record<string, Array<{ value: string; count: number }>> = {};
+      for (const [f, counter] of counters) {
+        facetOutput[f] = [...counter.entries()]
+          .filter(([value]) => !prefix || value.toLowerCase().startsWith(prefix))
+          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+          .slice(0, limit)
+          .map(([value, count]) => ({ value, count }));
+      }
+      json(res, 200, { fields: facetOutput, chunks: chunks.length });
+    } catch (e: any) {
+      process.stderr.write(`serve: /facets failed: ${e?.stack || e}
+`);
+      json(res, 500, { error: 'internal server error' });
+    }
+    return;
+  }
+
   if (url.pathname === '/related' && (req.method === 'POST' || req.method === 'GET')) {
     // issue #181: /related runs the (semantic) relatedness sweep — same rate
     // gate as /search, before any body parsing
