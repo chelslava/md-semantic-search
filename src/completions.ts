@@ -46,6 +46,7 @@ export const FLAGS: FlagSpec[] = [
   { name: '--min-answer-confidence', kind: 'number' },
   { name: '--rerank-model', kind: 'value' },
   { name: '--health-public', kind: 'flag' },
+  { name: '--trust-proxy', kind: 'value' },
   { name: '--allow-unsecured', kind: 'flag' },
   { name: '--ann', kind: 'flag' },
   { name: '--ann', kind: 'value' },

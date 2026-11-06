@@ -48,7 +48,7 @@ function defaultCacheDir() {
 }
 
 function parseArgs(argv) {
-  const opts = { _: [], ignore: [], path: [], vaults: [] };
+  const opts = { _: [], ignore: [], path: [], vaults: [], trustProxy: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') opts.json = true;
@@ -84,6 +84,10 @@ function parseArgs(argv) {
     else if (a === '--allowed-host') {
       const v = nextValue(argv, ++i, a);
       opts.allowedHost = opts.allowedHost ? [...opts.allowedHost, v] : [v];
+    }
+    else if (a === '--trust-proxy') {
+      const v = nextValue(argv, ++i, a);
+      opts.trustProxy = opts.trustProxy ? [...opts.trustProxy, v] : [v];
     }
     else if (a === '--cors-origin') {
       const v = nextValue(argv, ++i, a);
@@ -231,7 +235,7 @@ const KNOWN_CONFIG_KEYS = new Set([
   'targetTokens', 'target-tokens', 'port', 'host', 'apiKey', 'api-key',
   'apiKeyFile', 'api-key-file', 'allowUnsecured', 'allow-unsecured',
   'allowedHost', 'allowed-host', 'allowedHosts', 'allowed-hosts',
-  'corsOrigin', 'cors-origin',
+  'corsOrigin', 'cors-origin', 'trustProxy', 'trust-proxy',
   'rateLimit', 'rate-limit', 'maxConcurrency', 'max-concurrency',
   'healthPublic', 'health-public', 'watch', 'watchInterval', 'watch-interval',
   'watchDelay', 'watch-delay', 'offline', 'rerank', 'semantic', 'tag', 'project', 'type', 'status', 'canonical',
@@ -467,7 +471,13 @@ Options:
                       env MDSS_RATE_LIMIT; issue #119).
   --max-concurrency <n>  serve: max concurrent in-flight searches, queue cap
                       2× → 503 when full; 0 disables (default = CPU count,
-                      env MDSS_MAX_CONCURRENCY; issue #119).
+                      env MDSS_MAX_CONCURRENCY; issue #119).  --trust-proxy <ip|cidr>
+                      serve: reverse-proxy peers whose X-Forwarded-For may be
+                      trusted for rate-limit keying (issue #241) — repeatable;
+                      exact IP or IPv4 CIDR. Default OFF: the header is
+                      spoofable, so only operator-configured peers are honored
+                      (a team behind one nginx otherwise shares one bucket).
+
   --watch             serve: re-index incrementally on file changes (mtime poll).
   --no-ui             serve: disable the built-in web UI at the root path
                       (issue #111) - the JSON API help is served there instead.
@@ -1755,6 +1765,8 @@ async function cmdServe(opts) {
     ],
     // CORS stays OFF unless explicitly opted in (issue #120).
     corsOrigins: opts.corsOrigin,
+    // issue #241: proxy peers trusted for X-Forwarded-For rate-limit keying.
+    trustProxy: opts.trustProxy,
     // Fairness gates (issue #119); 0 explicitly disables a gate.
     rateLimit: opts.rateLimit ?? envNonNegInt('MDSS_RATE_LIMIT'),
     maxConcurrency: opts.maxConcurrency ?? envNonNegInt('MDSS_MAX_CONCURRENCY'),

@@ -8,7 +8,7 @@ import net from 'node:net';
 import { buildIndex } from '../dist/indexer.js';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { createServe, DEFAULT_HOST, MAX_BODY_BYTES, isLoopbackHost, validateBindSecurity, loadApiKeyFile, TokenBucket } from '../dist/serve.js';
+import { createServe, DEFAULT_HOST, MAX_BODY_BYTES, isLoopbackHost, validateBindSecurity, loadApiKeyFile, TokenBucket, clientKey } from '../dist/serve.js';
 
 /** Fixed epoch for deterministic limiter tests. */
 const T0 = 1_700_000_000_000;
@@ -1168,4 +1168,87 @@ test('serve: SSE /mcp connections are capped at maxConcurrency (issue #181)', as
   } finally {
     safeRm(dir);
   }
+});
+
+// ---------------------------------------------------------------------------
+// issue #241: proxy-aware rate-limit keying + connection time bounds.
+// ---------------------------------------------------------------------------
+
+test('serve: X-Forwarded-For is ignored without --trust-proxy — one peer, one bucket (issue #241)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-tp-off-'));
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Tea\n\ntea leaves steeping notes here\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: path.join(dir, '.c'), modelName: 'e5-base', embedFn: fakeEmbed });
+    const svc = await createServe({ indexDir: idx, cacheDir: path.join(dir, '.c'), embedFn: fakeEmbed, rateLimit: 2 });
+    await new Promise((r) => svc.server.listen(0, r));
+    const url = `http://127.0.0.1:${svc.server.address().port}`;
+    try {
+      const search = (xff) => fetch(`${url}/search`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...(xff ? { 'x-forwarded-for': xff } : {}) },
+        body: JSON.stringify({ query: 'tea', k: 1 }),
+      }).then((r) => r.status);
+      assert.equal(await search('10.0.0.1'), 200);
+      assert.equal(await search('10.0.0.2'), 200, 'a spoofed XFF still burns the same socket bucket');
+      assert.equal(await search('10.0.0.3'), 429, 'rate limit applies per socket peer — XFF ignored');
+      const health = await fetch(`${url}/health`).then((r) => r.json());
+      assert.equal(health.client_key, 'socket', 'health reports socket keying');
+    } finally {
+      await svc.close();
+    }
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('serve: with --trust-proxy the last forwarded hop keys the bucket; untrusted spoofing is ignored (issue #241)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-tp-on-'));
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Tea\n\ntea leaves steeping notes here\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: path.join(dir, '.c'), modelName: 'e5-base', embedFn: fakeEmbed });
+    const svc = await createServe({
+      indexDir: idx, cacheDir: path.join(dir, '.c'), embedFn: fakeEmbed,
+      rateLimit: 2, trustProxy: ['127.0.0.1', '10.9.0.0/16'],
+    });
+    await new Promise((r) => svc.server.listen(0, r));
+    const url = `http://127.0.0.1:${svc.server.address().port}`;
+    try {
+      const search = (xff) => fetch(`${url}/search`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...(xff ? { 'x-forwarded-for': xff } : {}) },
+        body: JSON.stringify({ query: 'tea', k: 1 }),
+      }).then((r) => r.status);
+
+      // trusted loopback peer: each forwarded client gets its own bucket
+      assert.equal(await search('10.1.1.1'), 200);
+      assert.equal(await search('10.1.1.1'), 200, 'same forwarded client, still within its bucket');
+      assert.equal(await search('10.1.1.1'), 429, 'its bucket exhausts independently');
+      assert.equal(await search('10.1.1.2, 10.9.5.5'), 200, 'LAST hop keys — a different client passes immediately');
+      assert.equal(await search('10.2.2.2'), 200, 'another client, another bucket');
+      const health = await fetch(`${url}/health`).then((r) => r.json());
+      assert.equal(health.client_key, 'proxy', 'health reports proxy keying');
+    } finally {
+      await svc.close();
+    }
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('serve: clientKey unit matrix — exact IP, CIDR, v4-mapped, untrusted (issue #241)', () => {
+  const state = { trustProxy: ['127.0.0.1', '10.9.0.0/16'] };
+  const mkReq = (peer, xff) => ({
+    socket: { remoteAddress: peer },
+    headers: xff === undefined ? {} : { 'x-forwarded-for': xff },
+  });
+  assert.equal(clientKey(mkReq('127.0.0.1', '10.1.1.1'), state), 'proxy:10.1.1.1');
+  assert.equal(clientKey(mkReq('::ffff:127.0.0.1', '10.1.1.9'), state), 'proxy:10.1.1.9', 'v4-mapped loopback is trusted');
+  assert.equal(clientKey(mkReq('10.9.5.5', '10.1.1.8'), state), 'proxy:10.1.1.8', 'CIDR peer trusted');
+  assert.equal(clientKey(mkReq('10.10.5.5', '10.1.1.7'), state), '10.10.5.5', 'outside the CIDR — header ignored');
+  assert.equal(clientKey(mkReq('192.168.1.1', '10.1.1.6'), state), '192.168.1.1', 'untrusted peer — socket address wins');
+  assert.equal(clientKey(mkReq('127.0.0.1'), state), '127.0.0.1', 'trusted peer without XFF — socket address');
+  const off = clientKey(mkReq('127.0.0.1', '10.1.1.5'), { trustProxy: [] });
+  assert.equal(off, '127.0.0.1', 'empty trustProxy — header never honored');
 });

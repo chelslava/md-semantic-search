@@ -63,6 +63,8 @@ export interface ServeState {
   mcpSseRes?: http.ServerResponse;
   /** Extra Host-header values accepted beyond the loopback defaults (issue #120). */
   allowedHosts?: string[];
+  /** issue #241: proxy peers trusted for X-Forwarded-For rate-limit keying. */
+  trustProxy?: string[];
   /** Exact origins reflected as `Access-Control-Allow-Origin`; absent → CORS off (issue #120). */
   corsOrigins?: string[];
   /** Fairness gates for /search (issue #119); `0` disables a gate. */
@@ -83,6 +85,13 @@ export interface CreateServeOptions {
   healthPublic?: boolean;
   allowedHosts?: string[];
   corsOrigins?: string[];
+  /**
+   * issue #241: reverse-proxy peers whose X-Forwarded-For header may be
+   * trusted for rate-limit keying. Exact IPs or IPv4 CIDRs; repeatable.
+   * Default OFF — the header is spoofable, so a peer must be operator-configured
+   * before any forwarded value is honored.
+   */
+  trustProxy?: string[];
   rateLimit?: number;
   maxConcurrency?: number;
   /** issue #116: verbose watch-loop trace (polls, retries, classifications). */
@@ -283,6 +292,7 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     healthPublic = process.env.MDSS_HEALTH_PUBLIC === 'true',
     allowedHosts,
     corsOrigins,
+    trustProxy,
     rateLimit = DEFAULT_RATE_LIMIT_PER_MIN,
     maxConcurrency = DEFAULT_MAX_CONCURRENCY,
     watchDebug = false,
@@ -327,6 +337,7 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     ...(systemPrompt ? { systemPrompt } : {}),
     allowedHosts,
     corsOrigins,
+    trustProxy,
     limiter: new ServeLimiter(rateLimit, DEFAULT_RATE_BURST, maxConcurrency),
     sseConnections: 0,
   };
@@ -368,6 +379,15 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
   });
+  // issue #241: explicit per-connection time bounds. Body reads are
+  // size-bounded (64 KB) but were never TIME-bounded — a client dribbling
+  // bytes or never finishing headers held a connection (and eventually a
+  // concurrency slot) indefinitely. headersTimeout cuts slowloris-style
+  // header dribbles; requestTimeout bounds the whole request receive window
+  // (the /ask SSE RESPONSE stream is not covered by it — its idle timeout,
+  // armed per token since #184/#199, governs the generation).
+  server.headersTimeout = 30_000;
+  server.requestTimeout = 300_000;
 
   let stopped = false;
   let timer: NodeJS.Timeout | null = null;
@@ -897,7 +917,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
   if (req.method === 'POST' && url.pathname === '/search') {
     // Fairness gate 1 (issue #119): per-client token bucket → 429 + Retry-After.
-    const limited = state.limiter?.gate(req.socket.remoteAddress || 'unknown');
+    const limited = state.limiter?.gate(clientKey(req, state));
     if (limited) {
       res.setHeader('retry-after', String(limited.retryAfterSec));
       json(res, 429, { error: 'rate limit exceeded — slow down', retryAfterSec: limited.retryAfterSec });
@@ -1000,7 +1020,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   // holds a concurrency slot for its whole generation). Requires --llm-endpoint:
   // over HTTP a missing chat backend is a 400, never a silent extractive degrade.
   if (req.method === 'POST' && url.pathname === '/ask') {
-    const limited = state.limiter?.gate(req.socket.remoteAddress || 'unknown');
+    const limited = state.limiter?.gate(clientKey(req, state));
     if (limited) {
       res.setHeader('retry-after', String(limited.retryAfterSec));
       json(res, 429, { error: 'rate limit exceeded — slow down', retryAfterSec: limited.retryAfterSec });
@@ -1159,7 +1179,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     }
     // issue #181: /doc does synchronous disk IO per request — it goes through
     // the same fairness gates as /search so a local storm cannot starve it
-    const limited = state.limiter?.gate(req.socket.remoteAddress || 'unknown');
+    const limited = state.limiter?.gate(clientKey(req, state));
     if (limited) {
       res.setHeader('retry-after', String(limited.retryAfterSec));
       json(res, 429, { error: 'rate limit exceeded — slow down', retryAfterSec: limited.retryAfterSec });
@@ -1211,6 +1231,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       watching: state.watching,
       indexDir: hideIndexDir ? undefined : state.indexDir,
       // fairness counters (issue #119)
+      client_key: state.trustProxy && state.trustProxy.length > 0 ? 'proxy' : 'socket',
       in_flight: state.limiter?.inFlight ?? 0,
       queued: state.limiter?.queued ?? 0,
       rejected_total: state.limiter?.rejectedTotal ?? 0,
@@ -1237,7 +1258,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   if (url.pathname === '/related' && (req.method === 'POST' || req.method === 'GET')) {
     // issue #181: /related runs the (semantic) relatedness sweep — same rate
     // gate as /search, before any body parsing
-    const limited = state.limiter?.gate(req.socket.remoteAddress || 'unknown');
+    const limited = state.limiter?.gate(clientKey(req, state));
     if (limited) {
       res.setHeader('retry-after', String(limited.retryAfterSec));
       json(res, 429, { error: 'rate limit exceeded — slow down', retryAfterSec: limited.retryAfterSec });
@@ -1461,7 +1482,7 @@ async function handleMcpHttp(req: http.IncomingMessage, res: http.ServerResponse
   }
 
   // Same fairness gate as /search — tools/call can trigger embedding work.
-  const limited = state.limiter?.gate(req.socket.remoteAddress || 'unknown');
+  const limited = state.limiter?.gate(clientKey(req, state));
   if (limited) {
     res.setHeader('retry-after', String(limited.retryAfterSec));
     json(res, 429, { error: 'rate limit exceeded - slow down', retryAfterSec: limited.retryAfterSec });
@@ -1515,6 +1536,68 @@ async function handleMcpHttp(req: http.IncomingMessage, res: http.ServerResponse
   } finally {
     release();
   }
+}
+
+/**
+ * issue #241: the fairness-gate client key. Direct socket address by default;
+ * when the direct peer is an operator-trusted proxy, the LAST X-Forwarded-For
+ * hop keys the bucket so a team behind one nginx does not share one 60/min
+ * budget. Untrusted peers never have their header honored — it is spoofable.
+ */
+export function clientKey(req: http.IncomingMessage, state: Pick<ServeState, 'trustProxy'>): string {
+  const peer = req.socket.remoteAddress || 'unknown';
+  if (!state.trustProxy || state.trustProxy.length === 0) return peer;
+  if (!isTrustedPeer(peer, state.trustProxy)) return peer;
+  const xff = req.headers['x-forwarded-for'];
+  const last = typeof xff === 'string'
+    ? xff.split(',').map((h) => h.trim()).filter(Boolean).pop()
+    : Array.isArray(xff)
+      ? String(xff[xff.length - 1] ?? '').trim()
+      : undefined;
+  return last ? `proxy:${last}` : peer;
+}
+
+function normalizeIp(ip: string): string {
+  // v4-mapped IPv6 (::ffff:127.0.0.1) and bare v4 compare equal
+  return ip.startsWith('::ffff:') ? ip.slice(7) : ip;
+}
+
+function isTrustedPeer(peer: string, trustProxy: string[]): boolean {
+  const norm = normalizeIp(peer);
+  for (const entry of trustProxy) {
+    if (entry.includes('/')) {
+      if (cidrMatch(norm, entry)) return true;
+    } else if (normalizeIp(entry) === norm) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Exact-IPv4 CIDR match only (the documented scope; IPv6 proxies use exact IPs). */
+function cidrMatch(ip: string, cidr: string): boolean {
+  const [base, bitsRaw] = cidr.split('/');
+  const bits = Number(bitsRaw);
+  const ipParts = ip.split('.');
+  const baseParts = base.split('.');
+  if (ipParts.length !== 4 || baseParts.length !== 4 || !Number.isInteger(bits) || bits < 0 || bits > 32) {
+    return false;
+  }
+  const toInt = (parts: string[]): number | null => {
+    let n = 0;
+    for (const part of parts) {
+      const v = Number(part);
+      if (!Number.isInteger(v) || v < 0 || v > 255) return null;
+      n = (n << 8) | v;
+    }
+    return n >>> 0;
+  };
+  const ipInt = toInt(ipParts);
+  const baseInt = toInt(baseParts);
+  if (ipInt === null || baseInt === null) return false;
+  if (bits === 0) return true;
+  const mask = (0xffffffff << (32 - bits)) >>> 0;
+  return ((ipInt & mask) === (baseInt & mask));
 }
 
 function json(res: http.ServerResponse, status: number, data: object): void {

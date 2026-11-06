@@ -565,7 +565,14 @@ network binds, DNS-rebinding protection, and rate limiting built in. To serve a 
    # or MDSS_API_KEY_FILE=/etc/mdss/api-key
    ```
 
-3. **If you must expose mdss directly** (no proxy), require the key *and* keep the firewall tight:
+3. **Behind nginx/caddy, split the rate-limit buckets per real client** — otherwise the whole team shares one 60/min budget:
+
+   ```bash
+   mdss serve --db /srv/wiki --host 127.0.0.1 --trust-proxy 127.0.0.1
+   # nginx on the same box is now trusted; each X-Forwarded-For client gets its own bucket
+   ```
+
+4. **If you must expose mdss directly** (no proxy), require the key *and* keep the firewall tight:
 
    ```bash
    MDSS_API_KEY=$(openssl rand -hex 32) mdss serve --db /srv/wiki --host 0.0.0.0
@@ -573,7 +580,7 @@ network binds, DNS-rebinding protection, and rate limiting built in. To serve a 
 
    The startup banner warns loudly whenever an unsecured non-loopback bind was explicitly allowed.
 
-4. **Browser clients on another origin?** Opt into CORS explicitly, exact origins only:
+5. **Browser clients on another origin?** Opt into CORS explicitly, exact origins only:
    `--cors-origin https://intranet.example.com`.
 
 ### 4. MCP Server (Claude Desktop, Cursor, Copilot, Antigravity)
@@ -697,6 +704,7 @@ Add to your `claude_desktop_config.json`:
 | `--allow-unsecured` | `serve`: explicit opt-in to bind non-loopback **without** auth; without it (and without an API key) such a bind refuses to start (issue #121). |
 | `--allowed-host <h>` | `serve`: extra `Host` header value to accept (repeatable); anything else gets `403` — DNS-rebinding guard (issue #120). |
 | `--cors-origin <o>` | `serve`: allow cross-origin browser access from this exact origin (repeatable); CORS is off unless set (issue #120). |
+| `--trust-proxy <ip\|cidr>` | `serve`: reverse-proxy peers whose `X-Forwarded-For` may be trusted for rate-limit keying (repeatable; exact IP or IPv4 CIDR). Default **off** — the header is spoofable, so without it every client behind one proxy shares one bucket (issue #241). `/health` reports the active keying (`client_key`). |
 | `--rate-limit <n>` | `serve`: max `/search` requests per minute per client, burst 10 → `429 + Retry-After` above it; `0` disables (default 60, `MDSS_RATE_LIMIT`; issue #119). |
 | `--max-concurrency <n>` | `serve`: max concurrent in-flight searches; queue cap 2× → `503` when full; `0` disables (default = CPU count, `MDSS_MAX_CONCURRENCY`; issue #119). |
 | `--watch` | `serve`: re-index incrementally when files change. |
