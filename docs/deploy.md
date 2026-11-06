@@ -78,3 +78,19 @@ image (no port publishing needed):
 docker run -i --rm -v model-cache:/cache -v "$PWD/notes:/notes:ro" \
   ghcr.io/chelslava/md-semantic-search:latest mcp --db /notes
 ```
+
+## Base image pinning (issue #252)
+
+The Dockerfile pins both stages to a **digest** of `node:22-alpine` — the tag
+is a moving pointer, and a re-tagged base image would otherwise silently
+change the runtime. Dependabot's `docker` ecosystem opens a weekly reviewed
+PR when the digest moves; merge it to refresh the pin. To bump manually:
+
+```bash
+TOKEN=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/node:pull" | jq -r .token)
+curl -sI -H "Authorization: Bearer $TOKEN"   -H "Accept: application/vnd.oci.image.index.v1+json"   https://registry-1.docker.io/v2/library/node/manifests/22-alpine | grep -i docker-content-digest
+```
+
+The runtime image deliberately does **not** carry `src/`: `bin/cli.mjs`
+imports only `../dist`, and the `provenance` CI job proves the packed
+artifact's surface — the TypeScript sources are a build-stage input only.
