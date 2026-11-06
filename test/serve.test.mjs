@@ -1252,3 +1252,131 @@ test('serve: clientKey unit matrix — exact IP, CIDR, v4-mapped, untrusted (iss
   const off = clientKey(mkReq('127.0.0.1', '10.1.1.5'), { trustProxy: [] });
   assert.equal(off, '127.0.0.1', 'empty trustProxy — header never honored');
 });
+
+// ---------------------------------------------------------------------------
+// issue #243: federated multi-vault search over HTTP.
+// ---------------------------------------------------------------------------
+
+test('serve: /search fuses vaults over HTTP with vault attribution (issue #243)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-fed-'));
+  const vaultB = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-fedb-'));
+  const idx = path.join(dir, '.mdss');
+  const idxB = path.join(vaultB, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'primary.md'), '# Coffee\n\ncoffee beans roasted ground brewing methods\n');
+    fs.writeFileSync(path.join(vaultB, 'b.md'), '# Tea Vault\n\ntea leaves steeping temperature guide\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: path.join(dir, '.c'), modelName: 'e5-base', embedFn: fakeEmbed });
+    await buildIndex({ db: vaultB, indexDir: idxB, cacheDir: path.join(dir, '.c'), modelName: 'e5-base', embedFn: fakeEmbed });
+    const svc = await createServe({
+      indexDir: idx, cacheDir: path.join(dir, '.c'), embedFn: fakeEmbed,
+      vaults: [vaultB], ui: false, rateLimit: 0,
+    });
+    await new Promise((r) => svc.server.listen(0, r));
+    const url = `http://127.0.0.1:${svc.server.address().port}`;
+    try {
+      // all vaults: hits from both sides carry vault attribution
+      const all = await fetch(`${url}/search`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query: 'tea', k: 5, vaults: 'all' }),
+      }).then((r) => r.json());
+      assert.ok(all.results.length >= 1);
+      assert.ok(all.results.some((h) => h.vault === path.basename(vaultB)), 'vault hits carry the vault name');
+
+      // a named vault narrows to it
+      const scoped = await fetch(`${url}/search`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query: 'tea', k: 5, vaults: [path.basename(vaultB)] }),
+      }).then((r) => r.json());
+      assert.ok(scoped.results.every((h) => h.vault === path.basename(vaultB)), 'scoped vault only');
+
+      // unknown vault → clean 400 (before the fairness gate)
+      const unknown = await fetch(`${url}/search`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query: 'tea', vaults: ['nope'] }),
+      });
+      assert.equal(unknown.status, 400);
+
+      // a vault with NO index → vaultErrors, not a silent zero (issue #189)
+      const emptyVault = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-fede-'));
+      try {
+        const svc2 = await createServe({
+          indexDir: idx, cacheDir: path.join(dir, '.c'), embedFn: fakeEmbed,
+          vaults: [emptyVault], ui: false, rateLimit: 0,
+        });
+        await new Promise((r) => svc2.server.listen(0, r));
+        const url2 = `http://127.0.0.1:${svc2.server.address().port}`;
+        try {
+          const errs = await fetch(`${url2}/search`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ query: 'tea', k: 5, vaults: 'all' }),
+          }).then((r) => r.json());
+          assert.ok(errs.vaultErrors && errs.vaultErrors.some((e) => /No index/.test(e)), 'broken vault surfaces vaultErrors');
+        } finally { await svc2.close(); }
+      } finally { safeRm(emptyVault); }
+
+      // /health lists the configured vaults (stat-only)
+      const health = await fetch(`${url}/health`).then((r) => r.json());
+      assert.deepEqual(health.vaults.map((v) => v.name), [path.basename(vaultB)]);
+      assert.equal(health.vaults[0].indexed, true);
+
+      // contract unchanged without the field: no vaults → single-index search
+      const plain = await fetch(`${url}/search`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query: 'coffee', k: 3 }),
+      }).then((r) => r.json());
+      assert.ok(plain.results.every((h) => h.vault === undefined), 'single-vault contract has no vault field');
+    } finally {
+      await svc.close();
+    }
+  } finally {
+    safeRm(dir);
+    safeRm(vaultB);
+  }
+});
+
+test('serve: /ask retrieves federated; sessions reject vaults (issue #243)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-fedask-'));
+  const vaultB = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-fedaskb-'));
+  const idx = path.join(dir, '.mdss');
+  const idxB = path.join(vaultB, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'primary.md'), '# Coffee\n\ncoffee beans roasted ground brewing methods\n');
+    fs.writeFileSync(path.join(vaultB, 'b.md'), '# Tea Vault\n\ntea leaves steeping temperature guide\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: path.join(dir, '.c'), modelName: 'e5-base', embedFn: fakeEmbed });
+    await buildIndex({ db: vaultB, indexDir: idxB, cacheDir: path.join(dir, '.c'), modelName: 'e5-base', embedFn: fakeEmbed });
+    const svc = await createServe({
+      indexDir: idx, cacheDir: path.join(dir, '.c'), embedFn: fakeEmbed,
+      vaults: [vaultB], ui: false, rateLimit: 0,
+      // /ask requires an LLM chat endpoint — inject a deterministic one
+      llmEndpoint: 'http://127.0.0.1:1/v1',
+      rerankFn: undefined,
+    });
+    // the endpoint answers nothing — synthesizeAnswer degrades to the
+    // extractive path, still exercising federated retrieval + done frames
+    await new Promise((r) => svc.server.listen(0, r));
+    const url = `http://127.0.0.1:${svc.server.address().port}`;
+    try {
+      const res = await fetch(`${url}/ask`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query: 'tea temperature', k: 3, vaults: 'all' }),
+      });
+      assert.ok(res.ok, `federated /ask answers (${res.status})`);
+      const text = await res.text();
+      assert.match(text, /event: sources/, 'sources frame streamed');
+      assert.match(text, /event: done/, 'done frame streamed');
+      assert.match(text, new RegExp(path.basename(vaultB)), 'citations point at the vault file');
+
+      // vaults + chat mode → 400
+      const chatErr = await fetch(`${url}/ask`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query: 'tea', vaults: 'all', chat: true }),
+      });
+      assert.equal(chatErr.status, 400, 'federated ask cannot open chat sessions');
+    } finally {
+      await svc.close();
+    }
+  } finally {
+    safeRm(dir);
+    safeRm(vaultB);
+  }
+});

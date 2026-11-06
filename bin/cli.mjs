@@ -1767,6 +1767,9 @@ async function cmdServe(opts) {
     corsOrigins: opts.corsOrigin,
     // issue #241: proxy peers trusted for X-Forwarded-For rate-limit keying.
     trustProxy: opts.trustProxy,
+    // issue #243: federated vault roots for /search + /ask (the same --vault
+    // flag the search command uses)
+    vaults: opts.vaults.length > 0 ? opts.vaults : undefined,
     // Fairness gates (issue #119); 0 explicitly disables a gate.
     rateLimit: opts.rateLimit ?? envNonNegInt('MDSS_RATE_LIMIT'),
     maxConcurrency: opts.maxConcurrency ?? envNonNegInt('MDSS_MAX_CONCURRENCY'),

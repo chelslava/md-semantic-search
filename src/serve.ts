@@ -16,6 +16,7 @@ import { createFileWatcher, FileWatcher, classifyFsError, readWithRetry } from '
 import { WEBUI_HTML, WEBUI_JS, WEBUI_CSS } from './webui.js';
 import { handleMcpRequest, createClientChannel } from './mcp.js';
 import { findRelatedNotes } from './wikilinks.js';
+import { searchFederated } from './federation.js';
 import { ChatProviderId } from './providers.js';
 
 const DEFAULT_PORT = 8747;
@@ -65,6 +66,8 @@ export interface ServeState {
   allowedHosts?: string[];
   /** issue #241: proxy peers trusted for X-Forwarded-For rate-limit keying. */
   trustProxy?: string[];
+  /** issue #243: federated vault roots (resolved, safe). */
+  vaults?: string[];
   /** Exact origins reflected as `Access-Control-Allow-Origin`; absent → CORS off (issue #120). */
   corsOrigins?: string[];
   /** Fairness gates for /search (issue #119); `0` disables a gate. */
@@ -92,6 +95,13 @@ export interface CreateServeOptions {
    * before any forwarded value is honored.
    */
   trustProxy?: string[];
+  /**
+   * issue #243: additional vault roots for federated search (the CLI --vault
+   * flag). Each must carry its own <vault>/.mdss index; /search and /ask
+   * accept a `vaults` body field naming them (or "all") to fuse results
+   * across the primary db and these vaults with per-vault RRF.
+   */
+  vaults?: string[];
   rateLimit?: number;
   maxConcurrency?: number;
   /** issue #116: verbose watch-loop trace (polls, retries, classifications). */
@@ -293,6 +303,7 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     allowedHosts,
     corsOrigins,
     trustProxy,
+    vaults,
     rateLimit = DEFAULT_RATE_LIMIT_PER_MIN,
     maxConcurrency = DEFAULT_MAX_CONCURRENCY,
     watchDebug = false,
@@ -338,6 +349,10 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     allowedHosts,
     corsOrigins,
     trustProxy,
+    // issue #243: validate every configured vault root up front — serve
+    // refuses to start on a traversal-suspicious path rather than 500ing per
+    // request later.
+    vaults: (vaults || []).map((v) => assertSafePath(v)),
     limiter: new ServeLimiter(rateLimit, DEFAULT_RATE_BURST, maxConcurrency),
     sseConnections: 0,
   };
@@ -974,6 +989,14 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     }
     const k = Number.isInteger(payload.k) && payload.k > 0 ? payload.k : 6;
 
+    // issue #243: resolve the federation request before the gate so an
+    // unknown vault is a clean 400, not a slot-burning failure
+    const requestedVaults = resolveRequestedVaults(state, payload.vaults);
+    if (typeof requestedVaults === 'string') {
+      json(res, 400, { error: requestedVaults });
+      return;
+    }
+
     // Fairness gate 2 (issue #119): one global slot around the model sweep;
     // a saturated wait queue sheds load with 503 instead of ballooning.
     const release = state.limiter ? await state.limiter.acquireSlot() : null;
@@ -983,6 +1006,46 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       return;
     }
     try {
+      if (requestedVaults) {
+        // issue #243: federated multi-vault search — per-vault parallel
+        // queries fused with RRF, hits tagged with their vault, per-vault
+        // failures surfaced as vaultErrors instead of fake "no results" (#189).
+        const fed = await searchFederated({
+          vaults: requestedVaults,
+          // the client can only NAME configured roots — pin the trust domain
+          // to them plus the primary db (the #179 rule for remote clients)
+          allowedRoots: [...requestedVaults, state.loaded.index.db].filter(Boolean),
+          cacheDir: state.cacheDir,
+          query,
+          k,
+          semanticOnly: !!payload.semanticOnly,
+          offline: state.offline,
+          embedFn: state.embedFn,
+          rerankFn: state.rerankFn,
+          ...(payload.rerank ? { rerank: true } : {}),
+          ...(payload.rerankModel ? { rerankModel: payload.rerankModel } : {}),
+          tag: payload.tag,
+          project: payload.project,
+          type: payload.type,
+          status: payload.status,
+          canonicalOnly: payload.canonicalOnly,
+          custom: payload.custom,
+          maxPerFile: payload.maxPerFile || payload.maxPerDoc,
+          ann: payload.ann,
+          nprobe: payload.nprobe,
+          graphBoost: payload.graphBoost,
+          filter: payload.filter,
+          recency: typeof payload.recency === 'number' && payload.recency > 0 ? payload.recency : undefined,
+        });
+        json(res, 200, {
+          query,
+          k,
+          count: fed.hits.length,
+          results: fed.hits,
+          ...(fed.vaultErrors.length > 0 ? { vaultErrors: fed.vaultErrors } : {}),
+        });
+        return;
+      }
       const results = await searchIndex({
         loaded: state.loaded,
         cacheDir: state.cacheDir,
@@ -1087,6 +1150,17 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     // next request. One SSE protocol for both.
     const rawSessionId = typeof payload.sessionId === 'string' ? payload.sessionId.trim() : '';
     const chatMode = !!rawSessionId || payload.chat === true;
+    // issue #243: federated /ask retrieves across vaults; sessions stay
+    // per-index, so the two modes are mutually exclusive
+    const requestedAskVaults = resolveRequestedVaults(state, payload.vaults);
+    if (typeof requestedAskVaults === 'string') {
+      json(res, 400, { error: requestedAskVaults });
+      return;
+    }
+    if (requestedAskVaults && chatMode) {
+      json(res, 400, { error: 'federated /ask does not support chat sessions — omit sessionId/chat or vaults' });
+      return;
+    }
     if (rawSessionId) {
       // issue #149 discipline: validate BEFORE any filesystem use; a bad id
       // gets a plain 400 here rather than a thrown error mid-stream
@@ -1148,6 +1222,33 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           manifest: turn.manifest,
           sessionId: session.id,
           turnsCount: session.turns.length,
+        });
+      } else if (requestedAskVaults) {
+        // issue #243: federated retrieval → the same synthesis stage (the
+        // passages carry vault attribution; citations point at vault files)
+        const fed = await searchFederated({
+          vaults: requestedAskVaults,
+          allowedRoots: [...requestedAskVaults, state.loaded.index.db].filter(Boolean),
+          cacheDir: state.cacheDir,
+          query,
+          k,
+          offline: state.offline,
+          embedFn: state.embedFn,
+        });
+        if (fed.vaultErrors.length > 0) {
+          process.stderr.write(`serve: /ask vaultErrors: ${fed.vaultErrors.join('; ')}
+`);
+        }
+        sse('sources', {
+          citations: fed.hits.map((p) => ({ file: p.vault ? `[${p.vault}] ${p.file}` : p.file, heading: p.heading, score: p.score })),
+        });
+        const result = await synthesizeAnswer(query, fed.hits, llmOpts);
+        sse('done', {
+          answer: result.answer,
+          mode: result.mode,
+          citations: result.citations,
+          citationsUsed: result.citationsUsed,
+          vaultErrors: fed.vaultErrors.length > 0 ? fed.vaultErrors : undefined,
         });
       } else {
         const passages = await searchIndex({
@@ -1242,6 +1343,16 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       indexDir: hideIndexDir ? undefined : state.indexDir,
       // fairness counters (issue #119)
       client_key: state.trustProxy && state.trustProxy.length > 0 ? 'proxy' : 'socket',
+      // issue #243: configured federated vaults and whether each carries an
+      // index (stat only — /health never loads vault indexes)
+      ...(state.vaults && state.vaults.length > 0
+        ? {
+            vaults: state.vaults.map((v) => ({
+              name: path.basename(v),
+              indexed: fs.existsSync(path.join(v, '.mdss', 'vectors.json')),
+            })),
+          }
+        : {}),
       in_flight: state.limiter?.inFlight ?? 0,
       queued: state.limiter?.queued ?? 0,
       rejected_total: state.limiter?.rejectedTotal ?? 0,
@@ -1608,6 +1719,40 @@ function cidrMatch(ip: string, cidr: string): boolean {
   if (bits === 0) return true;
   const mask = (0xffffffff << (32 - bits)) >>> 0;
   return ((ipInt & mask) === (baseInt & mask));
+}
+
+/**
+ * issue #243: map a /search|/ask `vaults` body field onto the configured
+ * vault roots. Returns null when federation is not in play (no field or no
+ * configured vaults → the request must behave exactly as before), a resolved
+ * path list, or an error string for a 400. Accepts "all", configured vault
+ * basenames, or configured absolute paths — never an arbitrary client path.
+ */
+export function resolveRequestedVaults(
+  state: Pick<ServeState, 'vaults'>,
+  requested: unknown
+): string[] | null | string {
+  if (!state.vaults || state.vaults.length === 0) return null;
+  if (requested === undefined || requested === null || requested === 'all') return state.vaults;
+  if (typeof requested === 'string') {
+    if (requested === '') return state.vaults;
+    return `invalid vaults: use "all", a configured vault name, or an array — got "${requested}"`;
+  }
+  if (!Array.isArray(requested) || requested.length === 0 || !requested.every((v) => typeof v === 'string')) {
+    return 'invalid vaults: expected an array of configured vault names, or "all"';
+  }
+  const byName = new Map(state.vaults.map((v) => [path.basename(v), v] as const));
+  const resolved: string[] = [];
+  for (const raw of requested as string[]) {
+    const direct = state.vaults.find((v) => v === raw);
+    const byBase = byName.get(raw);
+    const match = direct || byBase;
+    if (!match) {
+      return `unknown vault "${raw}" — configured: ${state.vaults.map((v) => path.basename(v)).join(', ')}`;
+    }
+    if (!resolved.includes(match)) resolved.push(match);
+  }
+  return resolved;
 }
 
 function json(res: http.ServerResponse, status: number, data: object): void {

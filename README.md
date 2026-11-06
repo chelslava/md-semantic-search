@@ -477,6 +477,18 @@ curl localhost:8747/health          # → {ok, chunks, model, dim, built, watchi
 score, matches, snippet, rerankScore?}]}`. The CLI's `search --json` prints
 the same hit shape.
 
+**Federated multi-vault over HTTP** (issue #243): start the daemon with
+`mdss serve --db ./primary --vault ./vault-b --vault ./vault-c` (each vault
+carries its own `<vault>/.mdss` index) and `/search`/`/ask` accept
+`"vaults": "all" | ["vault-b", …]` — configured vault **names** (or the exact
+configured paths) only, never arbitrary client paths; the trust domain is
+pinned to the configured roots (the #179 rule). Hits carry `vault`
+attribution, per-vault failures surface as `vaultErrors` instead of fake
+"no results" (#189), and `/health` lists the configured vaults with their
+index state. The web UI gains a vault chip row (All vaults + one per vault)
+and a vault badge on every result card. Chat sessions stay per-index:
+`vaults` + `sessionId`/`chat` on `/ask` is a `400`.
+
 **`POST /ask` — streamed grounded QA over SSE** (issue #199): start the daemon
 with `--llm-endpoint` (chat backend — llama.cpp, LM Studio, vLLM, Ollama `.../v1`)
 and `{"query": string, "k"?: number}` answers as `text/event-stream` frames:

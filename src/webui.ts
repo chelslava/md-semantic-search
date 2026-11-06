@@ -33,6 +33,7 @@ export const WEBUI_HTML = `<!doctype html>
     <input id="q" type="search" autofocus
       placeholder='Search by meaning — press "/" to focus' autocomplete="off">
   </searchbox>
+  <div id="vaultrow" hidden title="federated vaults — click to scope the search"></div>
   <filters>
     <input id="f-tag"   placeholder="tag">
     <input id="f-type"  placeholder="type">
@@ -80,6 +81,13 @@ header { display:flex; justify-content:space-between; align-items:center; paddin
 #q { width:100%; font-size:1.05rem; padding:.75rem 1rem; border:1px solid var(--line);
   border-radius:.7rem; background:var(--card); color:var(--fg) }
 #q:focus { outline:2px solid var(--acc); outline-offset:1px }
+#vaultrow { display:flex; gap:.4rem; margin-top:.6rem; flex-wrap:wrap }
+#vaultrow[hidden] { display:none }
+.vchip { border:1px solid var(--line); border-radius:1rem; background:var(--card); color:var(--fg);
+  cursor:pointer; font-size:.8rem; padding:.2rem .7rem }
+.vchip.active { border-color:var(--acc); color:var(--acc) }
+.hit-vault { font-size:.72rem; border:1px solid var(--line); border-radius:.4rem;
+  padding:.05rem .4rem; color:var(--mut) }
 filters { display:flex; gap:.5rem; margin-top:.6rem; flex-wrap:wrap }
 filters input { flex:1 1 7rem; min-width:0; padding:.4rem .6rem; border:1px solid var(--line);
   border-radius:.5rem; background:var(--card); color:var(--fg); font-size:.85rem }
@@ -138,6 +146,8 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
   var KEY_STORE = 'mdss_key';
   var key = sessionStorage.getItem(KEY_STORE) || '';
   var activeIdx = -1;
+  // issue #243: federated vault scoping — 'all' (default) or one vault name
+  var selectedVault = 'all';
 
   function headers() {
     var h = { 'Content-Type': 'application/json' };
@@ -184,7 +194,9 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
 
   function render(data, terms) {
     var rs = data.results || [];
-    meta.textContent = rs.length ? (data.count + ' hit(s) for “' + data.query + '”') : 'No matches.';
+    var vaultNote = (data.vaultErrors && data.vaultErrors.length)
+      ? ' — warning: ' + data.vaultErrors.join('; ') : '';
+    meta.textContent = rs.length ? (data.count + ' hit(s) for “' + data.query + '”' + vaultNote) : ('No matches.' + vaultNote);
     activeIdx = -1;
     resultsEl.innerHTML = '';
     rs.forEach(function (r, i) {
@@ -192,7 +204,9 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
       var pct = Math.max(2, Math.min(100, Math.round((r.cosine || 0) * 100)));
       var headPath = (r.headingPath || []).slice(0, -1).join(' › ');
       li.innerHTML =
-        '<div class="hit-head"><span class="hit-title">' + highlight(r.title, terms) + '</span>' +
+        '<div class="hit-head">' +
+        (r.vault ? '<span class="hit-vault">' + esc(r.vault) + '</span>' : '') +
+        '<span class="hit-title">' + highlight(r.title, terms) + '</span>' +
         '<span class="score">' + Number(r.cosine || 0).toFixed(3) + '</span></div>' +
         ((r.heading && r.heading !== r.title) ? '<div class="hit-path">' + highlight(headPath || r.heading, terms) + '</div>' : '') +
         '<div class="bar"><i style="width:' + pct + '%"></i></div>' +
@@ -221,6 +235,7 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
     });
     var lim = parseInt(document.getElementById('f-limit').value, 10);
     if (lim > 0) filters.maxPerFile = lim;
+    if (selectedVault !== 'all') filters.vaults = [selectedVault];
 
     if (searchAbort) { searchAbort.abort(); }
     searchAbort = typeof AbortController !== 'undefined' ? new AbortController() : null;
@@ -449,6 +464,27 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
 
   api('/health').then(function (h) {
     healthEl.textContent = h.chunks + ' chunks · ' + h.model;
+    // issue #243: federated vault chips — "All vaults" plus one per vault
+    var row = document.getElementById('vaultrow');
+    if (h.vaults && h.vaults.length) {
+      row.hidden = false;
+      row.innerHTML = '';
+      var chips = [{ name: 'All vaults', value: 'all' }].concat(
+        h.vaults.map(function (v) { return { name: v.name + (v.indexed ? '' : ' (no index)'), value: v.name }; }));
+      chips.forEach(function (c) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'vchip' + (selectedVault === c.value ? ' active' : '');
+        b.textContent = c.name;
+        b.addEventListener('click', function () {
+          selectedVault = c.value;
+          row.querySelectorAll('.vchip').forEach(function (el) { el.classList.remove('active'); });
+          b.classList.add('active');
+          run();
+        });
+        row.appendChild(b);
+      });
+    }
   }).catch(function () { healthEl.textContent = ''; });
 })();
 `;
