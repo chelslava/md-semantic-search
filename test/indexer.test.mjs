@@ -1463,3 +1463,61 @@ test('buildIndex #202: budget change re-chunks unchanged files (no mixed index);
     safeRm(dir);
   }
 });
+
+function aDeadPid() {
+  for (let pid = 4_000_000; ; pid++) {
+    try { process.kill(pid, 0); } catch (e) { if (e.code !== 'EPERM') return pid; }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// issue #253: atomicWrite tmp litter — orphaned <name>.<pid>.tmp files from
+// crashed writers are swept on the next build (dead pid or >24 h old); a
+// live writer's fresh tmp survives.
+// ---------------------------------------------------------------------------
+
+test('buildIndex: tmp litter from dead pids is swept; live fresh tmp survives (issue #253)', async () => {
+  const { pidAlive } = await import('../dist/core.js');
+  const { cleanupTmpLitter } = await import('../dist/indexer.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-tmplitter-'));
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.mkdirSync(idx, { recursive: true });
+    // orphaned: dead pid, fresh mtime → removed
+    fs.writeFileSync(path.join(idx, `vectors.json.${aDeadPid()}.tmp`), 'junk');
+    // live pid (ours), fresh mtime → SURVIVES (a writer may be mid-write)
+    fs.writeFileSync(path.join(idx, `vectors.json.${process.pid}.tmp`), 'junk');
+    // live pid but >24 h old → removed (the grace covers pauses, not days)
+    const staleLive = path.join(idx, `hashes.json.${process.pid}.tmp`);
+    fs.writeFileSync(staleLive, 'junk');
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    fs.utimesSync(staleLive, old, old);
+    // untouched: non-tmp files and notes
+    fs.writeFileSync(path.join(idx, 'vectors.json'), '{}');
+    fs.writeFileSync(path.join(dir, 'note.md'), '# Note\n\nreal note content stays untouched\n');
+
+    const removed = cleanupTmpLitter(idx, () => {});
+    assert.equal(removed, 2, 'dead-pid tmp + 25h-old live tmp removed');
+    assert.ok(fs.existsSync(path.join(idx, `vectors.json.${process.pid}.tmp`)), 'live fresh tmp survives');
+    assert.ok(fs.existsSync(path.join(idx, 'vectors.json')), 'real index files untouched');
+    assert.ok(fs.existsSync(path.join(dir, 'note.md')), 'notes untouched');
+    assert.equal(pidAlive(process.pid), true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});
+
+test('buildIndex: the build sweeps litter under the lock (issue #253)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-tmpsweep-'));
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# A\n\nenough body text to survive the chunk filter here\n');
+    fs.mkdirSync(idx, { recursive: true });
+    fs.writeFileSync(path.join(idx, `vectors.json.${aDeadPid()}.tmp`), 'junk');
+    const res = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    assert.ok(res.chunks >= 1);
+    assert.equal(fs.readdirSync(idx).some((f) => f.endsWith('.tmp')), false, 'no tmp litter after the build');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});

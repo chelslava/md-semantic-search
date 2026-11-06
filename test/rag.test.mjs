@@ -715,3 +715,65 @@ test('rag: the per-sentence support floor drops stray-token padding (issue #238)
     'sub-floor padding sentence dropped');
   assert.ok(answer.includes('rotated quarterly'), 'strong sentence kept');
 });
+
+// ---------------------------------------------------------------------------
+// issue #253: chat-session retention — the store grows one JSON per session
+// forever; cap by count + age with env overrides, 0 = unlimited.
+// ---------------------------------------------------------------------------
+
+test('rag: session store prunes beyond the count cap and the TTL (issue #253)', async () => {
+  const { saveChatSession, pruneChatSessions, listChatSessions } = await import('../dist/rag.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-sessioncap-'));
+  try {
+    // 5 sessions, staggered ages
+    const now = Date.now();
+    const mk = (id, ageDays) => {
+      const s = {
+        id,
+        createdAt: new Date(now - ageDays * 86400000).toISOString(),
+        updatedAt: new Date(now - ageDays * 86400000).toISOString(),
+        turns: [],
+      };
+      saveChatSession(root, s);
+      // backdate the file's session body
+      const p = path.join(root, 'sessions', `${id}.json`);
+      const body = JSON.parse(fs.readFileSync(p, 'utf8'));
+      body.updatedAt = s.updatedAt;
+      fs.writeFileSync(p, JSON.stringify(body));
+    };
+    for (let i = 0; i < 5; i++) mk(`cap-sess-${i}`, (i + 1) * 2); // 2,4,6,8,10 days old
+
+    // count cap: MDSS_SESSION_MAX=3 → 3 newest survive
+    process.env.MDSS_SESSION_MAX = '3';
+    try {
+      const removed = pruneChatSessions(root, () => {});
+      assert.equal(removed, 2, 'two oldest pruned beyond the cap');
+      const listed = listChatSessions(root);
+      assert.equal(listed.length, 3);
+      assert.ok(listed.every((s) => Number(s.id.slice(-1)) <= 2), 'the NEWEST survive (oldest-first eviction)');
+    } finally {
+      delete process.env.MDSS_SESSION_MAX;
+    }
+
+    // TTL: MDSS_SESSION_TTL_DAYS=3 → the 4- and 6-day-old sessions go
+    process.env.MDSS_SESSION_TTL_DAYS = '3';
+    try {
+      const removed = pruneChatSessions(root, () => {});
+      assert.ok(removed >= 2, `TTL pruned the old ones (${removed})`);
+    } finally {
+      delete process.env.MDSS_SESSION_TTL_DAYS;
+    }
+
+    // 0 disables both limits
+    process.env.MDSS_SESSION_MAX = '0';
+    process.env.MDSS_SESSION_TTL_DAYS = '0';
+    try {
+      assert.equal(pruneChatSessions(root, () => {}), 0, 'unlimited mode never prunes');
+    } finally {
+      delete process.env.MDSS_SESSION_MAX;
+      delete process.env.MDSS_SESSION_TTL_DAYS;
+    }
+  } finally {
+    safeRm(root);
+  }
+});

@@ -14,6 +14,7 @@ import {
   walkMarkdown,
   parseFile,
   embed,
+  pidAlive,
   resolveModel,
   decodeVec,
   encodeVec,
@@ -121,6 +122,52 @@ const loadJSON = <T>(p: string, fb: T, warn: (msg: string) => void = () => {}): 
     return fb;
   }
 };
+
+/**
+ * issue #253: sweep `<indexDir>` for orphaned atomicWrite temp files. A crash
+ * (kill -9, power loss) between writeFileSync and renameSync leaves
+ * `<name>.<pid>.tmp` litter behind forever. A tmp file is removed when its
+ * embedded pid is dead OR its mtime is older than the 24 h grace period
+ * (covers a live writer that merely paused). Only `*.tmp` files inside the
+ * index dir are touched — never notes, never sidecars.
+ */
+export function cleanupTmpLitter(indexDir: string, log: (msg: string) => void = () => {}): number {
+  const GRACE_MS = 24 * 60 * 60 * 1000;
+  let removed = 0;
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(indexDir);
+  } catch {
+    return 0;
+  }
+  for (const name of entries) {
+    if (!name.endsWith('.tmp')) continue;
+    const full = path.join(indexDir, name);
+    const pidMatch = /\.([0-9]+)\.tmp$/.exec(name);
+    const pid = pidMatch ? Number(pidMatch[1]) : null;
+    let stale = false;
+    if (pid !== null && pidAlive(pid)) {
+      try {
+        stale = Date.now() - fs.statSync(full).mtimeMs > GRACE_MS;
+      } catch {
+        continue; // vanished mid-sweep
+      }
+    } else {
+      stale = true;
+    }
+    if (!stale) continue;
+    try {
+      fs.unlinkSync(full);
+      removed++;
+    } catch {
+      /* best-effort */
+    }
+  }
+  if (removed > 0) {
+    log(`index: removed ${removed} orphaned tmp file(s) from ${indexDir}`);
+  }
+  return removed;
+}
 
 function atomicWrite(target: string, data: string | Buffer): void {
   const tmp = `${target}.${process.pid}.tmp`;
@@ -260,6 +307,9 @@ async function _buildIndexInner({
   quantize?: 'fp32' | 'int8';
   maxChunkTokens?: number;
 }): Promise<BuildIndexResult> {
+  // issue #253: housekeeping runs under the lock — orphaned atomicWrite temps
+  // from crashed writers go away on the next build.
+  cleanupTmpLitter(indexDir, log);
   const model = resolveModel(modelName, dimensions);
   // issue #202: explicit maxChunkTokens wins; `0` restores the legacy char
   // budget; otherwise min(adapter.maxTokens, 512), undefined → char mode

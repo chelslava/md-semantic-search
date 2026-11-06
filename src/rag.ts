@@ -151,9 +151,82 @@ export function assertSafeSessionId(id: string): string {
 }
 
 /**
+ * issue #253: session-store retention limits. The store grows one JSON file
+ * per session forever — a long-lived team daemon accumulates thousands. Cap
+ * by count + age; `0` disables a limit. Env-overridable per deployment.
+ */
+export const DEFAULT_SESSION_MAX = 200;
+export const DEFAULT_SESSION_TTL_DAYS = 90;
+
+function resolveSessionLimits(): { max: number; ttlDays: number } {
+  const fromEnv = (name: string, fallback: number): number => {
+    const raw = process.env[name];
+    if (raw === undefined || raw === '') return fallback;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : fallback;
+  };
+  return {
+    max: fromEnv('MDSS_SESSION_MAX', DEFAULT_SESSION_MAX),
+    ttlDays: fromEnv('MDSS_SESSION_TTL_DAYS', DEFAULT_SESSION_TTL_DAYS),
+  };
+}
+
+/**
+ * issue #253: prune the session store after a save — oldest `updatedAt` first
+ * beyond the count cap, everything past the TTL regardless. Best-effort: a
+ * prune failure never blocks saving.
+ */
+export function pruneChatSessions(indexDir: string, log: (msg: string) => void = () => {}): number {
+  const { max, ttlDays } = resolveSessionLimits();
+  if (max === 0 && ttlDays === 0) return 0;
+  const dir = getSessionsDir(indexDir);
+  let entries: Array<{ id: string; updatedAt: number; file: string }>;
+  try {
+    entries = fs.readdirSync(dir)
+      .filter((f) => f.endsWith('.json'))
+      .map((f) => {
+        const full = path.join(dir, f);
+        let updatedAt = 0;
+        try {
+          const parsed = JSON.parse(fs.readFileSync(full, 'utf8'));
+          updatedAt = Date.parse(parsed.updatedAt || parsed.createdAt || '') || 0;
+        } catch {
+          updatedAt = 0;
+        }
+        return { id: f.slice(0, -5), updatedAt, file: full };
+      });
+  } catch {
+    return 0;
+  }
+  const now = Date.now();
+  const victims = new Set<string>();
+  if (ttlDays > 0) {
+    const ttlMs = ttlDays * 24 * 60 * 60 * 1000;
+    for (const e of entries) {
+      if (e.updatedAt > 0 && now - e.updatedAt > ttlMs) victims.add(e.file);
+    }
+  }
+  if (max > 0) {
+    const alive = entries.filter((e) => !victims.has(e.file)).sort((a, b) => b.updatedAt - a.updatedAt);
+    for (const e of alive.slice(max)) victims.add(e.file);
+  }
+  let removed = 0;
+  for (const file of victims) {
+    try {
+      fs.unlinkSync(file);
+      removed++;
+    } catch {
+      /* best-effort */
+    }
+  }
+  if (removed > 0) log(`sessions: pruned ${removed} session(s) beyond the retention cap`);
+  return removed;
+}
+
+/**
  * Atomically saves a ChatSession to disk (<indexDir>/sessions/<id>.json).
  */
-export function saveChatSession(indexDir: string, session: ChatSession): string {
+export function saveChatSession(indexDir: string, session: ChatSession, log: (msg: string) => void = () => {}): string {
   assertSafeSessionId(session.id);
   const dir = getSessionsDir(indexDir);
   fs.mkdirSync(dir, { recursive: true });
@@ -161,6 +234,12 @@ export function saveChatSession(indexDir: string, session: ChatSession): string 
   const tmpPath = path.join(dir, `${session.id}.${Date.now()}.tmp`);
   fs.writeFileSync(tmpPath, JSON.stringify(session, null, 2), 'utf8');
   fs.renameSync(tmpPath, targetPath);
+  // issue #253: retention runs after every successful save
+  try {
+    pruneChatSessions(indexDir, log);
+  } catch {
+    /* best-effort */
+  }
   return targetPath;
 }
 
