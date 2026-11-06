@@ -217,3 +217,76 @@ test('lock: a stale lock with unchanged identity is still reclaimed after re-ver
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
+
+// ---------------------------------------------------------------------------
+// issue #234: the release side must apply the same re-verify discipline as the
+// #188 reclaim side — a holder that lost its lock to a reclaiming peer (stall
+// past the staleness window) must not delete the NEW owner's live lock.
+// ---------------------------------------------------------------------------
+
+test('lock: release with ownership never unlinks a lock reclaimed by another writer (issue #234)', () => {
+  const dir = tempDir('lockrel-race');
+  const lockPath = path.join(dir, LOCK_FILENAME);
+  try {
+    const r = acquireIndexLock(dir);
+    assert.equal(r.acquired, true, 'we own the lock');
+    assert.equal(r.ownership.pid, process.pid, 'ownership token names us');
+
+    // this holder stalls; another writer classifies the lock stale, reclaims
+    // it and writes a fresh live one BEFORE our release finally runs
+    const newOwner = { pid: aDeadPid(), since: new Date().toISOString() };
+    const newPayload = JSON.stringify(newOwner) + '\n';
+    fs.writeFileSync(lockPath, newPayload);
+
+    releaseIndexLock(dir, r.ownership);
+
+    assert.equal(fs.existsSync(lockPath), true, 'the new owner’s lock still exists');
+    assert.equal(fs.readFileSync(lockPath, 'utf8'), newPayload, 'its content is untouched');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});
+
+test('lock: release with matching ownership unlinks the lock (issue #234)', () => {
+  const dir = tempDir('lockrel-match');
+  try {
+    const r = acquireIndexLock(dir);
+    assert.equal(r.acquired, true);
+    releaseIndexLock(dir, r.ownership);
+    assert.ok(!fs.existsSync(path.join(dir, LOCK_FILENAME)), 'the owner’s own release still removes the lock');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('lock: release with ownership on an already-released lock is a silent no-op (issue #234)', () => {
+  const dir = tempDir('lockrel-gone');
+  const lockPath = path.join(dir, LOCK_FILENAME);
+  try {
+    const r = acquireIndexLock(dir);
+    assert.equal(r.acquired, true);
+    fs.unlinkSync(lockPath); // someone else released it first
+    assert.doesNotThrow(() => releaseIndexLock(dir, r.ownership), 'missing lock is not an error');
+    assert.ok(!fs.existsSync(lockPath));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('lock: withIndexLock release survives a mid-build reclaim without deleting the new lock (issue #234)', async () => {
+  const dir = tempDir('lockwith-race');
+  const lockPath = path.join(dir, LOCK_FILENAME);
+  const newOwner = { pid: aDeadPid(), since: new Date().toISOString() };
+  const newPayload = JSON.stringify(newOwner) + '\n';
+  try {
+    await withIndexLock(dir, async () => {
+      // simulate: this build stalls, another writer reclaims and takes over
+      fs.writeFileSync(lockPath, newPayload);
+      return 'ok';
+    });
+    assert.equal(fs.readFileSync(lockPath, 'utf8'), newPayload,
+      'the finally-release left the reclaiming writer’s lock intact');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});

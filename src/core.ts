@@ -75,7 +75,7 @@ function readLock(lockPath: string): LockInfo | null {
 }
 
 export type LockAcquireResult =
-  | { acquired: true; lockPath: string }
+  | { acquired: true; lockPath: string; ownership: LockInfo }
   | { acquired: false; reason: string; pid: number | null; heldSince: string | null };
 
 export function acquireIndexLock(
@@ -83,13 +83,14 @@ export function acquireIndexLock(
   _testHooks?: { onClassified?: () => void },
 ): LockAcquireResult {
   const lockPath = path.join(indexDir, LOCK_FILENAME);
-  const payload = JSON.stringify({ pid: process.pid, since: new Date().toISOString() }) + '\n';
+  const since = new Date().toISOString();
+  const payload = JSON.stringify({ pid: process.pid, since }) + '\n';
   for (let attempt = 0; attempt < 2; attempt++) {
     let fd: number | undefined;
     try {
       fd = fs.openSync(lockPath, 'wx');
       fs.writeFileSync(fd, payload);
-      return { acquired: true, lockPath };
+      return { acquired: true, lockPath, ownership: { pid: process.pid, since } };
     } catch (e: any) {
       if (e.code !== 'EEXIST') {
         throw new Error(`cannot create index lock ${lockPath}: ${e.message}`, { cause: e });
@@ -155,11 +156,42 @@ export function acquireIndexLock(
   return { acquired: false, reason: 'lock reclaimed by another process during retry', pid: null, heldSince: null };
 }
 
-export function releaseIndexLock(indexDir: string): void {
+/**
+ * Release an acquired index lock (issue #234). With an `ownership` token — the
+ * `ownership` field of a successful `acquireIndexLock` result — the lock file is
+ * re-read and unlinked ONLY when it still names this holder: a writer that
+ * stalled past the staleness window and lost its lock to a reclaiming peer
+ * (the release-side twin of the #188 re-verify discipline) must not delete the
+ * NEW owner's live lock. Without a token the pre-#234 unconditional unlink is
+ * preserved for single-arg callers.
+ */
+export function releaseIndexLock(indexDir: string, ownership?: LockInfo): void {
+  const lockPath = path.join(indexDir, LOCK_FILENAME);
+  if (!ownership) {
+    try {
+      fs.unlinkSync(lockPath);
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  const current = readLock(lockPath);
+  if (current === null) return; // already released (or torn mid-write) — nothing to do
+  if (current.pid === ownership.pid && current.since === ownership.since) {
+    try {
+      fs.unlinkSync(lockPath);
+    } catch {
+      /* raced — already gone */
+    }
+    return;
+  }
   try {
-    fs.unlinkSync(path.join(indexDir, LOCK_FILENAME));
+    process.stderr.write(
+      `mdss: not releasing ${lockPath} — it was reclaimed by pid ${current.pid} (since ${current.since}) ` +
+      `while this holder (pid ${ownership.pid}, since ${ownership.since}) worked\n`,
+    );
   } catch {
-    /* ignore */
+    /* stderr closed */
   }
 }
 
@@ -170,7 +202,7 @@ export async function withIndexLock<T>(indexDir: string, fn: () => Promise<T>): 
   try {
     return await fn();
   } finally {
-    releaseIndexLock(indexDir);
+    releaseIndexLock(indexDir, r.ownership);
   }
 }
 
