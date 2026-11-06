@@ -402,22 +402,23 @@ export interface RelatedNoteResult {
   total: number;
 }
 
-/**
- * Finds notes related to a target note via graph links (outgoing, backlinks, 2-hop)
- * and semantic similarity (issue #141).
- */
-export function findRelatedNotes(opts: FindRelatedNotesOptions): RelatedNoteResult {
-  const { loaded, target, k = 10, direction = 'both', maxDepth = 2, semantic = true } = opts;
-  if (!target || typeof target !== 'string') {
-    throw new Error('findRelatedNotes: "target" parameter is required');
-  }
+// issue #246: everything findRelatedNotes needs that depends ONLY on the
+// index generation — the per-file doc grouping with dequantized vectors, the
+// LinkDoc list and the relationship graph — cached on a WeakMap keyed by the
+// loaded index object. A watch rebuild swaps the index object and the old
+// cache dies with it; /related and MCP related_notes stop rebuilding the
+// graph and dequantizing every vector on every call.
+interface RelatedRuntime {
+  docMap: Map<string, { title: string; meta?: DocumentMetadata; texts: string[]; vecs: Float32Array[] }>;
+  docs: LinkDoc[];
+  graph: RelationshipGraph;
+}
 
-  const chunks = loaded.index?.chunks || [];
-  if (chunks.length === 0) {
-    throw new Error('Index has no chunks');
-  }
+const relatedRuntimeCache = new WeakMap<object, RelatedRuntime>();
 
-  // 1. Group chunks by file to construct LinkDoc list and index metadata
+function buildRelatedRuntime(index: any): RelatedRuntime {
+  const chunks = index?.chunks || [];
+  // Group chunks by file to construct LinkDoc list and index metadata
   const docMap = new Map<string, { title: string; meta?: DocumentMetadata; texts: string[]; vecs: Float32Array[] }>();
   for (const c of chunks) {
     const existing = docMap.get(c.file);
@@ -456,6 +457,37 @@ export function findRelatedNotes(opts: FindRelatedNotesOptions): RelatedNoteResu
     meta: d.meta,
     text: d.texts.join('\n\n'),
   }));
+  const graph = buildRelationshipGraph(docs);
+  return { docMap, docs, graph };
+}
+
+function getRelatedRuntime(index: any): RelatedRuntime {
+  let cached = relatedRuntimeCache.get(index);
+  if (!cached) {
+    cached = buildRelatedRuntime(index);
+    relatedRuntimeCache.set(index, cached);
+  }
+  return cached;
+}
+
+/**
+ * Finds notes related to a target note via graph links (outgoing, backlinks, 2-hop)
+ * and semantic similarity (issue #141).
+ */
+export function findRelatedNotes(opts: FindRelatedNotesOptions): RelatedNoteResult {
+  const { loaded, target, k = 10, direction = 'both', maxDepth = 2, semantic = true } = opts;
+  if (!target || typeof target !== 'string') {
+    throw new Error('findRelatedNotes: "target" parameter is required');
+  }
+
+  const chunks = loaded.index?.chunks || [];
+  if (chunks.length === 0) {
+    throw new Error('Index has no chunks');
+  }
+
+  // issue #246: per-generation cache — grouping, docs and graph are rebuilt
+  // only when the index object changes
+  const { docMap, graph } = getRelatedRuntime(loaded.index);
 
   // 2. Resolve target note
   const rawTarget = target.trim();
@@ -484,8 +516,7 @@ export function findRelatedNotes(opts: FindRelatedNotesOptions): RelatedNoteResu
     throw new Error(`Note not found: "${target}"`);
   }
 
-  // 3. Build graph & find graph relationships
-  const graph = buildRelationshipGraph(docs);
+  // 3. Graph relationships (graph comes from the per-generation cache)
   const graphRelated = getRelatedNotes(graph, targetFile, { direction, depth: maxDepth });
 
   const hitsMap = new Map<string, RelatedNoteHit>();

@@ -1,5 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+function safeRm(p) {
+  try { fs.rmSync(p, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); } catch {}
+}
 import {
   extractLinks,
   resolveLinks,
@@ -195,3 +202,49 @@ test('findRelatedNotes finds backlinks, outgoing links, 2-hop and semantic relat
 });
 
 
+
+test('related: findRelatedNotes caches the per-generation runtime — identical results, no rebuild (issue #246)', async () => {
+  const { buildIndex } = await import('../dist/indexer.js');
+  const { loadIndex } = await import('../dist/search.js');
+
+  function fakeEmbed(texts, kind, model) {
+    return texts.map((t) => {
+      const dim = model?.dim > 0 ? model.dim : 8;
+      const v = new Array(dim).fill(0);
+      const words = t.toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+      for (const w of words) {
+        let h = 7;
+        for (let i = 0; i < w.length; i++) h = (h * 31 + w.charCodeAt(i)) >>> 0;
+        v[h % dim] += 1;
+      }
+      const norm = Math.hypot(...v) || 1;
+      return v.map((x) => x / norm);
+    });
+  }
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-relcache-'));
+  const idx = path.join(dir, '.mdss');
+  try {
+    for (let f = 0; f < 12; f++) {
+      let md = `# Doc ${f}\n\n## Topic ${f % 3}\n\nDocument ${f} discusses topic ${f % 3} with enough body text.\n`;
+      for (let l = 1; l <= 2; l++) md += `See [[Doc ${(f + l) % 12}]] for more.\n`;
+      fs.writeFileSync(path.join(dir, `doc${f}.md`), md);
+    }
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const loaded = loadIndex(idx);
+
+    const a = findRelatedNotes({ loaded, target: 'doc0.md', k: 10 });
+    const b = findRelatedNotes({ loaded, target: 'doc0.md', k: 10 });
+    const c = findRelatedNotes({ loaded, target: 'Doc 0', k: 10 }); // alias-style target
+    const key = (r) => JSON.stringify(r.results.map((h) => [h.file, h.score, h.reason, h.distance]));
+    assert.equal(key(a), key(b), 'second call is served from the per-generation cache, rank for rank');
+    assert.equal(key(a), key(c), 'target resolution unchanged');
+
+    // a swapped index generation (new loadIndex) must not reuse the old cache
+    const reloaded = loadIndex(idx);
+    const d = findRelatedNotes({ loaded: reloaded, target: 'doc0.md', k: 10 });
+    assert.equal(key(a), key(d), 'new generation produces the same results independently');
+  } finally {
+    safeRm(dir);
+  }
+});
