@@ -255,6 +255,28 @@ If no candidate meets the multilingual non-inferiority gate, `bge-reranker-base`
 - **Baseline:** Linear sweep over contiguous `Float32Array` runtime vector buffer (Issue #30).
 - **Trigger:** WebAssembly SIMD dot-product kernels will be considered **only if** CPU profiling on >50,000 chunks shows JS float multiplication accounts for >40% of warm search latency.
 - **Constraint:** Zero native Node C++ bindings; must maintain pure JS fallback for non-WASM environments.
+- **Profiled — the gate STRADDLES the trigger (issue #254):** `bench/sweep-profile.mjs` builds a real
+  int8 index at scale and profiles the warm HYBRID query composition against the isolated dense sweep
+  (the same kernel calls the hybrid path makes). Two measured points, dim 768:
+
+  | Chunks | Warm hybrid p50 | Isolated sweep p50 | JS float-math share | §13 verdict |
+  |---|---|---|---|---|
+  | 50,004 | 646 ms | 136 ms | **21.1%** | declined |
+  | 100,008 | 439 ms | 182 ms | **41.5%** | trigger breached |
+
+  The share straddles the 40% trigger: the isolated sweep scales cleanly and
+  sublinearly (136→182 ms for 2× corpus — cache effects), while the total warm
+  latency is query-noise-dominated (the 50k run's p95 was 954 ms against a
+  646 ms p50), so the RATIO is noisy between points. Read honestly: at the
+  100k point the pre-registered **prototype condition is met** — at the 50k
+  point it is not. Two further facts bound the payoff before prototyping:
+  (1) the sweep is a SINGLE-vector dot per chunk, so the #228 batching kernel
+  does not transfer (batching rarely amortizes without multiple queries in
+  flight); a sweep kernel would be a pointwise SIMD dot competing with V8's
+  own 8-way unrolled codegen; (2) even a ×2 kernel speedup at the 41.5% share
+  trims total warm latency by ~21%. The prototype (pointwise SIMD dot +
+  integration + the same recall determinism contract) is the follow-up work
+  this measurement licenses; no production code changed in #254.
 
 ### ANN / IVF Scale Threshold & K-Means++ Seeding (Issues #32 & #139)
 - **Baseline:** Exact $O(N \cdot d)$ linear sweep.

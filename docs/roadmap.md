@@ -30,7 +30,7 @@ These are the only places where the retrieval stack may change; each has a measu
 | RESEARCH §15 | ~~Should `embeddinggemma-300m` replace `e5-base` as the default embedder?~~ **Resolved (#227):** default → `granite-multilingual-311m` (Apache-2.0); gemma opt-in under license veto. | — | closed |
 | RESEARCH §17 | ~~Should HNSW become the default ANN engine?~~ **Declined (#228):** build acceleration measured at ×1.27 end-to-end (kernel ×6 on batches) — the order-of-magnitude trigger is unreachable; IVF stays default. | — | closed |
 | RESEARCH §12 | Late chunking vs heading-path context? | Ablation slice now exists (#226 `long-doc-section`) — read the measured result | #226 (data) → #228 (profiling) |
-| RESEARCH §13 | WASM SIMD dot-product kernels? | Profile >50k chunks — >40% of warm latency in JS float math | #228 (build-side kernel shipped; sweep-side gate unchanged) |
+| RESEARCH §13 | WASM SIMD dot-product kernels (sweep side)? **Profiled (#254):** the 40% trigger is breached at 100k chunks (41.5%) but not at 50k (21.1%) — measurements straddle it; prototype conditions met at the larger scale, prototype itself is follow-up work (no code in #254). | prototype follow-up | open (prototype pending) |
 
 ---
 
@@ -54,7 +54,7 @@ These are the only places where the retrieval stack may change; each has a measu
 
 - **Late chunking** — prototype only if the #226 ablation slice shows a measured context-recall deficit of heading-path contextualization (§12).
 - **Learned sparse (SPLADE-family)** — BM25F is sufficient at the current corpus scale; revisit if target corpora grow an order of magnitude.
-- **WASM SIMD sweep kernels** — only if the #228 profiling shows the §13 trigger condition.
+- **WASM SIMD sweep kernels** — the §13 profile (#254) breached the 40% trigger at 100k chunks (41.5%; 21.1% at 50k): prototype conditions met, but the payoff is bounded (~21% total at a ×2 kernel) and the #228 batching kernel does not transfer to a pointwise sweep. Prototype is follow-up work, not scheduled.
 - **Vector databases / distributed indexes** — out of the project segment (10k–50k chunks, zero-infra), unchanged.
 
 ---
