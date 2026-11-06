@@ -7,6 +7,7 @@ import http from 'node:http';
 import net from 'node:net';
 import { buildIndex } from '../dist/indexer.js';
 import { createServe } from '../dist/serve.js';
+import { WEBUI_JS } from '../dist/webui.js';
 
 function fakeEmbed(texts, kind, model) {
   return texts.map((t) => {
@@ -213,4 +214,73 @@ test('webui: highlight survives regex metacharacters in the query (issue #182)',
   assert.equal(highlight('<b>bold</b> guide', ['bold']), '&lt;b&gt;<mark>bold</mark>&lt;/b&gt; guide');
   // no terms → unchanged
   assert.equal(highlight('plain text', []), 'plain text');
+});
+
+// ---------------------------------------------------------------------------
+// issue #245: the safe markdown renderer for RAG answers — escape-first with
+// a pattern whitelist. XSS vectors must never survive; benign markdown must
+// render. The function lives inside the WEBUI_JS template (an IIFE needing
+// DOM), so the test extracts the three pure functions by brace matching.
+// ---------------------------------------------------------------------------
+
+// The renderer lives inside the WEBUI_JS template literal (an IIFE needing
+// DOM), so the tests extract the three pure functions by slicing between
+// stable "function X" markers — brace counting would break on {1,200} inside
+// regex literals. The extracted source keeps the template-literal backtick
+// escapes (\`), which are identity escapes inside regex literals and compile
+// fine outside the template.
+function sliceRegion(src, startMarker, endMarker) {
+  const a = src.indexOf(startMarker);
+  const b = src.indexOf(endMarker, a);
+  if (a === -1 || b === -1) throw new Error(`markers not found: ${startMarker} … ${endMarker}`);
+  return src.slice(a, b);
+}
+
+function makeRenderer() {
+  return new Function(
+    sliceRegion(WEBUI_JS, 'function esc(s)', 'function escRe') +
+    sliceRegion(WEBUI_JS, 'function renderMarkdown', 'function unescapeEntities') +
+    sliceRegion(WEBUI_JS, 'function unescapeEntities', 'function askKey') +
+    'return renderMarkdown;'
+  )();
+}
+
+test('webui: renderMarkdown neutralizes XSS vectors (issue #245)', () => {
+  const render = makeRenderer();
+
+  const script = render('<script>alert(1)</script>');
+  assert.ok(!script.includes('<script>'), 'raw script tags never pass through');
+  assert.ok(script.includes('&lt;script&gt;'), 'they render escaped instead');
+
+  const jsUrl = render('[click](javascript:alert(1))');
+  assert.ok(!/<a [^>]*javascript:/i.test(jsUrl), 'javascript: URLs never become hrefs (plain text is fine)');
+
+  const dataUrl = render('[x](data:text/html,<h1>)');
+  assert.ok(!dataUrl.includes('<a '), 'data: URLs are not linked either');
+
+  const onerror = render('<img src=x onerror=alert(1)>');
+  assert.ok(!onerror.includes('<img'), 'event-handler markup stays escaped');
+
+  const http = render('[docs](https://example.com/a)');
+  assert.ok(http.includes('<a href="https://example.com/a"'), 'http(s) links are allowed');
+  const rel = render('[doc](/doc?file=a.md)');
+  assert.ok(rel.includes('<a href="/doc?file=a.md"'), 'same-origin relative links are allowed');
+});
+
+test('webui: renderMarkdown renders benign RAG markdown (issue #245)', () => {
+  const render = makeRenderer();
+
+  const code = render('Before:\n```js\nconst a = 1;\n```\nAfter');
+  assert.ok(code.includes('<code>const a = 1;</code>'), 'fenced code becomes a code element (no trailing br)');
+  assert.ok(!code.includes('```'), 'fences are consumed');
+
+  const inline = render('run `mdss index` now');
+  assert.ok(inline.includes('<code>mdss index</code>'), 'inline code renders');
+
+  const wiki = render('see [[auth guide]] for tokens');
+  assert.match(wiki, /<a href="\/doc\?file=auth%20guide"[^>]*>auth guide<\/a>/, 'wikilinks deep-link to /doc');
+
+  const bold = render('**important** and *subtle*');
+  assert.ok(bold.includes('<strong>important</strong>'));
+  assert.ok(bold.includes('<em>subtle</em>'));
 });

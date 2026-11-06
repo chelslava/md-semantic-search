@@ -36,10 +36,15 @@ export const WEBUI_HTML = `<!doctype html>
   <div id="vaultrow" hidden title="federated vaults — click to scope the search"></div>
   <div id="tagchips" hidden title="most common tags — click to filter"></div>
   <filters>
-    <input id="f-tag"   placeholder="tag" list="dl-tag">
-    <input id="f-type"  placeholder="type" list="dl-type">
-    <input id="f-status" placeholder="status" list="dl-status">
-    <input id="f-limit"  type="number" min="1" max="50" placeholder="max/file">
+    <input id="f-tag"   placeholder="tag" list="dl-tag" aria-label="filter by tag">
+    <input id="f-type"  placeholder="type" list="dl-type" aria-label="filter by type">
+    <input id="f-status" placeholder="status" list="dl-status" aria-label="filter by status">
+    <input id="f-limit"  type="number" min="1" max="50" placeholder="max/file" aria-label="max results per file">
+    <select id="f-k" aria-label="results per query" title="results per query">
+      <option>10</option><option selected>20</option><option>50</option><option>100</option>
+    </select>
+    <button id="export-json" type="button" title="download the current results as JSON">↓json</button>
+    <button id="export-csv" type="button" title="download the current results as CSV">↓csv</button>
   </filters>
   <datalist id="dl-tag"></datalist>
   <datalist id="dl-type"></datalist>
@@ -50,10 +55,10 @@ export const WEBUI_HTML = `<!doctype html>
       <button id="chatnew" type="button" hidden title="start a fresh chat session">new chat</button>
       <button id="ansclose" type="button" aria-label="close answer">×</button></div>
     <div id="anshistory"></div>
-    <div id="answertext"></div>
+    <div id="answertext" aria-live="polite"></div>
     <div id="answersrc"></div>
   </div>
-  <ol id="results"></ol>
+  <ol id="results" role="listbox" aria-label="search results"></ol>
   <div id="askrow"><button id="ask" type="button" title="Grounded answer via POST /ask (needs --llm-endpoint)">✦ Ask the notes</button>
     <label id="chatrow" title="multi-turn: follow-up questions reuse retrieved context (POST /ask sessionId)"><input id="chatmode" type="checkbox"> chat</label>
     <span id="askmsg"></span></div>
@@ -101,6 +106,10 @@ filters { display:flex; gap:.5rem; margin-top:.6rem; flex-wrap:wrap }
 filters input { flex:1 1 7rem; min-width:0; padding:.4rem .6rem; border:1px solid var(--line);
   border-radius:.5rem; background:var(--card); color:var(--fg); font-size:.85rem }
 #meta { color:var(--mut); font-size:.85rem; margin:.7rem 0 .2rem }
+#f-k, #export-json, #export-csv { flex:0 0 auto; padding:.4rem .6rem; border:1px solid var(--line);
+  border-radius:.5rem; background:var(--card); color:var(--fg); font-size:.85rem; cursor:pointer }
+.copylink { background:none; border:none; color:var(--acc); cursor:pointer; font-size:.78rem;
+  padding:0; text-decoration:underline; text-underline-offset:2px }
 #results { list-style:none; margin:0; padding:0 }
 #results li { border:1px solid var(--line); background:var(--card); border-radius:.7rem;
   padding:.7rem .9rem; margin-top:.6rem; cursor:pointer }
@@ -179,6 +188,46 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
     var re = new RegExp('(' + terms.map(function (t) { return escRe(esc(t)); }).join('|') + ')', 'gi');
     return safe.replace(re, '<mark>$1</mark>');
   }
+  // issue #245: minimal safe markdown renderer for RAG answers. ESCAPE
+  // FIRST — every raw HTML construct is neutralized before any transform
+  // runs, so <script>, event handlers and javascript: URLs cannot survive;
+  // only the whitelisted patterns below produce markup. Unit-tested for XSS.
+  function renderMarkdown(src) {
+    var safe = esc(src == null ? '' : src);
+    var codes = [];
+    // fenced code blocks first (their content must not be further transformed)
+    safe = safe.replace(/\`\`\`(?:[a-zA-Z0-9_-]*)\\n([\\s\\S]*?)\`\`\`/g, function (_, body) {
+      codes.push(body.replace(/\\n$/, ''));
+      return '\\u0000CODE' + (codes.length - 1) + '\\u0000';
+    });
+    // inline code
+    safe = safe.replace(/\`([^\`\\n]{1,200})\`/g, function (_, body) {
+      codes.push(body);
+      return '\\u0000CODE' + (codes.length - 1) + '\\u0000';
+    });
+    // wikilinks [[target]] → /doc deep link (target stays escaped text)
+    safe = safe.replace(/\\[\\[([^\\]\\n]{1,200})\\]\\]/g, function (_, target) {
+      var t = target.split(/[|#]/)[0].trim();
+      return '<a href="/doc?file=' + encodeURIComponent(t) + '" target="_blank" rel="noopener">' + target + '</a>';
+    });
+    // [text](url) — http(s) or same-origin relative only
+    safe = safe.replace(/\\[([^\\]\\n]{1,200})\\]\\(([^\\s()]{1,300})\\)/g, function (_, text, href) {
+      if (!/^(https?:\\/\\/[^\\s]+|\\/[^\\s]*)$/i.test(unescapeEntities(href))) return text;
+      return '<a href="' + href + '" target="_blank" rel="noopener">' + text + '</a>';
+    });
+    // bold / italic
+    safe = safe.replace(/\\*\\*([^*\\n]{1,200})\\*\\*/g, '<strong>$1</strong>');
+    safe = safe.replace(/(^|[^*])\\*([^*\\n]{1,200})\\*(?![*])/g, '$1<em>$2</em>');
+    // restore code spans (content was escaped at capture time — safe verbatim)
+    safe = safe.replace(/\\u0000CODE(\\d+)\\u0000/g, function (_, i) {
+      return '<code>' + codes[Number(i)] + '</code>';
+    });
+    // paragraphs → <br>
+    return safe.replace(/\\n/g, '<br>');
+  }
+  function unescapeEntities(s) {
+    return String(s).replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+  }
   function askKey(msg) {
     authbar.hidden = false;
     document.getElementById('authmsg').textContent = msg || '';
@@ -203,6 +252,7 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
 
   function render(data, terms) {
     var rs = data.results || [];
+    lastResults = rs;
     var vaultNote = (data.vaultErrors && data.vaultErrors.length)
       ? ' — warning: ' + data.vaultErrors.join('; ') : '';
     meta.textContent = rs.length ? (data.count + ' hit(s) for “' + data.query + '”' + vaultNote) : ('No matches.' + vaultNote);
@@ -212,6 +262,8 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
       var li = document.createElement('li');
       var pct = Math.max(2, Math.min(100, Math.round((r.cosine || 0) * 100)));
       var headPath = (r.headingPath || []).slice(0, -1).join(' › ');
+      var docUrl = '/doc?file=' + encodeURIComponent(r.file) +
+        (r.startLine != null ? '&fromLine=' + encodeURIComponent(r.startLine) : '');
       li.innerHTML =
         '<div class="hit-head">' +
         (r.vault ? '<span class="hit-vault">' + esc(r.vault) + '</span>' : '') +
@@ -220,8 +272,24 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
         ((r.heading && r.heading !== r.title) ? '<div class="hit-path">' + highlight(headPath || r.heading, terms) + '</div>' : '') +
         '<div class="bar"><i style="width:' + pct + '%"></i></div>' +
         '<div class="snippet">' + highlight(r.snippet, terms) + '</div>' +
-        '<div class="hit-file">' + esc(r.file) + (r.startLine != null ? ':' + r.startLine : '') + '</div>';
-      li.addEventListener('click', function () { li.classList.toggle('open'); });
+        '<div class="hit-file">' + esc(r.file) + (r.startLine != null ? ':' + r.startLine : '') +
+        ' · <a class="doclink" href="' + docUrl + '" target="_blank" rel="noopener">open</a>' +
+        ' · <button type="button" class="copylink" data-url="' + esc(docUrl) + '">copy link</button></div>';
+      li.setAttribute('role', 'option');
+      li.addEventListener('click', function (ev) {
+        // deep links / copy buttons must not toggle the snippet collapse
+        if (ev.target && ev.target.closest && ev.target.closest('a, .copylink')) return;
+        li.classList.toggle('open');
+      });
+      var copyBtn = li.querySelector('.copylink');
+      if (copyBtn) copyBtn.addEventListener('click', function () {
+        var abs = location.origin + copyBtn.getAttribute('data-url');
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(abs);
+          copyBtn.textContent = 'copied';
+          setTimeout(function () { copyBtn.textContent = 'copy link'; }, 1200);
+        }
+      });
       resultsEl.appendChild(li);
     });
   }
@@ -245,16 +313,20 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
     var lim = parseInt(document.getElementById('f-limit').value, 10);
     if (lim > 0) filters.maxPerFile = lim;
     if (selectedVault !== 'all') filters.vaults = [selectedVault];
+    // issue #245: page-size control (k was hardcoded at 20)
+    var kSel = parseInt(document.getElementById('f-k').value, 10);
+    if (kSel > 0) filters.k = kSel;
 
     if (searchAbort) { searchAbort.abort(); }
     searchAbort = typeof AbortController !== 'undefined' ? new AbortController() : null;
     var currentSeq = ++searchSeq;
     var signal = searchAbort ? searchAbort.signal : undefined;
 
+    syncUrl(query, filters);
     api('/search', {
       method: 'POST',
       signal: signal,
-      body: JSON.stringify(Object.assign({ query: query, k: 20 }, filters))
+      body: JSON.stringify(Object.assign({ query: query }, filters))
     })
       .then(function (data) {
         if (currentSeq !== searchSeq) return;
@@ -303,6 +375,7 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
   var askMsg = document.getElementById('askmsg');
   var answerEl = document.getElementById('answer');
   var answerText = document.getElementById('answertext');
+  var answerRaw = ''; // issue #245: streamed accumulator for the markdown render
   var answerSrc = document.getElementById('answersrc');
   var ansmode = document.getElementById('ansmode');
   var askAbort = null;
@@ -342,7 +415,8 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
 
   chatNew.addEventListener('click', function () {
     resetChat();
-    answerText.textContent = '';
+    answerText.innerHTML = '';
+    answerRaw = '';
     answerSrc.innerHTML = '';
     ansmode.textContent = '';
   });
@@ -375,11 +449,17 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
     } else if (evtName === 'sources') {
       renderAskSources(obj.citations || []);
     } else if (evtName === 'delta') {
-      answerText.textContent += (obj.text || '');
+      answerRaw += (obj.text || '');
+      answerText.textContent = answerRaw;
       askMsg.textContent = '';
     } else if (evtName === 'done') {
       // the assembled answer wins over accumulated deltas
-      if (typeof obj.answer === 'string' && obj.answer) answerText.textContent = obj.answer;
+      if (typeof obj.answer === 'string' && obj.answer) {
+        // issue #245: the completed answer renders through the safe markdown
+        // renderer (code blocks, links, wikilinks); the stream stays plain
+        answerRaw = obj.answer;
+        answerText.innerHTML = renderMarkdown(obj.answer);
+      }
       ansmode.textContent = obj.mode === 'extractive' ? 'extractive fallback' : 'llm';
       renderAskSources(obj.citations || []);
       askMsg.textContent = '';
@@ -405,7 +485,8 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
     answerEl.hidden = false;
     answerEl.dataset.query = query;
     ansmode.textContent = '';
-    answerText.textContent = '';
+    answerText.innerHTML = '';
+    answerRaw = '';
     answerSrc.innerHTML = '';
 
     var body = { query: query, k: 5 };
@@ -470,6 +551,79 @@ export const WEBUI_JS = `/* mdss web ui behaviour (issue #111) — no frameworks
     root.dataset.theme = next;
     try { localStorage.setItem('mdss_theme', next); } catch (e) {}
   });
+
+  // ── issue #245: shareable query state in the URL hash. The hash keeps the
+  // server out of routing concerns; replaceState avoids history spam per
+  // keystroke, and a hashchange restores back/forward navigation.
+  function syncUrl(query, filters) {
+    var parts = [];
+    if (query) parts.push('q=' + encodeURIComponent(query));
+    if (filters) {
+      Object.keys(filters).forEach(function (key) {
+        if (key === 'vaults') return; // scoping already lives in the chips
+        var v = filters[key];
+        if (v !== undefined && v !== '') parts.push(encodeURIComponent(key) + '=' + encodeURIComponent(v));
+      });
+    }
+    if (selectedVault !== 'all') parts.push('vault=' + encodeURIComponent(selectedVault));
+    var hash = parts.length ? '#' + parts.join('&') : '';
+    if (location.hash !== hash) {
+      try { history.replaceState(null, '', location.pathname + hash); } catch (e) { /* not critical */ }
+    }
+  }
+  function restoreFromUrl() {
+    if (!location.hash || location.hash.length < 2) return;
+    var params = {};
+    location.hash.slice(1).split('&').forEach(function (pair) {
+      var eq = pair.indexOf('=');
+      if (eq > 0) params[decodeURIComponent(pair.slice(0, eq))] = decodeURIComponent(pair.slice(eq + 1));
+    });
+    if (params.q) { q.value = params.q; run(); }
+    if (params.tag) document.getElementById('f-tag').value = params.tag;
+    if (params.type) document.getElementById('f-type').value = params.type;
+    if (params.status) document.getElementById('f-status').value = params.status;
+    if (params.maxPerFile) document.getElementById('f-limit').value = params.maxPerFile;
+    if (params.k && [10, 20, 50, 100].indexOf(Number(params.k)) !== -1) document.getElementById('f-k').value = params.k;
+    if (params.vault) selectedVault = params.vault;
+    if (params.q && (params.tag || params.type || params.status || params.maxPerFile)) {
+      // re-run once filters are applied (run() already fired for q above)
+      setTimeout(run, 0);
+    }
+  }
+  window.addEventListener('hashchange', restoreFromUrl);
+  restoreFromUrl();
+
+  // ── issue #245: export the current result set (client-side generation)
+  function download(name, mime, content) {
+    var blob = new Blob([content], { type: mime });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
+  function exportResults(format) {
+    var rs = lastResults || [];
+    var stamp = new Date().toISOString().slice(0, 10);
+    if (format === 'json') {
+      download('mdss-results-' + stamp + '.json', 'application/json', JSON.stringify(rs, null, 2));
+      return;
+    }
+    var cols = ['file', 'title', 'heading', 'cosine', 'score', 'startLine', 'vault'];
+    var rows = [cols.join(',')].concat(rs.map(function (r) {
+      return cols.map(function (c) {
+        var v = r[c] == null ? '' : String(r[c]);
+        return /[",
+]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+      }).join(',');
+    }));
+    download('mdss-results-' + stamp + '.csv', 'text/csv', rows.join('
+'));
+  }
+  var lastResults = null;
+  document.getElementById('export-json').addEventListener('click', function () { exportResults('json'); });
+  document.getElementById('export-csv').addEventListener('click', function () { exportResults('csv'); });
 
   api('/health').then(function (h) {
     healthEl.textContent = h.chunks + ' chunks · ' + h.model;

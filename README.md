@@ -525,19 +525,26 @@ burst of 10 (`429 + Retry-After` above that; tune via `--rate-limit`), and at mo
 concurrently with a bounded wait queue (`503` when saturated; tune via `--max-concurrency`). Every response
 carries `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`; the `Host` header is validated
 against a loopback allowlist (`403` otherwise) so DNS-rebinding pages cannot read your notes cross-origin,
-and CORS stays fully off unless you pass `--cors-origin`. `/health` exposes the live counters
+and CORS stays fully off unless you pass `--cors-origin`. `GET /facets?field=tags,type&prefix=…&limit=…`
+(issue #244) returns value→count maps computed from the loaded index — the discovery layer behind the
+UI's filter suggestions; field names are validated, custom frontmatter keys are addressable as
+`custom.<key>`. `/health` exposes the live counters
 (`in_flight`, `queued`, `rejected_total`).
 
 ### Web UI (built-in; disable with `--no-ui`)
 
 By default `mdss serve` also serves a **zero-dependency web UI at `/`** — a keyboard-first search page
-with live debounced results, term highlighting, score bars, tag/type/status filters, dark/light theme
-(follows the system until you toggle it) and an API-key prompt when Bearer auth is enabled (the key is kept
-in `sessionStorage`, same-origin only). It ships as plain HTML/CSS/JS split into three assets so a strict
-CSP applies (`default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self';
-frame-ancestors 'none'`) — no inline code, no external calls. Use `--no-ui` to restore pure JSON at `/`;
-the JSON contract (`/search`, `/health`, `/help`) never changes. A Playwright smoke test runs weekly via
-the opt-in `ui-smoke` workflow.
+with live debounced results, term highlighting, score bars, tag/type/status filters (with `/facets`-backed
+tag chips and count-annotated suggestions — issue #244), a results-per-query control, vault chips when
+federated vaults are configured (issue #243), shareable query URLs, per-result **open**/**copy-link** deep
+links into `GET /doc`, JSON/CSV export of the current result set, RAG answers rendered through a
+safe escape-first markdown renderer (issue #245), dark/light theme (follows the system until you toggle
+it) and an API-key prompt when Bearer auth is enabled (the key is kept in `sessionStorage`, same-origin
+only). It ships as plain HTML/CSS/JS split into three assets so a strict CSP applies
+(`default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'`) —
+no inline code, no external calls. Use `--no-ui` to restore pure JSON at `/`; the JSON contract
+(`/search`, `/health`, `/help`) never changes. A Playwright smoke test runs weekly via the opt-in
+`ui-smoke` workflow.
 
 ### Securing remote deployments
 
