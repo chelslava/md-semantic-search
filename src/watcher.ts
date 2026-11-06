@@ -13,6 +13,8 @@ export interface WatcherOptions {
   ignore?: string[];
   log?: (msg: string) => void;
   fallbackIntervalMs?: number;
+  /** issue #236 test hook: hands the raw native FSWatcher to the caller so tests can emit error/close. */
+  _testHooks?: { onWatcher?: (watcher: fs.FSWatcher) => void };
 }
 
 export interface FileWatcher {
@@ -80,6 +82,7 @@ export function createFileWatcher(
     // 1 s is still responsive (native events handle the snappy case) while
     // cutting the background budget by 20x.
     fallbackIntervalMs = 1000,
+    _testHooks,
   } = options;
 
   let closed = false;
@@ -121,9 +124,71 @@ export function createFileWatcher(
     debounceTimer.unref?.();
   };
 
+  // Polling fallback (issue #100), shared by the no-native-setup path and the
+  // issue #236 mid-run degradation path.
+  // issue #195: iterative walk with an explicit stack — the recursive
+  // version risked stack overflow on deep trees and re-walked everything
+  // through the JS call frame per poll
+  const getDirMtime = (root: string): number => {
+    let max = 0;
+    const stack: string[] = [root];
+    while (stack.length > 0) {
+      const dir = stack.pop()!;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (entry.name.startsWith('.') || entry.name === '.mdss') continue;
+        const full = path.join(dir, entry.name);
+        if (shouldIgnore(entry.name)) continue;
+        if (entry.isDirectory()) {
+          stack.push(full);
+        } else if (/\.(md|markdown)$/i.test(entry.name)) {
+          try {
+            const fileStat = fs.statSync(full);
+            if (fileStat.mtimeMs > max) max = fileStat.mtimeMs;
+          } catch {}
+        }
+      }
+    }
+    return max;
+  };
+
+  let fsWatcher: fs.FSWatcher | null = null;
+  let pollInterval: NodeJS.Timeout | null = null;
+  let degraded = false;
+
+  const startPolling = (why: string): void => {
+    if (closed || pollInterval) return;
+    log(why);
+    let lastMtime = getDirMtime(dbPath);
+    pollInterval = setInterval(() => {
+      if (closed) return;
+      const currentMtime = getDirMtime(dbPath);
+      if (currentMtime > lastMtime) {
+        lastMtime = currentMtime;
+        scheduleChange();
+      }
+    }, fallbackIntervalMs);
+    pollInterval.unref?.();
+  };
+
+  const stopNative = (): void => {
+    if (fsWatcher) {
+      const w = fsWatcher;
+      fsWatcher = null;
+      try {
+        w.close();
+      } catch {}
+    }
+  };
+
   // Attempt recursive native fs.watch first
   try {
-    const fsWatcher = fs.watch(
+    fsWatcher = fs.watch(
       dbPath,
       { recursive: true },
       (_eventType, filename) => {
@@ -135,8 +200,37 @@ export function createFileWatcher(
       }
     );
 
-    fsWatcher.on('error', (err) => {
-      log(`Native watcher error (${err.message}), continuing.`);
+    // issue #236: a native watcher can die MID-RUN — inotify watch-limit
+    // exhaustion (ENOSPC/EMFILE), revoked permissions (EPERM/EACCES), a
+    // vanished root (ENOENT). The old handler only logged "continuing":
+    // after that NO events were ever delivered again and no polling took
+    // over, so `mdss serve --watch` silently stopped re-indexing while
+    // looking healthy. Classify the error; anything non-transient (or an
+    // unexpected 'close') degrades to interval polling with one loud line.
+    fsWatcher.on('error', (err: NodeJS.ErrnoException) => {
+      if (closed) return;
+      // Watcher-death semantics differ from read-side classification: codes
+      // like ENOSPC/EMFILE (inotify exhaustion) or EPERM/EACCES are bucketed
+      // 'transient' for read bursts (issue #116) but are fatal to the event
+      // stream. Only burst noise the handle typically survives keeps native.
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (!degraded && (code === 'EBUSY' || code === 'EAGAIN')) {
+        log(`Native watcher transient error (${err.message}); keeping kernel events.`);
+        return;
+      }
+      degraded = true;
+      stopNative();
+      startPolling(
+        `Native watcher failed (${err.message}); switched to interval polling every ${fallbackIntervalMs} ms — changes are still detected.`,
+      );
+    });
+    fsWatcher.on('close', () => {
+      if (closed || degraded || pollInterval) return;
+      fsWatcher = null; // the handle is gone — isNative must reflect that
+      degraded = true;
+      startPolling(
+        `Native watcher closed unexpectedly; switched to interval polling every ${fallbackIntervalMs} ms — changes are still detected.`,
+      );
     });
 
     // unref() lets the event loop exit even if the watcher is still active.
@@ -145,69 +239,37 @@ export function createFileWatcher(
     // but the handle hasn't been fully released by the kernel yet).
     fsWatcher.unref?.();
 
+    _testHooks?.onWatcher?.(fsWatcher);
+
     return {
-      isNative: true,
+      // Live mode: after a mid-run degradation the watcher polls, so the flag
+      // must not keep claiming kernel events.
+      get isNative() {
+        return fsWatcher !== null;
+      },
       close: () => {
         closed = true;
         if (debounceTimer) clearTimeout(debounceTimer);
-        try {
-          fsWatcher.close();
-        } catch {}
+        stopNative();
+        if (pollInterval) {
+          clearInterval(pollInterval);
+          pollInterval = null;
+        }
       },
     };
   } catch (nativeErr: any) {
-    log(`Native recursive watch unavailable (${nativeErr.message}); falling back to interval polling.`);
-
-    // Polling fallback
-    let lastMtime = 0;
-    // issue #195: iterative walk with an explicit stack — the recursive
-    // version risked stack overflow on deep trees and re-walked everything
-    // through the JS call frame per poll
-    const getDirMtime = (root: string): number => {
-      let max = 0;
-      const stack: string[] = [root];
-      while (stack.length > 0) {
-        const dir = stack.pop()!;
-        let entries: fs.Dirent[];
-        try {
-          entries = fs.readdirSync(dir, { withFileTypes: true });
-        } catch {
-          continue;
-        }
-        for (const entry of entries) {
-          if (entry.name.startsWith('.') || entry.name === '.mdss') continue;
-          const full = path.join(dir, entry.name);
-          if (shouldIgnore(entry.name)) continue;
-          if (entry.isDirectory()) {
-            stack.push(full);
-          } else if (/\.(md|markdown)$/i.test(entry.name)) {
-            try {
-              const fileStat = fs.statSync(full);
-              if (fileStat.mtimeMs > max) max = fileStat.mtimeMs;
-            } catch {}
-          }
-        }
-      }
-      return max;
-    };
-
-    lastMtime = getDirMtime(dbPath);
-    const pollInterval = setInterval(() => {
-      if (closed) return;
-      const currentMtime = getDirMtime(dbPath);
-      if (currentMtime > lastMtime) {
-        lastMtime = currentMtime;
-        scheduleChange();
-      }
-    }, fallbackIntervalMs);
-    pollInterval.unref?.();
-
+    startPolling(
+      `Native recursive watch unavailable (${nativeErr.message}); falling back to interval polling every ${fallbackIntervalMs} ms.`,
+    );
     return {
       isNative: false,
       close: () => {
         closed = true;
         if (debounceTimer) clearTimeout(debounceTimer);
-        clearInterval(pollInterval);
+        if (pollInterval) {
+          clearInterval(pollInterval);
+          pollInterval = null;
+        }
       },
     };
   }
