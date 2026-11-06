@@ -77,3 +77,41 @@ test('alfred: parity — the script reads MDSS_API_KEY through the shared client
   assert.ok(src.includes('createSearchClient'), 'talks through the shared client');
   assert.ok(src.includes("MDSS_DAEMON_URL"), 'daemon URL env supported');
 });
+
+// ---------------------------------------------------------------------------
+// issue #250: launcher parity — #key:value filter keywords and the ask
+// output shape.
+// ---------------------------------------------------------------------------
+
+test('alfred: parseFilterKeywords maps #key:value tokens to body fields (issue #250)', async () => {
+  const { parseFilterKeywords } = await import('../integrations/alfred/helpers.mjs');
+  assert.deepEqual(
+    parseFilterKeywords('#tag:eng #type:guide rotate tokens'),
+    { body: { tag: 'eng', type: 'guide' }, query: 'rotate tokens' },
+  );
+  assert.deepEqual(
+    parseFilterKeywords('plain query only'),
+    { body: {}, query: 'plain query only' },
+    'no keywords → the whole string is the query',
+  );
+  assert.deepEqual(
+    parseFilterKeywords('#unknown:x query'),
+    { body: {}, query: '#unknown:x query' },
+    'unknown keys stay verbatim in the query',
+  );
+});
+
+test('alfred: toAlfredAskItems shapes the answer and sources (issue #250)', async () => {
+  const { toAlfredAskItems } = await import('../integrations/alfred/helpers.mjs');
+  const out = toAlfredAskItems({
+    answer: 'Tokens rotate every 90 days.',
+    citations: [{ file: 'auth.md', heading: 'Tokens', score: 0.9 }],
+    mode: 'endpoint',
+  });
+  assert.equal(out.items.length, 2);
+  assert.match(out.items[0].title, /Answer \(endpoint\)/);
+  assert.equal(out.items[1].arg, 'auth.md');
+
+  const abstained = toAlfredAskItems({ answer: '', citations: [], mode: 'abstained' });
+  assert.match(abstained.items[0].title, /No answer found/);
+});

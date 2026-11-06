@@ -16,6 +16,16 @@ for the pinned contract.
 | `alfred/` | Alfred workflow | Manual packaging (below) |
 | `windows/` | Windows tray companion (PowerShell + WinForms) | Manual script — no packaging |
 
+### Client capability matrix (issue #250)
+
+| Integration | Search | Filters | Ask (RAG) | Sessions |
+|---|---|---|---|---|
+| Obsidian | ✅ | ✅ (panel inputs) | ✅ streaming, chat toggle | ✅ |
+| VS Code | ✅ sidebar | ✅ | ✅ streaming panel | ✅ |
+| Raycast | ✅ list | ✅ preferences (tag/type/status) | ✅ `ask-notes` command (streamed Detail) | ❌ one-shot |
+| Alfred | ✅ script filter | ✅ `#tag:eng`-style keywords | ✅ `ask.mjs` script filter (answer + sources) | ❌ one-shot |
+| Windows tray | ❌ (monitoring only) | ❌ | ❌ | ❌ |
+
 ## Releasing VS Code
 
 ```bash

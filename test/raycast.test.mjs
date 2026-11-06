@@ -70,3 +70,36 @@ test('raycast: command wires the helpers and the Bearer header (issue #230)', ()
   assert.ok(src.includes('Bearer'), 'Authorization header present');
   assert.ok(src.includes('preferences.apiKey'), 'apiKey preference consumed');
 });
+
+// ---------------------------------------------------------------------------
+// issue #250: launcher parity — filter preferences map into the /search body,
+// ask helpers shape the streamed /ask consumption.
+// ---------------------------------------------------------------------------
+
+test('raycast: buildSearchRequestWithFilters omits empty filter preferences (issue #250)', async () => {
+  const { buildSearchRequestWithFilters } = await import('../integrations/raycast/src/helpers.mjs');
+  assert.deepEqual(
+    buildSearchRequestWithFilters('  rotate tokens ', { k: 7, tag: ' eng ', type: '', status: undefined }),
+    { query: 'rotate tokens', k: 7, tag: 'eng' },
+    'trimmed values kept, empty ones omitted',
+  );
+  assert.deepEqual(
+    buildSearchRequestWithFilters('query', {}),
+    { query: 'query', k: 12 },
+    'no filters → identical to the plain body',
+  );
+});
+
+test('raycast: renderAskDetail shapes the answer + sources markdown (issue #250)', async () => {
+  const { renderAskDetail } = await import('../integrations/raycast/src/helpers.mjs');
+  const md = renderAskDetail({
+    answer: 'Tokens rotate every 90 days.',
+    sources: [{ file: 'auth.md', heading: 'Tokens' }, { file: 'ops.md' }],
+    mode: 'endpoint',
+  });
+  assert.ok(md.includes('Tokens rotate every 90 days.'));
+  assert.ok(md.includes('**Sources**'));
+  assert.ok(md.includes('`auth.md › Tokens`'));
+  assert.ok(md.includes('_answer mode: endpoint_'));
+  assert.equal(renderAskDetail({}), '', 'empty state renders nothing');
+});

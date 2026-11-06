@@ -28,7 +28,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const { buildIndex, loadIndex, searchIndex, _stats } = await import(pathToFileURL(path.join(REPO, 'dist/index.js')).href);
 const { cosine } = await import(pathToFileURL(path.join(REPO, 'dist/core.js')).href);
-const { quantizeToInt8, asymmetricCosineInt8CachedNorm, int8Norm } = await import(pathToFileURL(path.join(REPO, 'dist/quantization.js')).href);
+const { asymmetricCosineInt8CachedNorm, int8Norm } = await import(pathToFileURL(path.join(REPO, 'dist/quantization.js')).href);
 
 function hashEmbed(texts, _kind, model) {
   const dim = model?.dim > 0 ? model.dim : 384;
@@ -88,7 +88,7 @@ async function main() {
   try {
     const t0 = performance.now();
     const { files } = buildFixtureCorpus(dir, args.chunks);
-    const buildRes = await buildIndex({ db: dir, indexDir: idx, cacheDir: path.join(dir, '.cache'), modelName: 'e5-base', embedFn: hashEmbed, quantize: 'int8' });
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: path.join(dir, '.cache'), modelName: 'e5-base', embedFn: hashEmbed, quantize: 'int8' });
     const buildMs = Math.round(performance.now() - t0);
     const loaded = loadIndex(idx);
     const chunkCount = loaded.index.chunks.length;

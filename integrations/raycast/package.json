@@ -17,6 +17,21 @@
       "subtitle": "MDSS Semantic Vector Search",
       "description": "Query local Markdown notes by meaning and preview matches",
       "mode": "view"
+    },
+    {
+      "name": "ask-notes",
+      "title": "Ask Notes",
+      "subtitle": "MDSS Grounded QA",
+      "description": "Ask a question and get a cited answer streamed from your notes (issue #250)",
+      "mode": "view",
+      "arguments": [
+        {
+          "name": "query",
+          "placeholder": "Question to ask your notes",
+          "type": "text",
+          "required": false
+        }
+      ]
     }
   ],
   "preferences": [

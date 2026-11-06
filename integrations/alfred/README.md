@@ -38,3 +38,14 @@ as a result row telling you to start `mdss serve`.
 
 See the parent [README](../README.md#alfred-manual-packaging) — bump
 `info.plist`, zip, attach to a release.
+
+## Ask Notes (issue #250)
+
+`ask.mjs` is the second script filter: type a question, get a cited answer.
+
+- Output: the answer item (large-type full text) plus one openable item per
+  source citation; an abstained ask (#238) says so instead of citing.
+- Filter keywords work here too: `#tag:eng #status:released why rotate tokens`.
+- Wire it into the workflow's plist the same way `search.mjs` is wired (a
+  second Script Filter object with `keyword: ask` and
+  `MDSS_DAEMON_URL`/`MDSS_API_KEY` env passthrough).

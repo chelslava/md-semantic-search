@@ -69,3 +69,59 @@ export function toAlfredItems(results) {
     quicklookurl: r.file,
   }));
 }
+
+/**
+ * issue #250: launcher parity — keyword-modified filters. `mdss #tag:eng
+ * #type:guide query` maps the leading `#key:value` tokens to /search body
+ * fields (the same contract the web UI filter inputs use); everything after
+ * them is the query. Unknown `#key:value` tokens stay in the query verbatim.
+ */
+export function parseFilterKeywords(query) {
+  const body = {};
+  const words = String(query || '').trim().split(/\s+/).filter(Boolean);
+  const rest = [];
+  const KEYS = ['tag', 'type', 'status', 'project'];
+  for (const word of words) {
+    const m = /^#([a-zA-Z]+):(.+)$/.exec(word);
+    if (m && KEYS.includes(m[1])) {
+      body[m[1]] = m[2];
+    } else {
+      rest.push(word);
+    }
+  }
+  return { body, query: rest.join(' ') };
+}
+
+/**
+ * issue #250: streamed /ask output → Alfred items (an answer item with
+ * large-type text plus one source item per citation). The ask script renders
+ * whatever accumulated by stream end; no chat sessions from a launcher.
+ */
+export function toAlfredAskItems({ answer, citations, mode }) {
+  const items = [];
+  if (answer && answer.trim()) {
+    items.push({
+      title: `Answer${mode && mode !== 'extractive' ? ` (${mode})` : ''}`,
+      subtitle: (answer || '').replace(/\s+/g, ' ').slice(0, 160),
+      arg: '',
+      text: { copy: answer, largetype: answer },
+      valid: false,
+    });
+  } else if (mode === 'abstained') {
+    items.push({
+      title: 'No answer found in the notes',
+      subtitle: 'The extractive answerer found nothing with enough query support (issue #238 abstention).',
+      valid: false,
+    });
+  }
+  for (const c of citations || []) {
+    items.push({
+      title: `${c.file}${c.heading ? ` › ${c.heading}` : ''}`,
+      subtitle: `source [score ${(c.score ?? 0).toFixed(3)}]`,
+      arg: c.file,
+      type: 'file',
+      valid: true,
+    });
+  }
+  return { items };
+}

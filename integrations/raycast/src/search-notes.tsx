@@ -9,7 +9,7 @@
  */
 import React, { useState, useEffect } from 'react';
 import { List, ActionPanel, Action, getPreferenceValues, showToast, Toast } from '@raycast/api';
-import { buildSearchRequest, parseSearchResponse, toListItem, SEARCH_DEBOUNCE_MS } from './helpers.mjs';
+import { buildSearchRequestWithFilters, parseSearchResponse, toListItem, SEARCH_DEBOUNCE_MS } from './helpers.mjs';
 
 interface SearchHit {
   file: string;
@@ -24,6 +24,10 @@ interface SearchHit {
 interface Preferences {
   daemonUrl?: string;
   apiKey?: string;
+  /** issue #250: filter preferences — empty values are omitted from the body */
+  tagFilter?: string;
+  typeFilter?: string;
+  statusFilter?: string;
 }
 
 export default function Command() {
@@ -48,7 +52,13 @@ export default function Command() {
         const resp = await fetch(`${daemonUrl.replace(/\/$/, '')}/search`, {
           method: 'POST',
           headers,
-          body: JSON.stringify(buildSearchRequest(searchText)),
+          body: JSON.stringify(
+          buildSearchRequestWithFilters(searchText, {
+            tag: preferences.tagFilter,
+            type: preferences.typeFilter,
+            status: preferences.statusFilter,
+          }),
+        ),
         });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         setResults(parseSearchResponse(await resp.json()) as SearchHit[]);
@@ -60,7 +70,7 @@ export default function Command() {
     }, SEARCH_DEBOUNCE_MS);
 
     return () => clearTimeout(timer);
-  }, [searchText, daemonUrl, apiKey]);
+  }, [searchText, daemonUrl, apiKey, preferences.tagFilter, preferences.typeFilter, preferences.statusFilter]);
 
   return (
     <List
