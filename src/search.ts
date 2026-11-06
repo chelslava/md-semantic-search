@@ -52,7 +52,9 @@ export function rrf(
     const ranking = rankings[rankingIdx];
     const weight = weights ? (weights[rankingIdx] ?? 1) : 1;
     if (weight <= 0) continue;
-    const sorted = [...ranking].sort((a, b) => b.score - a.score);
+    // issue #247: sort in place — every caller passes a locally-owned array
+    // built for this query; the spread copy was a wasted O(n) allocation
+    const sorted = ranking.sort((a, b) => b.score - a.score);
     let scoreRank = 0;
     sorted.forEach((item, rank) => {
       if (item.score <= 0) return;
@@ -1267,10 +1269,15 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
             score,
           }));
 
-    const fuzzy = [...fuzzyTitleAliasScores(candidates.map((c) => c.chunk), query).entries()].map(([position, score]) => ({
-      idx: candidates[position].idx,
-      score,
-    }));
+    // issue #247: score against the STABLE runtime.chunks array so the
+    // vocabulary index caches across queries (the old call re-built a
+    // candidates-only array per query, defeating any caching); candidate.idx
+    // is the runtime-chunk position, so the map keys line up directly
+    const fuzzyScores = fuzzyTitleAliasScores(runtime.chunks, query);
+    const fuzzy = candidates.flatMap((c) => {
+      const score = fuzzyScores.get(c.idx);
+      return score !== undefined ? [{ idx: c.idx, score }] : [];
+    });
 
     if (graphBoost > 0) {
       const fused = rrf([semantic, kw, fuzzy, graphRanking], 60, [1, 1, 1, graphBoost]);

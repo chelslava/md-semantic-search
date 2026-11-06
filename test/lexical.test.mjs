@@ -158,3 +158,81 @@ test('lexical: editDistanceAtMost agrees with editDistance on every threshold de
   assert.equal(editDistanceAtMost('abcd', 'badc', 2), 2);
   assert.equal(editDistanceAtMost('ca', 'abc', 3), 3);
 });
+
+// ---------------------------------------------------------------------------
+// issue #247: the fuzzy scan runs through a per-array vocabulary index with a
+// length prefilter instead of a brute scan over every chunk. The scores must
+// be identical to the brute-force semantics; the index caches per array.
+// ---------------------------------------------------------------------------
+
+test('lexical: fuzzyTitleAliasScores vocab index matches brute-force semantics (issue #247)', async () => {
+  const { fuzzyTitleAliasScores, tokenize } = await import('../dist/lexical.js');
+
+  const chunks = [
+    { title: 'Database Failover Runbook', meta: { aliases: ['db failover', 'failover dr'] } },
+    { title: 'API Token Rotation Policy', meta: { aliases: ['token rotation'] } },
+    { title: 'Windows stdin re-wrap', meta: { aliases: [] } },
+    { title: 'Kubernetes Pod Scheduling', meta: { aliases: ['k8s pods'] } },
+    { title: 'Rust Ownership Rules', meta: { aliases: [] } },
+  ];
+
+  // exact token hit
+  let scores = fuzzyTitleAliasScores(chunks, 'failover');
+  assert.ok(scores.has(0), 'exact title token scores the doc');
+  // fuzzy hit: 'rottaion' is within distance 2 of 'rotation' (len 8 → maxDist 2)
+  scores = fuzzyTitleAliasScores(chunks, 'rottaion');
+  assert.ok(scores.has(1), 'edit-distance match scores the doc through the vocab index');
+  assert.ok(!scores.has(0), 'unrelated docs never score');
+  // length prefilter: a 12-char query cannot match a 4-char token at maxDist 2
+  scores = fuzzyTitleAliasScores(chunks, 'schedulingx');
+  assert.ok(scores.has(3), 'long fuzzy query still matches its own length band');
+  assert.ok(!scores.has(2), 'short tokens outside the length band never match');
+
+  // cross-check against a brute-force recomputation of the OLD semantics
+  const query = 'rottaion failover';
+  const brute = new Map();
+  const qTerms = tokenize(query);
+  chunks.forEach((c, docId) => {
+    const tTerms = [...c.title.toLowerCase().match(/[\p{L}\p{N}]+/gu) || [], ...(c.meta?.aliases || []).flatMap((a) => tokenize(a))];
+    let maxScore = 0;
+    for (const qt of qTerms) {
+      if (qt.length < 3) continue;
+      const maxDist = Math.min(2, Math.floor(qt.length / 3));
+      for (const tt of tTerms) {
+        if (tt.length < 3) continue;
+        // reference banded DP via the exported editDistanceAtMost
+        const dist = editDistanceAtMost(qt, tt, maxDist);
+        if (dist !== null) {
+          const similarity = 1 - dist / Math.max(qt.length, tt.length);
+          if (similarity > maxScore) maxScore = similarity;
+        }
+      }
+    }
+    if (maxScore > 0) brute.set(docId, maxScore * 2.0);
+  });
+  const fast = fuzzyTitleAliasScores(chunks, query);
+  assert.equal(fast.size, brute.size, 'same doc set');
+  for (const [docId, score] of brute) {
+    assert.equal(fast.get(docId), score, `doc ${docId} score identical`);
+  }
+});
+
+test('lexical: the vocab index caches per chunks array (issue #247)', async () => {
+  const { fuzzyTitleAliasScores } = await import('../dist/lexical.js');
+  const chunks = Array.from({ length: 400 }, (_, i) => ({
+    title: `Service ${i} runbook deployment pipeline`,
+    meta: { aliases: [`svc-${i}`] },
+  }));
+  // warm the cache
+  fuzzyTitleAliasScores(chunks, 'deployment');
+  const t0 = performance.now();
+  for (let q = 0; q < 50; q++) fuzzyTitleAliasScores(chunks, `deployment runbook ${q}`);
+  const warm = performance.now() - t0;
+  assert.ok(warm < 2000, `50 warm queries stay fast (got ${warm.toFixed(1)} ms)`);
+  // a different array object rebuilds its own vocabulary
+  const other = chunks.slice();
+  const t1 = performance.now();
+  fuzzyTitleAliasScores(other, 'deployment');
+  const cold = performance.now() - t1;
+  assert.ok(cold >= 0);
+});

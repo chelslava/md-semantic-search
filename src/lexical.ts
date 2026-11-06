@@ -208,6 +208,55 @@ function targetTokens(chunk: { title: string; meta?: DocumentMetadata }): string
   return tokens;
 }
 
+// issue #247: per-chunks-array vocabulary for the fuzzy scan. The brute scan
+// ran query tokens × EVERY chunk's title tokens through the banded DP; the
+// vocabulary approach scans only title tokens whose LENGTH can possibly match
+// (|lenDiff| <= maxDist — anything else is rejected by editDistanceAtMost
+// anyway) and resolves candidates through an exact-token inverted index.
+// Cached on a WeakMap keyed by the chunks array — the search path passes the
+// stable runtime.chunks, so one vocabulary per index generation.
+interface FuzzyVocab {
+  /** exact title token → doc ids containing it */
+  byToken: Map<string, number[]>;
+  /** title tokens grouped by length (for the bounded fuzzy scan) */
+  byLength: Map<number, string[]>;
+  /** the unique doc ids (dense scan fallback for length-3 boundary tokens) */
+  docCount: number;
+}
+
+const fuzzyVocabCache = new WeakMap<object, FuzzyVocab>();
+
+function fuzzyVocab(chunks: Array<{ title: string; meta?: DocumentMetadata }>): FuzzyVocab {
+  let vocab = fuzzyVocabCache.get(chunks);
+  if (vocab) return vocab;
+  const byToken = new Map<string, number[]>();
+  for (let docId = 0; docId < chunks.length; docId++) {
+    for (const tt of new Set(targetTokens(chunks[docId]))) {
+      let list = byToken.get(tt);
+      if (!list) {
+        list = [];
+        byToken.set(tt, list);
+      }
+      list.push(docId);
+    }
+  }
+  // length buckets over the UNIQUE vocabulary — pushing per-doc would store
+  // the same token once per containing document and the scan would repeat
+  // its DP work once per copy (found the hard way on a 50k-chunk fixture)
+  const byLength = new Map<number, string[]>();
+  for (const token of byToken.keys()) {
+    let bucket = byLength.get(token.length);
+    if (!bucket) {
+      bucket = [];
+      byLength.set(token.length, bucket);
+    }
+    bucket.push(token);
+  }
+  vocab = { byToken, byLength, docCount: chunks.length };
+  fuzzyVocabCache.set(chunks, vocab);
+  return vocab;
+}
+
 export function fuzzyTitleAliasScores(
   chunks: Array<{ file?: string; title: string; meta?: DocumentMetadata }>,
   query: string
@@ -215,30 +264,35 @@ export function fuzzyTitleAliasScores(
   const scores = new Map<number, number>();
   const qTerms = tokenize(query);
   if (qTerms.length === 0) return scores;
+  const vocab = fuzzyVocab(chunks);
+  const candidateDocs = new Set<number>();
+  // per-doc best similarity across (query token, near title token) pairs
+  const best = new Map<number, number>();
+  const bump = (docId: number, similarity: number): void => {
+    candidateDocs.add(docId);
+    const prev = best.get(docId);
+    if (prev === undefined || similarity > prev) best.set(docId, similarity);
+  };
 
-  for (let docId = 0; docId < chunks.length; docId++) {
-    const c = chunks[docId];
-    const tTerms = targetTokens(c);
-    let maxScore = 0;
-
-    for (const qt of qTerms) {
-      if (qt.length < 3) continue;
-      const maxDist = Math.min(2, Math.floor(qt.length / 3));
-      for (const tt of tTerms) {
-        if (tt.length < 3) continue;
-        // exact same decision as editDistance(qt, tt) <= maxDist, without the
-        // full O(len²) matrix (issue #193)
+  for (const qt of qTerms) {
+    if (qt.length < 3) continue;
+    const maxDist = Math.min(2, Math.floor(qt.length / 3));
+    // length prefilter: |lenDiff| > maxDist can never pass the banded DP
+    for (let len = Math.max(3, qt.length - maxDist); len <= qt.length + maxDist; len++) {
+      const bucket = vocab.byLength.get(len);
+      if (!bucket) continue;
+      for (const tt of bucket) {
         const dist = editDistanceAtMost(qt, tt, maxDist);
-        if (dist !== null) {
-          const similarity = 1 - dist / Math.max(qt.length, tt.length);
-          if (similarity > maxScore) maxScore = similarity;
-        }
+        if (dist === null) continue;
+        const similarity = 1 - dist / Math.max(qt.length, tt.length);
+        for (const docId of vocab.byToken.get(tt)!) bump(docId, similarity);
       }
     }
+  }
 
-    if (maxScore > 0) {
-      scores.set(docId, maxScore * 2.0);
-    }
+  for (const docId of candidateDocs) {
+    const similarity = best.get(docId)!;
+    if (similarity > 0) scores.set(docId, similarity * 2.0);
   }
   return scores;
 }
