@@ -127,7 +127,7 @@ test('buildIndex & searchIndex: end-to-end MRL index building and search verific
           dimensions: 512,
         });
       },
-      /requested search dimensions \(512\) does not match index dimension \(256\)/
+      /requested search dimensions \(512\) exceeds index dimension \(256\)/
     );
 
     // 4. Rebuilding with different dimension (512) triggers full re-embed (0 reused)
