@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { buildIndex } from './indexer.js';
-import { loadIndex, searchIndex } from './search.js';
+import { loadIndex, searchIndex, prewarmAnnRuntime } from './search.js';
 import { synthesizeAnswer, chatTurn, loadChatSession, assertSafeSessionId } from './rag.js';
 import { walkMarkdown, assertSafePath, getDocLines, ModelDescriptor } from './core.js';
 import { createFileWatcher, FileWatcher, classifyFsError, readWithRetry } from './watcher.js';
@@ -354,6 +354,15 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     sse.write(`event: message\ndata: ${JSON.stringify(msg)}\n\n`);
   });
 
+  // issue #242: warm the ANN runtime in the background so the first user
+  // query never pays the in-query graph/k-means cold build (only engages when
+  // no sidecar exists and the corpus is ANN-sized; sidecar probes are already
+  // cheap). Best-effort and silent — the hot path builds lazily as before.
+  const prewarm = (loaded: { index: unknown }): void => {
+    setImmediate(() => prewarmAnnRuntime(loaded as never, log));
+  };
+  prewarm(state.loaded);
+
   const sockets = new Set<import('node:net').Socket>();
   const server = http.createServer((req, res) => {
     handleRequest(req, res, state).catch((e) => {
@@ -406,6 +415,7 @@ export async function createServe(opts: CreateServeOptions): Promise<{
       throw e;
     }
     state.loaded = loadIndex(indexDir);
+    prewarm(state.loaded);
     state.reindexCount = (state.reindexCount ?? 0) + 1;
     log(`Re-indexed; ${state.loaded.index.chunks.length} chunks in memory.`);
     return true;

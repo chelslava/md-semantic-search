@@ -252,6 +252,13 @@ export interface RuntimeIndexState {
   graph?: RelationshipGraph;
   pageRank?: Map<string, number>;
   /**
+   * issue #242: lazily built, cached per index generation — the fp32 view of
+   * every chunk vector for the ANN cold path (dequantized once per generation,
+   * never per query) and the plain chunks.map(c => c.vec) list.
+   */
+  dequantized?: Float32Array[];
+  vecList?: Array<Float32Array | Int8Array>;
+  /**
    * issue #190: precomputed sqrt(sum(c^2)) for int8 vectors (zero-copy binary
    * load only) — lets the dense sweep compute the dot product alone.
    */
@@ -544,6 +551,51 @@ function snapshotRuntimeIndex(
     hnsw: validation.hnsw,
     chunkNorms,
   };
+}
+
+/**
+ * issue #242: `chunks.map(c => c.vec)` computed once per index generation —
+ * the ANN probe used to re-allocate it per query variant inside the loop.
+ */
+export function getVecList(runtime: RuntimeIndexState): Array<Float32Array | Int8Array> {
+  if (!runtime.vecList) {
+    runtime.vecList = runtime.chunks.map((c) => c.vec);
+  }
+  return runtime.vecList;
+}
+
+/**
+ * issue #242: the fp32 view of every chunk vector, dequantized ONCE per index
+ * generation and cached on the runtime state. The ANN cold path used to
+ * dequantize the whole corpus inside the first query; shared with the
+ * related-notes path (issue #246).
+ */
+export function getDequantizedVectors(runtime: RuntimeIndexState): Float32Array[] {
+  if (!runtime.dequantized) {
+    runtime.dequantized = runtime.chunks.map((c) =>
+      c.vec instanceof Float32Array ? c.vec : dequantizeFromInt8(c.vec)
+    );
+  }
+  return runtime.dequantized;
+}
+
+/**
+ * issue #242: build the runtime ANN structures in the background (serve warmup)
+ * so the first user query never pays the in-query graph/k-means cold build.
+ * Only engages when NO sidecar exists and the corpus is ANN-sized — exactly the
+ * condition under which the hot path would otherwise train synchronously.
+ * Best-effort: any failure leaves the hot path to build lazily as before.
+ */
+export function prewarmAnnRuntime(index: IndexFile, log: (msg: string) => void = () => {}): void {
+  try {
+    const runtime = validateRuntimeIndex(index);
+    if (runtime.hnsw || runtime.ivf) return;
+    if (runtime.chunks.length < ANN_THRESHOLD) return;
+    runtime.ivf = trainIVF(getDequantizedVectors(runtime));
+    log(`ann: prebuilt the in-memory IVF for ${runtime.chunks.length} chunks (no sidecar) — first query will not pay the build`);
+  } catch {
+    /* prewarm is best-effort */
+  }
 }
 
 function validateRuntimeIndex(index: IndexFile): RuntimeIndexState {
@@ -1093,24 +1145,28 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
           const qVecF32 = vec instanceof Float32Array ? vec : Float32Array.from(vec);
           if (annEngine === 'hnsw') {
             // issue #201: HNSW graph search — built on the hot path only when
-            // the sidecar is missing (same semantics as the IVF sync train)
+            // the sidecar is missing (same semantics as the IVF sync train).
+            // issue #242: dequantize through the per-generation cache (the old
+            // code re-dequantized the whole corpus inside the first query and
+            // re-allocated the vec list per query variant), and let the #228
+            // WASM kernel drive the build when available.
             if (!runtime.hnsw) {
-              const rawVecs = chunks.map((c) => (c.vec instanceof Float32Array ? c.vec : dequantizeFromInt8(c.vec)));
+              const rawVecs = getDequantizedVectors(runtime);
               runtime.hnsw = buildHnsw(rawVecs, {
                 vectors: rawVecs,
+                engine: 'auto',
                 distance: (a, b) => {
                   const bv = rawVecs[b];
                   return 1 - (a as Float32Array).reduce((sum, x, i) => sum + x * (bv as ArrayLike<number>)[i], 0);
                 },
               });
             }
-            for (const idx of searchHnswCandidates(qVecF32, runtime.hnsw, chunks.map((c) => c.vec), { ef: opts.ef ?? DEFAULT_HNSW_EF })) {
+            for (const idx of searchHnswCandidates(qVecF32, runtime.hnsw, getVecList(runtime), { ef: opts.ef ?? DEFAULT_HNSW_EF })) {
               probedUnion.add(idx);
             }
           } else {
             if (!runtime.ivf) {
-              const rawVecs = chunks.map((c) => (c.vec instanceof Float32Array ? c.vec : dequantizeFromInt8(c.vec)));
-              runtime.ivf = trainIVF(rawVecs);
+              runtime.ivf = trainIVF(getDequantizedVectors(runtime));
             }
             for (const idx of searchIVFCandidates(qVecF32, runtime.ivf, opts.nprobe ?? DEFAULT_NPROBE)) {
               probedUnion.add(idx);

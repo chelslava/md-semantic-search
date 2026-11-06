@@ -10,7 +10,7 @@ import {
   deserializeIVF,
 } from '../dist/ivf.js';
 import { buildIndex } from '../dist/indexer.js';
-import { search, loadIndex, searchIndex } from '../dist/search.js';
+import { search, loadIndex, searchIndex, prewarmAnnRuntime } from '../dist/search.js';
 import { cosine } from '../dist/core.js';
 
 function tempDir(prefix) {
@@ -365,6 +365,77 @@ test('ann: the option matrix stays intact after the #235 rewrite (undefined=auto
     const forced1 = await searchIndex({ ...common, ann: false });
     const forced2 = await searchIndex({ ...common, ann: false });
     assert.deepEqual(forced1.map((h) => [h.file, h.heading]), forced2.map((h) => [h.file, h.heading]));
+  } finally {
+    safeRm(dir);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// issue #242: the ANN cold path — dequantized-matrix + vec-list caching per
+// index generation, the #228 WASM kernel on the in-query build, and the
+// prewarmAnnRuntime() serve warmup.
+// ---------------------------------------------------------------------------
+
+test('ann: prewarmAnnRuntime builds the runtime IVF off the query path (issue #242)', async () => {
+  const dir = tempDir('ann-prewarm');
+  const idx = path.join(dir, '.mdss');
+  try {
+    buildAnnFalseCorpus(dir);
+    await buildIndex({
+      db: dir, indexDir: idx, cacheDir: dir,
+      modelName: 'e5-base', embedFn: fakeEmbed235,
+    });
+    // buildIndex auto-creates ivf.json at >= ANN_THRESHOLD; the cold-build
+    // condition prewarm guards is a MISSING sidecar (deleted/corrupt beyond
+    // deserialize recovery). Remove it to reach that state.
+    fs.unlinkSync(path.join(idx, 'ivf.json'));
+    const loaded = loadIndex(idx);
+    const logs = [];
+    prewarmAnnRuntime(loaded.index, (m) => logs.push(m));
+
+    // prewarmed vs cold: identical rankings, and the first query no longer
+    // trains synchronously (the runtime ivf is already attached)
+    const hot = await searchIndex({
+      loaded, cacheDir: dir, query: 'topic 3', k: 10, embedFn: fakeEmbed235,
+    });
+    assert.ok(logs.some((m) => /prebuilt the in-memory IVF/.test(m)), 'prewarm logs its work');
+    // idempotent: a second prewarm is a no-op (ivf already attached)
+    const logs2 = [];
+    prewarmAnnRuntime(loaded.index, (m) => logs2.push(m));
+    assert.equal(logs2.length, 0, 'prewarm does not rebuild an existing runtime ANN');
+
+    // below the threshold or with a sidecar → silent no-op
+    const smallIdx = path.join(dir, '.mdss-small');
+    const smallDir = path.join(dir, 'small');
+    fs.mkdirSync(smallDir, { recursive: true });
+    fs.writeFileSync(path.join(smallDir, 'a.md'), '# A\n\nonly one tiny document here\n');
+    await buildIndex({ db: smallDir, indexDir: smallIdx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed235 });
+    const smallLogs = [];
+    prewarmAnnRuntime(loadIndex(smallIdx).index, (m) => smallLogs.push(m));
+    assert.equal(smallLogs.length, 0, 'sub-threshold corpora never prewarm');
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('ann: cached dequantized vectors keep results rank-identical across the cold path (issue #242)', async () => {
+  const dir = tempDir('ann-deq');
+  const idx = path.join(dir, '.mdss');
+  try {
+    buildAnnFalseCorpus(dir);
+    await buildIndex({
+      db: dir, indexDir: idx, cacheDir: dir,
+      modelName: 'e5-base', embedFn: fakeEmbed235, ann: true,
+    });
+    const loaded = loadIndex(idx);
+    const common = { loaded, cacheDir: dir, query: 'topic 5', k: 8, embedFn: fakeEmbed235 };
+
+    // int8 sidecar corpus: first (cold) ANN query then a second (warm) one —
+    // the dequantize cache must not change any ranking
+    const cold = await searchIndex({ ...common, ann: 'ivf', multiQuery: undefined });
+    const warm = await searchIndex({ ...common, ann: 'ivf' });
+    assert.deepEqual(cold.map((h) => [h.file, h.heading]), warm.map((h) => [h.file, h.heading]));
+    assert.deepEqual(cold.map((h) => h.cosine), warm.map((h) => h.cosine));
   } finally {
     safeRm(dir);
   }
