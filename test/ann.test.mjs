@@ -258,3 +258,114 @@ test('ivf: deserializeIVF rejects malformed, truncated, and corrupt payloads (is
   assert.equal(valid.k, 2);
   assert.equal(valid.clusters.length, 2);
 });
+
+// ---------------------------------------------------------------------------
+// issue #235: `ann:false` is the documented brute-force escape hatch. It used
+// to behave exactly like `undefined` (auto), so once a sidecar existed and the
+// corpus was above ANN_THRESHOLD there was NO way to get exact search.
+// ---------------------------------------------------------------------------
+
+function fakeEmbed235(texts, _kind, model) {
+  return texts.map((t) => {
+    const dim = model?.dim > 0 ? model.dim : 8;
+    const v = new Array(dim).fill(0);
+    const words = t.toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+    for (const w of words) {
+      let h = 7;
+      for (let i = 0; i < w.length; i++) h = (h * 31 + w.charCodeAt(i)) >>> 0;
+      v[h % dim] += 1;
+    }
+    const norm = Math.hypot(...v) || 1;
+    return v.map((x) => x / norm);
+  });
+}
+
+// 52 files × 10 sections ≈ 520 chunks — above ANN_THRESHOLD (500, src/ivf.ts).
+function buildAnnFalseCorpus(dir) {
+  for (let f = 0; f < 52; f++) {
+    const sections = [];
+    for (let s = 0; s < 10; s++) {
+      sections.push(`## Section ${s}\n\nDocument ${f} section ${s} discusses topic ${f % 7} with marker ${f}_${s} and enough body text to survive the minimum chunk filter.`);
+    }
+    fs.writeFileSync(path.join(dir, `doc${f}.md`), `# Doc ${f}\n\n` + sections.join('\n\n') + '\n');
+  }
+}
+
+test('ann: ann:false ranks identically to a sidecar-free brute force above the threshold (issue #235)', async () => {
+  const dir = tempDir('ann-false');
+  const idx = path.join(dir, '.mdss');
+  try {
+    buildAnnFalseCorpus(dir);
+    const res = await buildIndex({
+      db: dir, indexDir: idx, cacheDir: dir,
+      modelName: 'e5-base', embedFn: fakeEmbed235, ann: true,
+    });
+    assert.ok(res.chunks >= 500, `fixture corpus must be >= ANN_THRESHOLD (got ${res.chunks})`);
+    assert.ok(fs.existsSync(path.join(idx, 'ivf.json')), 'sidecar was built');
+
+    // sidecar-free reference: copy the index, drop every ANN sidecar
+    const bruteDir = path.join(dir, '.mdss-brute');
+    fs.mkdirSync(bruteDir, { recursive: true });
+    for (const name of fs.readdirSync(idx)) {
+      if (name === 'ivf.json' || name === 'hnsw.json') continue;
+      fs.copyFileSync(path.join(idx, name), path.join(bruteDir, name));
+    }
+
+    const loaded = loadIndex(idx);
+    const forced = await searchIndex({
+      loaded, cacheDir: dir, query: 'topic 3', k: 10,
+      ann: false, embedFn: fakeEmbed235,
+    });
+    const brute = await search({
+      indexDir: bruteDir, cacheDir: dir, query: 'topic 3', k: 10,
+      embedFn: fakeEmbed235,
+    });
+    assert.equal(forced.length, 10);
+    assert.deepEqual(
+      forced.map((h) => [h.file, h.heading]),
+      brute.map((h) => [h.file, h.heading]),
+      'ann:false must produce the exact brute-force ranking, rank for rank',
+    );
+    assert.deepEqual(
+      forced.map((h) => h.cosine),
+      brute.map((h) => h.cosine),
+      'cosine scores identical too (ANN was never consulted)',
+    );
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('ann: the option matrix stays intact after the #235 rewrite (undefined=auto, true, ivf, false)', async () => {
+  const dir = tempDir('ann-matrix');
+  const idx = path.join(dir, '.mdss');
+  try {
+    buildAnnFalseCorpus(dir);
+    await buildIndex({
+      db: dir, indexDir: idx, cacheDir: dir,
+      modelName: 'e5-base', embedFn: fakeEmbed235, ann: 'ivf',
+    });
+    const loaded = loadIndex(idx);
+    const common = { loaded, cacheDir: dir, query: 'topic 5', k: 5, embedFn: fakeEmbed235 };
+
+    // undefined = auto → ANN engages (sidecar + above threshold); must still return k hits
+    const auto = await searchIndex({ ...common });
+    assert.equal(auto.length, 5);
+
+    // explicit engine selections unchanged
+    for (const ann of [true, 'ivf']) {
+      const hits = await searchIndex({ ...common, ann });
+      assert.equal(hits.length, 5, `ann=${String(ann)} still works`);
+    }
+    // (explicit 'hnsw' without an hnsw sidecar cold-builds the graph inside the
+    // query — the #242 cold-path cost — so it is exercised by the hnsw suites,
+    // not duplicated here.)
+
+    // false = the brute-force ranking on every call
+    const forced1 = await searchIndex({ ...common, ann: false });
+    const forced2 = await searchIndex({ ...common, ann: false });
+    assert.deepEqual(forced1.map((h) => [h.file, h.heading]), forced2.map((h) => [h.file, h.heading]));
+  } finally {
+    safeRm(dir);
+  }
+});

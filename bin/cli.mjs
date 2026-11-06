@@ -103,10 +103,14 @@ function parseArgs(argv) {
       opts.tag = opts.tag ? (Array.isArray(opts.tag) ? [...opts.tag, v] : [opts.tag, v]) : v;
     }
     else if (a === '--ann') {
-      // issue #201: optional engine choice — bare --ann keeps the default
+      // issue #201: optional engine choice — bare --ann keeps the default.
+      // issue #235: "false"/"off"/"none" is the explicit brute-force escape hatch.
       const next = argv[i + 1];
       if (next === 'ivf' || next === 'hnsw') {
         opts.ann = next;
+        i++;
+      } else if (next === 'false' || next === 'off' || next === 'none') {
+        opts.ann = false;
         i++;
       } else {
         opts.ann = true;
@@ -432,11 +436,15 @@ Options:
                       back to the single query without one. 0/1 = off.
   --graph-boost <n>   Boost weight for graph PageRank / Obsidian wikilinks (search, default: 0).
   --filter <expr>     Rich boolean filter across frontmatter tags and properties (search).
-  --ann [ivf|hnsw]    Approximate nearest neighbor search (search/index).
+  --ann [ivf|hnsw|false]
+                      Approximate nearest neighbor search (search/index).
                       Engines (issue #201): "ivf" (k-means clusters, the
                       historical default) or "hnsw" (graph index — no
                       training phase, incremental inserts, hnsw.json
                       sidecar). Bare --ann prefers an existing sidecar.
+                      "false"/"off" (issue #235) forces exact brute force —
+                      no ANN even when a sidecar exists; omit the flag for
+                      the automatic threshold behavior.
   --nprobe <n>        Number of centroids to probe for ANN (search, default: 8).
   --port <n>          HTTP port for serve (default: ${DEFAULT_PORT}).
   --host <ip>         Bind address for serve (default: ${DEFAULT_HOST} — loopback

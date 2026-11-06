@@ -833,7 +833,12 @@ export interface SearchOptions {
   multiQuery?: number;
   /** issue #203: reranker registry alias (`bge-reranker-base` default, `gte-reranker-modernbert`, ...). */
   rerankModel?: string;
-  /** issue #201: ANN engine — `true` = default engine, or explicit 'ivf' | 'hnsw'. */
+  /**
+   * issue #201: ANN engine — `true` = default engine, or explicit 'ivf' | 'hnsw'.
+   * issue #235: `false` forces exact brute force even when a sidecar exists and
+   * the corpus is above the ANN threshold; `undefined` keeps the automatic
+   * threshold behavior (sidecar present AND corpus >= ANN_THRESHOLD).
+   */
   ann?: boolean | 'ivf' | 'hnsw';
   nprobe?: number;
   /** issue #201: HNSW ef-search breadth (default 64). */
@@ -1060,12 +1065,16 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
   let cosByIdx: Map<number, number> | undefined;
   // issue #201: engine selection — explicit 'ivf'/'hnsw' wins; `true` picks
   // whichever sidecar exists (hnsw preferred, then ivf); otherwise the
-  // automatic threshold path (sidecar present AND corpus above ANN_THRESHOLD)
+  // automatic threshold path (sidecar present AND corpus above ANN_THRESHOLD).
+  // issue #235: `false` is the documented brute-force escape hatch — it used
+  // to behave exactly like `undefined` (auto), leaving no way to disable ANN
+  // on a large corpus once a sidecar exists.
   const annOpt = opts.ann;
-  const autoAnn = annOpt === undefined || annOpt === false
-    ? Boolean(runtime.hnsw || runtime.ivf) && candidates.length >= ANN_THRESHOLD
-    : candidates.length >= ANN_THRESHOLD;
-  const useAnn = Boolean(annOpt) || autoAnn;
+  const annDisabled = annOpt === false;
+  const autoAnn = annDisabled
+    ? false
+    : (annOpt === undefined ? Boolean(runtime.hnsw || runtime.ivf) : true) && candidates.length >= ANN_THRESHOLD;
+  const useAnn = !annDisabled && (Boolean(annOpt) || autoAnn);
   const annEngine: 'ivf' | 'hnsw' | undefined = useAnn
     ? (annOpt === 'hnsw' || (annOpt !== 'ivf' && runtime.hnsw) ? 'hnsw' : 'ivf')
     : undefined;

@@ -57,11 +57,15 @@ Options:
                       back to the single query without one. 0/1 = off.
   --graph-boost <n>   Boost weight for graph PageRank / Obsidian wikilinks (search, default: 0).
   --filter <expr>     Rich boolean filter across frontmatter tags and properties (search).
-  --ann [ivf|hnsw]    Approximate nearest neighbor search (search/index).
+  --ann [ivf|hnsw|false]
+                      Approximate nearest neighbor search (search/index).
                       Engines (issue #201): "ivf" (k-means clusters, the
                       historical default) or "hnsw" (graph index — no
                       training phase, incremental inserts, hnsw.json
                       sidecar). Bare --ann prefers an existing sidecar.
+                      "false"/"off" (issue #235) forces exact brute force —
+                      no ANN even when a sidecar exists; omit the flag for
+                      the automatic threshold behavior.
   --nprobe <n>        Number of centroids to probe for ANN (search, default: 8).
   --port <n>          HTTP port for serve (default: 8747).
   --host <ip>         Bind address for serve (default: 127.0.0.1 — loopback
