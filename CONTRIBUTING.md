@@ -136,6 +136,20 @@ map above and reality disagree, trust the code and send a docs fix.
 5. For larger work, comment on the issue before starting so effort isn't
    duplicated — and comment "I'd like to work on this" on any issue you pick up.
 
+## Releasing to the MCP Registry (issue #251)
+
+`server.json` at the repo root is the MCP Registry manifest — it must stay in
+sync with `package.json`:
+
+1. Bump **both** `package.json` and `server.json` versions in the release
+   commit (the drift-guard test in `test/cli.test.mjs` fails the suite if
+   they diverge).
+2. After publishing to npm, submit/update the listing at
+   [registry.modelcontextprotocol.io](https://registry.modelcontextprotocol.io)
+   with the `server.json` payload (a manual step per version).
+3. If a release renames the repo or the npm package, update the registry
+   `name` / `identifier` and re-validate the listing.
+
 ## Reporting bugs
 
 Use the **bug report** template: include `mdss --version`, OS, exact commands,

@@ -919,3 +919,24 @@ test('cli: --version subprocess stderr carries no deprecation noise on maintaine
   assert.doesNotMatch(r.stderr, /is deprecated/);
   assert.match(r.stdout.trim(), /^\d+\.\d+\.\d+$/, 'stdout unchanged');
 });
+
+// ---------------------------------------------------------------------------
+// issue #251: the MCP Registry manifest (server.json) must stay in sync with
+// package.json — same drift-guard discipline as the shell completions.
+// ---------------------------------------------------------------------------
+
+test('server.json: MCP Registry manifest matches package.json (issue #251)', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { fileURLToPath } = await import('node:url');
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const manifest = JSON.parse(readFileSync(path.join(root, 'server.json'), 'utf8'));
+
+  assert.equal(manifest.version, pkg.version, 'manifest version tracks package.json — bump both in the release flow');
+  assert.equal(manifest.name, `io.github.chelslava/${path.basename(pkg.repository.url.replace(/\.git$/, ''))}`,
+    'registry name derives from the repo identity');
+  assert.ok(manifest.packages.some((p) => p.registry_type === 'npm' && p.identifier === pkg.name),
+    'the npm package is registered as a transport');
+  assert.match(manifest.description, /Markdown/);
+  assert.ok(manifest.remotes.some((r) => r.transport_type === 'streamable-http'), 'the HTTP transport is documented');
+});
