@@ -21,13 +21,22 @@ permissions: {}
 
 jobs:
   test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     permissions:
       contents: read
+    defaults:
+      run:
+        # Windows runners default to PowerShell — pin bash so the POSIX
+        # pipeline (tee/sed) below works identically on both OS rows.
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
+        # issue #239: win32 is a first-class platform (assertSafePath
+        # drive-letter rules, test/longpath.test.mjs, UNC rejection, CRLF) —
+        # the suite must gate merges on it, not just on Linux.
+        os: [ubuntu-latest, windows-latest]
         node: [22, 24]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -35,20 +44,36 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
+          # issue #239: cache the npm download cache across jobs — every job
+          # used to re-download the full npm tree on every push.
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
 
+      # npm run test:coverage carries the threshold flags
+      # (--test-coverage-lines/functions/branches) — Node's test runner exits
+      # non-zero when a threshold is missed, so coverage regression IS the
+      # merge gate, not just a summary (issue #239).
       - name: Run tests and collect coverage
         run: NODE_DISABLE_COLORS=1 npm run test:coverage | tee test-output.txt
 
       - name: Post coverage summary
         if: always()
         run: |
-          echo "### Code Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "### Code Coverage (${{ matrix.os }} · node ${{ matrix.node }})" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`text" >> $GITHUB_STEP_SUMMARY
           sed -n '/start of coverage report/,/end of coverage report/p' test-output.txt >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload test output on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-output-${{ matrix.os }}-node${{ matrix.node }}
+          path: test-output.txt
+          if-no-files-found: ignore
+          retention-days: 7
 
   lint:
     permissions:
@@ -56,12 +81,14 @@ jobs:
     # Type-checks every source module via JSDoc (// @ts-check + checkJs).
     # The repo carries no ESLint config; tsc --noEmit is the linter.
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
@@ -80,12 +107,14 @@ jobs:
     # end). Uses --fake so no model is downloaded and CI stays network-free.
     # Real-model eval numbers are produced locally / on demand (see RESEARCH.md).
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
@@ -107,12 +136,14 @@ jobs:
     # behind MDSS_RUN_REAL_MODEL (scheduled job) so push/PR CI stays
     # network-free and fast.
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
@@ -125,18 +156,17 @@ jobs:
       contents: read
     # Issue #17: gate production dependency vulnerabilities against a dated baseline.
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
 
       - name: Report production dependency vulnerabilities
         run: node scripts/audit-ci.mjs
-
-
-
