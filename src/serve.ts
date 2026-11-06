@@ -1074,6 +1074,8 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         graphBoost: payload.graphBoost,
         filter: payload.filter,
         recency: typeof payload.recency === 'number' && payload.recency > 0 ? payload.recency : undefined,
+        // issue #248: query-time MRL truncation
+        dimensions: typeof payload.dimensions === 'number' && payload.dimensions > 0 ? payload.dimensions : undefined,
       });
       json(res, 200, { query, k, count: results.length, results });
     } catch (e: any) {

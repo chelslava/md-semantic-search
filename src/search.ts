@@ -260,6 +260,8 @@ export interface RuntimeIndexState {
    */
   dequantized?: Float32Array[];
   vecList?: Array<Float32Array | Int8Array>;
+  /** issue #248: per-D truncated int8 norms for query-time MRL sweeps. */
+  truncNorms?: Map<number, Float32Array>;
   /**
    * issue #190: precomputed sqrt(sum(c^2)) for int8 vectors (zero-copy binary
    * load only) — lets the dense sweep compute the dot product alone.
@@ -553,6 +555,31 @@ function snapshotRuntimeIndex(
     hnsw: validation.hnsw,
     chunkNorms,
   };
+}
+
+/**
+ * issue #248: int8 chunk norms over the FIRST d components, computed once per
+ * (index generation, d) and cached — the query-time MRL sweep needs them
+ * because the persisted full-dim norms no longer apply to a truncated slice.
+ */
+export function getTruncatedNorms(runtime: RuntimeIndexState, d: number): Float32Array {
+  if (!runtime.truncNorms) runtime.truncNorms = new Map();
+  let norms = runtime.truncNorms.get(d);
+  if (!norms) {
+    norms = new Float32Array(runtime.chunks.length);
+    for (let i = 0; i < runtime.chunks.length; i++) {
+      const v = runtime.chunks[i].vec;
+      let n = 0;
+      const limit = Math.min(d, v.length);
+      for (let j = 0; j < limit; j++) {
+        const x = Number(v[j]);
+        n += x * x;
+      }
+      norms[i] = Math.sqrt(n);
+    }
+    runtime.truncNorms.set(d, norms);
+  }
+  return norms;
 }
 
 /**
@@ -918,6 +945,8 @@ export interface SearchResultHit {
     bm25Weights: { title: number; aliases: number; headingPath: number; body: number };
     graphScore?: number;
     pageRank?: number;
+    /** issue #248: the effective sweep dimension (query-time MRL truncation). */
+    dimensions?: number;
   };
   rerankScore?: number;
 }
@@ -958,9 +987,26 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
   const runtime = validateRuntimeIndex(index);
   const { chunks, db, lexicalState, expectedDim } = runtime;
 
-  if (opts.dimensions !== undefined && typeof opts.dimensions === 'number' && expectedDim !== undefined && opts.dimensions !== expectedDim) {
+  // issue #248: query-time MRL truncation — a requested dimension BELOW the
+  // index dimension sweeps the first-D slice of every vector (the cosine
+  // kernels iterate over the query length, so a truncated, renormalized query
+  // vector IS the partial dot); above the index dimension stays an error.
+  const requestedDim = typeof opts.dimensions === 'number' && Number.isInteger(opts.dimensions) && opts.dimensions > 0
+    ? opts.dimensions
+    : undefined;
+  if (requestedDim !== undefined && expectedDim !== undefined && requestedDim > expectedDim) {
     throw new Error(
-      `requested search dimensions (${opts.dimensions}) does not match index dimension (${expectedDim}) — run \`mdss index --dimensions ${opts.dimensions}\` to rebuild`
+      `requested search dimensions (${requestedDim}) exceeds index dimension (${expectedDim})`
+    );
+  }
+  const searchDim =
+    requestedDim !== undefined && expectedDim !== undefined && requestedDim < expectedDim
+      ? requestedDim
+      : expectedDim;
+  const truncating = searchDim !== expectedDim;
+  if (truncating && !(runtime.model.dimensions && runtime.model.dimensions.length > 0)) {
+    process.stderr.write(
+      `warning: searching at ${searchDim} dims while the index is ${expectedDim}-dim — model "${runtime.model.id}" declares no MRL dimensions, quality at this size is unmeasured\n`
     );
   }
 
@@ -1048,6 +1094,27 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
     }
   }
 
+  // issue #248: query-time MRL truncation — slice to searchDim and
+  // renormalize; the cosine kernels iterate over the QUERY length, so this
+  // vector alone turns the sweep into the partial dot over the first
+  // searchDim components. The embedding cache stores FULL-dim vectors (the
+  // cache key carries the index dim); truncation happens after the cache.
+  const truncateQueryVector = (v: Float32Array | number[]): Float32Array | number[] => {
+    if (!truncating || searchDim === undefined) return v;
+    const src = v instanceof Float32Array ? v : Float32Array.from(v);
+    const out = new Float32Array(Math.min(searchDim, src.length));
+    let norm = 0;
+    for (let i = 0; i < out.length; i++) {
+      out[i] = src[i];
+      norm += out[i] * out[i];
+    }
+    norm = Math.sqrt(norm);
+    if (norm > 0) {
+      for (let i = 0; i < out.length; i++) out[i] /= norm;
+    }
+    return out;
+  };
+
   // issue #203: one embed helper for the original query AND every multi-query
   // paraphrase — both ride the same in-memory + disk query-embedding cache.
   const embedFor = async (text: string): Promise<Float32Array | number[]> => {
@@ -1069,7 +1136,7 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
         }
         validateNumericVector(v, undefined, 'query vector');
         if (useDisk) diskQueryPut(cacheDir, diskKey, v);
-        return v;
+        return truncateQueryVector(v);
       });
     }
     const [v] = await embedFn([text], 'query', runtime.model, cacheDir, offline);
@@ -1077,7 +1144,7 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
       throw new Error(`query vector has ${v.length} dims, expected ${expectedDim} — run \`mdss index\` to rebuild`);
     }
     validateNumericVector(v, undefined, 'query vector');
-    return v;
+    return truncateQueryVector(v);
   };
 
   const qVec = await embedFor(effectiveQuery);
@@ -1124,7 +1191,7 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
   // to behave exactly like `undefined` (auto), leaving no way to disable ANN
   // on a large corpus once a sidecar exists.
   const annOpt = opts.ann;
-  const annDisabled = annOpt === false;
+  const annDisabled = annOpt === false || truncating; // issue #248: sidecars index FULL-dim vectors — a truncated query must sweep exactly
   const autoAnn = annDisabled
     ? false
     : (annOpt === undefined ? Boolean(runtime.hnsw || runtime.ivf) : true) && candidates.length >= ANN_THRESHOLD;
@@ -1132,8 +1199,12 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
   const annEngine: 'ivf' | 'hnsw' | undefined = useAnn
     ? (annOpt === 'hnsw' || (annOpt !== 'ivf' && runtime.hnsw) ? 'hnsw' : 'ivf')
     : undefined;
-  // issue #190: with cached int8 norms the sweep computes the dot product alone
-  const norms = runtime.chunkNorms;
+  // issue #190: with cached int8 norms the sweep computes the dot product alone.
+  // issue #248: query-time truncation sweeps truncated norms (full-dim norms
+  // do not apply to a first-D slice).
+  const norms = truncating && searchDim !== undefined
+    ? getTruncatedNorms(runtime, searchDim)
+    : runtime.chunkNorms;
   const sweepScore = (chunk: RuntimeChunk, idx: number): number =>
     norms && chunk.vec instanceof Int8Array
       ? asymmetricCosineInt8CachedNorm(qVec as Float32Array, chunk.vec, norms[idx])
@@ -1363,6 +1434,7 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
               cosine: +r.cos.toFixed(4),
               rrfScore: +(r.rawFscore ?? r.fscore).toFixed(4),
               bm25Weights: { title: 3.0, aliases: 3.0, headingPath: 1.8, body: 1.0 },
+              ...(truncating ? { dimensions: searchDim } : {}),
               ...(gScore !== undefined ? { graphScore: +gScore.toFixed(4) } : {}),
               ...(prScore !== undefined ? { pageRank: +prScore.toFixed(4) } : {}),
               ...(r.recencyFactor !== undefined

@@ -8,6 +8,7 @@ import { buildIndex } from '../dist/indexer.js';
 import { search, searchIndex, loadIndex, tokenize, keywordScores, rrf, _stats } from '../dist/search.js';
 import { decodeVec, SCHEMA_VERSION } from '../dist/core.js';
 import { resolveModel } from '../dist/models.js';
+import { createServe } from '../dist/serve.js';
 
 function writeIndex(idx, data) {
   const json = JSON.stringify(data);
@@ -1216,4 +1217,117 @@ test('topKByScore: identical to sort-desc + slice over randomized inputs, ties t
   }
   assert.deepEqual(topKByScore(0, () => 1, 5), []);
   assert.deepEqual(topKByScore(10, () => 1, 0), []);
+});
+
+// ---------------------------------------------------------------------------
+// issue #248: query-time MRL truncation — search a full-dim index at reduced
+// dimensions without a rebuild. The cosine kernels iterate over the QUERY
+// length, so a truncated renormalized query IS the partial dot.
+// ---------------------------------------------------------------------------
+
+function fakeEmbed16(texts, _kind, _model) {
+  return texts.map((t) => {
+    const v = new Float32Array(16);
+    const words = t.toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+    for (const w of words) {
+      let h = 7;
+      for (let i = 0; i < w.length; i++) h = (h * 31 + w.charCodeAt(i)) >>> 0;
+      v[h % 16] += 1;
+    }
+    const norm = Math.hypot(...v) || 1;
+    return v.map((x) => x / norm);
+  });
+}
+
+test('search: query-time dimensions truncation matches a truncated brute-force ranking (issue #248)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-mrl-'));
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Coffee Guide\n\n## Brewing\n\ncoffee guide beans roasted ground brewing\n');
+    fs.writeFileSync(path.join(dir, 'b.md'), '# Sports\n\n## Hockey\n\nsports guide hockey match puck arena teams\n');
+    fs.writeFileSync(path.join(dir, 'c.md'), '# Finance\n\n## Stocks\n\nfinance guide stocks bonds market index shares\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: path.join(dir, '.c'), modelName: { id: 'test/mrl-16', nativeDim: 16, dim: 16, queryPrefix: '', passagePrefix: '', pooling: 'mean', normalize: true }, embedFn: fakeEmbed16 });
+    const loaded = loadIndex(idx);
+    const common = { loaded, cacheDir: path.join(dir, '.c'), query: 'coffee', k: 5, embedFn: fakeEmbed16 };
+
+    // full-dim baseline
+    const full = await searchIndex({ ...common });
+
+    // truncated sweep: rank-for-rank against an explicit truncated query
+    // semanticOnly isolates the dense sweep — the hybrid fusion legitimately
+    // re-orders relative to a pure cosine comparison
+    const truncated = await searchIndex({ ...common, dimensions: 8, semanticOnly: true });
+    const qVecFull = fakeEmbed16(['coffee'], 'query', { dim: 16 })[0];
+    const qVecTrunc = qVecFull.slice(0, 8);
+    let norm = 0;
+    for (const x of qVecTrunc) norm += x * x;
+    norm = Math.sqrt(norm);
+    const renorm = qVecTrunc.map((x) => x / norm);
+    const manual = loaded.index.chunks
+      .map((c, i) => {
+        const vec = c.vec;
+        let dot = 0;
+        for (let j = 0; j < 8; j++) dot += renorm[j] * vec[j];
+        return { i, cos: dot }; // stored vectors are unit-normalized full-dim; partial cos needs partial norms — compare ORDER via dot/(norm of slice) below
+      })
+      .sort((a, b) => b.cos - a.cos);
+    // partial cosine = dot / ||slice|| (stored full-dim vectors are normalized, slices are not)
+    const sliceNorms = loaded.index.chunks.map((c) => {
+      let n = 0;
+      for (let j = 0; j < 8; j++) n += c.vec[j] * c.vec[j];
+      return Math.sqrt(n);
+    });
+    const manualCos = loaded.index.chunks
+      .map((c, i) => {
+        let dot = 0;
+        for (let j = 0; j < 8; j++) dot += renorm[j] * c.vec[j];
+        return { i, cos: dot / sliceNorms[i] };
+      })
+      .sort((a, b) => b.cos - a.cos)
+      .slice(0, 5);
+    assert.deepEqual(
+      truncated.map((h) => h.file),
+      manualCos.map((m) => loaded.index.chunks[m.i].file),
+      'truncated ranking matches the first-8-dim brute-force computation',
+    );
+
+    // the full-dim and truncated rankings may legitimately differ — pin that
+    // the truncated run REPORTS its effective dim through explain
+    const explained = await searchIndex({ ...common, dimensions: 8, explain: true, semanticOnly: true });
+    assert.equal(explained[0]?.explain?.dimensions, 8, 'explain reports the truncated sweep dim');
+    const fullExplain = await searchIndex({ ...common, explain: true, semanticOnly: true });
+    assert.equal(fullExplain[0]?.explain?.dimensions, undefined, 'full-dim runs report nothing');
+
+    // above the index dimension → error (unchanged contract)
+    await assert.rejects(
+      searchIndex({ ...common, dimensions: 64 }),
+      /exceeds index dimension/,
+    );
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('serve: /search accepts dimensions for query-time truncation (issue #248)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-mrl-http-'));
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Coffee Guide\n\n## Brewing\n\ncoffee guide beans roasted ground brewing\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: path.join(dir, '.c'), modelName: { id: 'test/mrl-16', nativeDim: 16, dim: 16, queryPrefix: '', passagePrefix: '', pooling: 'mean', normalize: true }, embedFn: fakeEmbed16 });
+    const svc = await createServe({ indexDir: idx, cacheDir: path.join(dir, '.c'), embedFn: fakeEmbed16, ui: false, rateLimit: 0 });
+    await new Promise((r) => svc.server.listen(0, r));
+    const url = `http://127.0.0.1:${svc.server.address().port}`;
+    try {
+      const truncated = await fetch(`${url}/search`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query: 'coffee', k: 3, dimensions: 8, semanticOnly: true, explain: true }),
+      }).then((r) => r.json());
+      assert.ok(truncated.results.length >= 1);
+      assert.equal(truncated.results[0].explain.dimensions, 8);
+    } finally {
+      await svc.close();
+    }
+  } finally {
+    safeRm(dir);
+  }
 });
