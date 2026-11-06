@@ -66,13 +66,16 @@ test('chunkHash: stable for identical input; differs on content/model changes', 
   const a = chunkHash(model, chunk);
   const b = chunkHash(model, { ...chunk });
   assert.equal(a, b, 'identical input → identical hash');
-  const preAdapterMeanHash = '5fbbe72d6a9df12fb55b51811981281f5e936bf8c9b9e230da7718903d965f9a';
+  // issue #240: the pin moved e5-base off 'main' — the revision is part of
+  // the hash input, so these bytes changed with the pin (the documented
+  // one-time index invalidation).
+  const preAdapterMeanHash = 'd5d63b41a7dcc46c71eab804a9a00d69c5faf770f2343417a3af8cd4baaf3288';
   assert.equal(a, preAdapterMeanHash,
     'omitted/default mean pooling preserves the pre-adapter hash bytes');
   assert.equal(chunkHash({ ...model, pooling: 'mean' }, chunk), preAdapterMeanHash,
     'explicit mean pooling preserves the pre-adapter hash bytes');
   const expected = crypto.createHash('sha256').update([
-    'heading-path-v1', model.id, 'main', model.passagePrefix, 'T\nH\nbody text here',
+    'heading-path-v1', model.id, model.revision, model.passagePrefix, 'T\nH\nbody text here',
   ].join('\u0000')).digest('hex');
   assert.equal(a, expected, 'hash contains the domain, model identity, prefix, and exact passage');
 
@@ -553,7 +556,8 @@ test('buildIndex: model switch forces full rebuild', async () => {
     assert.equal(res.reused, 0, 'no reuse across models');
     assert.equal(res.embedded, res.chunks, 'everything re-embedded');
     const idx2 = readIndex(idx);
-    assert.equal(idx2.model, 'Xenova/multilingual-e5-small@main', 'model identity includes @main (issue #27)');
+    assert.equal(idx2.model, `Xenova/multilingual-e5-small@${resolveModel('e5-small').revision}`,
+      'model identity includes the pinned revision (issues #27, #240)');
     assert.equal(_lexicalStats.documentsAnalyzed, beforeSwitch, 'model-only changes reuse lexical analysis');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -934,7 +938,7 @@ test('buildIndex: interrupted fresh build resumes from the periodic checkpoint (
     assert.equal(checkpoint.complete, false);
     assert.equal(checkpoint.schemaVersion, SCHEMA_VERSION);
     assert.equal(checkpoint.format, 'binary-v1');
-    assert.equal(checkpoint.model, 'Xenova/multilingual-e5-base@main');
+    assert.equal(checkpoint.model, `Xenova/multilingual-e5-base@${resolveModel('e5-base').revision}`);
     assert.equal(checkpoint.modelAlias, 'e5-base');
     assert.match(checkpoint.adapterFingerprint, /^adapter-v1:[a-f0-9]{64}$/);
     assert.equal(checkpoint.dim, 768);
