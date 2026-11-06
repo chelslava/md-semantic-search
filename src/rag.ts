@@ -22,8 +22,12 @@ export interface SynthesisResult {
    */
   citationsUsed?: Citation[];
   passages: SearchResultHit[];
-  /** Which synthesis stage produced the answer (issue #197 observability). */
-  mode?: 'llm' | 'endpoint' | 'extractive';
+  /**
+   * Which synthesis stage produced the answer (issue #197 observability).
+   * `abstained` (issue #238) = the extractive path found no passage with
+   * enough query support and refused instead of fabricating citations.
+   */
+  mode?: 'llm' | 'endpoint' | 'extractive' | 'abstained';
 }
 
 /**
@@ -86,6 +90,14 @@ export interface AskOptions {
   llmChat?: ResolvedChat;
   systemPrompt?: string;
   embedFn?: any;
+  /**
+   * issue #238: abstention floor for the extractive synthesis (0..1) — the
+   * best query-token support ratio any candidate sentence must show before
+   * the answer is synthesized at all. Below it the answer is a refusal with
+   * zero citations instead of spurious grounding. 0 disables abstention.
+   * Default: DEFAULT_MIN_ANSWER_CONFIDENCE (calibrated on the §18 bench).
+   */
+  minAnswerConfidence?: number;
 }
 
 export interface ChatTurnOptions {
@@ -109,6 +121,8 @@ export interface ChatTurnOptions {
   llmChat?: ResolvedChat;
   systemPrompt?: string;
   embedFn?: any;
+  /** issue #238: abstention floor for the extractive synthesis (see AskOptions). */
+  minAnswerConfidence?: number;
   log?: (msg: string) => void;
 }
 
@@ -228,7 +242,7 @@ export function extractAnswerFallback(query: string, passages: SearchResultHit[]
   }
 
   const queryTokens = new Set(tokenize(query));
-  const candidateSentences: Array<{ sentence: string; score: number; citation: string }> = [];
+  const candidateSentences: Array<{ sentence: string; score: number; citation: string; support: number }> = [];
 
   for (const hit of passages) {
     const text = hit.snippet || '';
@@ -240,14 +254,16 @@ export function extractAnswerFallback(query: string, passages: SearchResultHit[]
       .filter((s: string) => s.length > 15);
 
     for (const sent of sentences) {
-      const sentTokens = tokenize(sent);
+      // issue #238: unique-token support — a repeated query word in one
+      // sentence must not inflate the ratio (matches/unique-tokens)
+      const sentTokens = [...new Set(tokenize(sent))];
       let matchCount = 0;
       for (const tok of sentTokens) {
         if (queryTokens.has(tok)) matchCount++;
       }
       if (matchCount > 0) {
         const score = (matchCount / (sentTokens.length + 1)) * (hit.score || 1);
-        candidateSentences.push({ sentence: sent, score, citation: cite });
+        candidateSentences.push({ sentence: sent, score, citation: cite, support: matchCount / sentTokens.length });
       }
     }
   }
@@ -262,13 +278,102 @@ export function extractAnswerFallback(query: string, passages: SearchResultHit[]
   }
 
   candidateSentences.sort((a, b) => b.score - a.score);
-  const selected = candidateSentences.slice(0, 3);
+  // issue #238: per-sentence support floor — a sentence carried by one stray
+  // query word in twenty is padding, not evidence (the §18 support-rate gap).
+  // Keep the floor non-fatal: if nothing clears it, fall back to the best
+  // sentence so the answer never comes back empty.
+  const supported = candidateSentences.filter((s: any) => s.support >= MIN_SENTENCE_SUPPORT);
+  const selected = (supported.length > 0 ? supported : candidateSentences.slice(0, 1)).slice(0, 3);
   const body = selected.map((s) => `${s.sentence} ${s.citation}`).join('\n\n');
 
   return `Based on your notes:\n\n${body}`;
 }
 
 const CITATION_MENTION_RE = /\[([^\]\n]{1,200})\]/g;
+
+/**
+ * issue #238: the per-sentence support floor inside the extractive answer.
+ * RESEARCH §18 measured sentence support at 67.6% — the tail was sentences
+ * carried by one stray query token in a long sentence. A candidate sentence
+ * must keep ≥ 15% of its tokens in the query to count as evidence; when
+ * nothing clears the floor the single best sentence survives (never empty).
+ */
+const MIN_SENTENCE_SUPPORT = 0.15;
+
+/**
+ * Default abstention floor for the extractive synthesis (issue #238), in
+ * query-token support ratio (0..1). Calibrated on the §18 faithfulness bench:
+ * answerable queries show strong lexical support in their top sentences while
+ * unanswerable ones bottom out near zero — the floor separates them with
+ * margin. `0` (or MDSS_MIN_ANSWER_CONFIDENCE=0) disables abstention.
+ */
+export const DEFAULT_MIN_ANSWER_CONFIDENCE = 0.13;
+
+/**
+ * issue #238: the abstention signal — the best query-token support ratio any
+ * candidate sentence in the top passages shows (the same sentence split and
+ * tokenizer the extractive synthesis uses, so the gate and the answer speak
+ * one language). 0 = no passage sentence shares a single content token with
+ * the query; 1 = some sentence is made of query tokens. Deterministic,
+ * model-free, and O(passages × sentences).
+ */
+export function extractiveConfidence(query: string, passages: SearchResultHit[]): number {
+  if (passages.length === 0) return 0;
+  const queryTokens = new Set(tokenize(query));
+  if (queryTokens.size === 0) return 0;
+  let best = 0;
+  for (const hit of passages.slice(0, 3)) {
+    const text = hit.snippet || '';
+    for (const raw of text.split(/(?<=[.?!])\s+|\n+/)) {
+      const sent = raw.trim();
+      if (sent.length <= 15) continue;
+      // issue #238: unique-token support — a repeated query word in one
+      // sentence must not inflate the ratio (matches/unique-tokens)
+      const sentTokens = [...new Set(tokenize(sent))];
+      if (sentTokens.length === 0) continue;
+      let matchCount = 0;
+      for (const tok of sentTokens) {
+        if (queryTokens.has(tok)) matchCount++;
+      }
+      const support = matchCount / sentTokens.length;
+      if (support > best) best = support;
+    }
+  }
+  return best;
+}
+
+/** Resolve the abstention floor: explicit option wins, then env, then the calibrated default. */
+function resolveMinAnswerConfidence(explicit?: number): number {
+  if (typeof explicit === 'number' && explicit >= 0) return explicit;
+  const env = process.env.MDSS_MIN_ANSWER_CONFIDENCE;
+  if (env !== undefined && env !== '') {
+    const n = Number(env);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return DEFAULT_MIN_ANSWER_CONFIDENCE;
+}
+
+/**
+ * issue #238: the refusal answer. Deliberately citation-free — the "closest
+ * passages" are context, not evidence, so they must not enter the bracket
+ * citation format the citationsUsed scanner looks for (spurious-citation
+ * rate stays 0 by construction).
+ */
+function abstentionAnswer(passages: SearchResultHit[]): string {
+  if (passages.length === 0) {
+    return 'No relevant passages found in the notes to answer the question.';
+  }
+  const nearest = passages.slice(0, 3).map((p) => {
+    const where = p.heading ? `${p.file} › ${p.heading}` : p.file;
+    return `- ${where} (similarity ${Number((p.score ?? 0).toFixed(3))})`;
+  });
+  return [
+    'No answer found in the notes for this question.',
+    '',
+    'Closest passages (context, not an answer):',
+    ...nearest,
+  ].join('\n');
+}
 
 /** `[file]` | `[file#heading]` | `[file › heading]` → {file, heading?}; null for non-citations. */
 function parseCitationMention(text: string): { file: string; heading?: string } | null {
@@ -337,6 +442,15 @@ export async function synthesizeAnswer(
     signal?: AbortSignal;
     systemPrompt?: string;
     conversationHistory?: string;
+    /** issue #238: abstention floor for the extractive synthesis (see AskOptions). */
+    minAnswerConfidence?: number;
+    /**
+     * issue #147/#238: the query the EXTRACTIVE stage scores against — the
+     * multi-turn context-enriched retrieval query, not the raw anaphoric
+     * follow-up ('What percentage?' carries no answer-bearing tokens by
+     * itself). Defaults to ; the LLM prompt always shows the raw query.
+     */
+    extractiveQuery?: string;
   } = {}
 ): Promise<SynthesisResult> {
   const citations: Citation[] = passages.map((p) => ({
@@ -410,7 +524,26 @@ export async function synthesizeAnswer(
     }
   }
 
-  const answer = extractAnswerFallback(query, passages);
+  // issue #238: the extractive synthesizer cannot refuse — RESEARCH §18
+  // measured a 100% spurious-citation rate on unanswerable queries because
+  // the fallback always picks sentences and always cites them. Gate on the
+  // lexical support signal: below the floor the answer is a refusal with
+  // zero citations (the "closest passages" list is deliberately outside the
+  // bracket citation format). LLM answers above keep their own refusal
+  // semantics — the gate never touches them. Zero-passage retrieval keeps
+  // the historical extractive "No relevant passages found" shape (mode
+  // 'extractive', no citations) — there is nothing to gate on.
+  const extractiveSrc = options.extractiveQuery || query;
+  const minConfidence = resolveMinAnswerConfidence(options.minAnswerConfidence);
+  if (
+    minConfidence > 0 &&
+    passages.length > 0 &&
+    extractiveConfidence(extractiveSrc, passages) < minConfidence
+  ) {
+    return finish(abstentionAnswer(passages), 'abstained');
+  }
+
+  const answer = extractAnswerFallback(extractiveSrc, passages);
   return finish(answer, 'extractive');
 }
 
@@ -433,6 +566,7 @@ export async function askQuestion(opts: AskOptions): Promise<SynthesisResult> {
     onDelta,
     systemPrompt,
     embedFn,
+    minAnswerConfidence,
   } = opts;
 
   let loaded = inputLoaded;
@@ -459,6 +593,7 @@ export async function askQuestion(opts: AskOptions): Promise<SynthesisResult> {
     llmChat,
     onDelta,
     systemPrompt,
+    minAnswerConfidence,
   });
 }
 
@@ -491,6 +626,7 @@ export async function chatTurn(opts: ChatTurnOptions): Promise<{
     onDelta,
     systemPrompt,
     embedFn,
+    minAnswerConfidence,
     log = () => {},
   } = opts;
 
@@ -567,6 +703,8 @@ export async function chatTurn(opts: ChatTurnOptions): Promise<{
     onDelta,
     systemPrompt,
     conversationHistory,
+    minAnswerConfidence,
+    extractiveQuery: retrievalQuery,
   });
 
   // 6. Append turn to session

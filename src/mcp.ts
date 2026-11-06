@@ -924,7 +924,9 @@ export async function handleMcpRequest(req: any, state: McpHandlerState): Promis
             manifest: turnResult.manifest,
             sessionId: turnResult.session.id,
             turnsCount: turnResult.session.turns.length,
-            answerMode: sampling?.used() ? 'sampling' : 'extractive',
+            // issue #238: report the actual synthesis path — 'abstained' when
+            // the extractive floor refused instead of synthesizing.
+            answerMode: sampling?.used() ? 'sampling' : (turnResult.mode ?? 'extractive'),
           };
         } else {
           const synth = await askQuestion({
@@ -937,7 +939,7 @@ export async function handleMcpRequest(req: any, state: McpHandlerState): Promis
           });
           rawResult = {
             ...synth,
-            answerMode: sampling?.used() ? 'sampling' : 'extractive',
+            answerMode: sampling?.used() ? 'sampling' : (synth.mode ?? 'extractive'),
           };
         }
       } else {

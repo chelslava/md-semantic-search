@@ -345,6 +345,9 @@ test('rag: askQuestion and chatTurn propagate offline: true and custom embedFn (
       k: 3,
       offline: true,
       embedFn: trackingEmbedAsk,
+      // issue #238: this test pins offline/embedder propagation — the gate is
+      // disabled because the fixture query's lexical support is ~0.125.
+      minAnswerConfidence: 0,
     });
 
     assert.ok(askEmbedCalled);
@@ -358,6 +361,7 @@ test('rag: askQuestion and chatTurn propagate offline: true and custom embedFn (
       k: 3,
       offline: true,
       embedFn: trackingEmbedChat,
+      minAnswerConfidence: 0, // propagation test — the fixture support is ~0.125 (#238)
     });
 
     assert.ok(chatEmbedCalled);
@@ -522,9 +526,26 @@ test('rag: chat endpoint failure still degrades to the extractive answer (issue 
     },
   ], {
     llmEndpoint: 'http://127.0.0.1:1/v1', // nothing listens there — connect fails fast
+    // issue #238: the gate is disabled here — this test pins the DEGRADE
+    // contract (endpoint failure → extractive), not the abstention floor
+    // (the fixture's query has ~0.11 lexical support and would abstain).
+    minAnswerConfidence: 0,
   });
   assert.equal(result.mode, 'extractive');
   assert.ok(result.answer.includes('API tokens must be rotated'));
+
+  // ...and with the floor active the same endpoint failure abstains instead
+  // of citing a passage the query barely supports (issue #238).
+  const gated = await synthesizeAnswer('rotate tokens', [
+    {
+      file: 'auth.md', heading: 'Tokens', title: 'Auth', score: 0.9, cosine: 0.9,
+      snippet: 'API tokens must be rotated every 90 days to maintain compliance.',
+    },
+  ], {
+    llmEndpoint: 'http://127.0.0.1:1/v1',
+  });
+  assert.equal(gated.mode, 'abstained');
+  assert.equal(gated.citationsUsed.length, 0, 'an abstention never cites');
 });
 
 test('rag: llmChat injection seam bypasses endpoint construction (issue #199)', async () => {
@@ -608,4 +629,89 @@ test('rag: extractUsedCitations — bracket mentions, order, exclusion of unknow
 
   assert.deepEqual(extractUsedCitations('no citations at all', citations), []);
   assert.deepEqual(extractUsedCitations('', citations), []);
+});
+
+// ---------------------------------------------------------------------------
+// issue #238: extractive abstention — the fallback cannot refuse, so a query
+// with no lexical footing in the retrieved passages produced a confidently
+// cited non-answer (§18: 100% spurious-citation rate on unanswerable queries).
+// ---------------------------------------------------------------------------
+
+test('rag: extractiveConfidence scores sentence-level query support', async () => {
+  const { extractiveConfidence } = await import('../dist/rag.js');
+  const passages = [
+    {
+      file: 'auth.md', heading: 'Tokens', title: 'Auth', score: 0.9, cosine: 0.9,
+      snippet: 'API tokens must be rotated every 90 days. Rotate the token via the console.',
+    },
+  ];
+  // 'token' + 'rotate(d)' — one sentence carries 2 of its ~9 tokens
+  const strong = extractiveConfidence('rotate tokens', passages);
+  assert.ok(strong > 0.1 && strong <= 1, `sensible support ratio (${strong})`);
+  // unrelated query — zero content-token overlap
+  assert.equal(extractiveConfidence('kubernetes pod scheduling', passages), 0);
+  assert.equal(extractiveConfidence('anything', []), 0, 'no passages → 0');
+});
+
+test('rag: the extractive path abstains instead of citing when support is below the floor (issue #238)', async () => {
+  const result = await synthesizeAnswer('kubernetes pod scheduling crashloops', [
+    {
+      file: 'auth.md', heading: 'Tokens', title: 'Auth', score: 0.7, cosine: 0.7,
+      snippet: 'API tokens must be rotated every 90 days to maintain compliance.',
+    },
+    {
+      file: 'net.md', heading: 'Proxy', title: 'Network', score: 0.6, cosine: 0.6,
+      snippet: 'The proxy forwards traffic to upstream services over TLS.',
+    },
+  ]);
+  assert.equal(result.mode, 'abstained');
+  assert.match(result.answer, /No answer found in the notes/);
+  assert.match(result.answer, /Closest passages \(context, not an answer\)/);
+  assert.equal(result.citationsUsed.length, 0, 'an abstention never cites — spurious rate 0 by construction');
+  assert.ok(!/\[/.test(result.answer), 'the refusal body contains no bracket citations');
+  assert.equal(result.citations.length, 2, 'the retrieval manifest stays for transport display');
+});
+
+test('rag: minAnswerConfidence 0 restores the never-abstain behavior; env override works', async () => {
+  const passages = [
+    {
+      file: 'auth.md', heading: 'Tokens', title: 'Auth', score: 0.7, cosine: 0.7,
+      snippet: 'API tokens must be rotated every 90 days to maintain compliance.',
+    },
+  ];
+  const off = await synthesizeAnswer('kubernetes pod scheduling', passages, { minAnswerConfidence: 0 });
+  assert.equal(off.mode, 'extractive', 'explicit 0 disables the gate');
+
+  const prev = process.env.MDSS_MIN_ANSWER_CONFIDENCE;
+  try {
+    process.env.MDSS_MIN_ANSWER_CONFIDENCE = '0';
+    const envOff = await synthesizeAnswer('kubernetes pod scheduling', passages, {});
+    assert.equal(envOff.mode, 'extractive', 'MDSS_MIN_ANSWER_CONFIDENCE=0 disables the gate');
+    process.env.MDSS_MIN_ANSWER_CONFIDENCE = '0.9';
+    const envHigh = await synthesizeAnswer('rotate tokens', passages, {});
+    assert.equal(envHigh.mode, 'abstained', 'a high env floor abstains a weak-support query');
+  } finally {
+    if (prev === undefined) delete process.env.MDSS_MIN_ANSWER_CONFIDENCE;
+    else process.env.MDSS_MIN_ANSWER_CONFIDENCE = prev;
+  }
+
+  const { DEFAULT_MIN_ANSWER_CONFIDENCE } = await import('../dist/rag.js');
+  assert.equal(DEFAULT_MIN_ANSWER_CONFIDENCE, 0.13,
+    'calibrated default (§18 fixture, unique-token support: unanswerable max 0.111, first answerable 0.143)');
+});
+
+test('rag: the per-sentence support floor drops stray-token padding (issue #238)', () => {
+  const answer = extractAnswerFallback('rotate tokens quarterly', [
+    {
+      file: 'auth.md', heading: 'Tokens', title: 'Auth', score: 0.9, cosine: 0.9,
+      snippet: 'The API token rotation policy requires tokens to be rotated quarterly. '
+        + 'Storage of tokens happens in the vault; backups of tokens run nightly. '
+        + 'Rotate tokens through the console before expiry.',
+    },
+  ]);
+  // sentence 2 shares only 'tokens' of ~10 tokens (~0.1 support) — below the
+  // 0.15 floor it must not pad the answer when stronger sentences exist
+  assert.ok(!answer.includes('Storage of tokens happens in the vault'),
+    'sub-floor padding sentence dropped');
+  assert.ok(answer.includes('rotated quarterly'), 'strong sentence kept');
 });

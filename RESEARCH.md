@@ -550,6 +550,46 @@ The nightly runs both profiles report-only (the fake-embedder run also gates
 against `bench/fixtures/rag-faithfulness-baseline.json` at ±5pp to catch
 unintended changes in the deterministic extractive path).
 
+### 18a. Abstention gate (issue #238)
+
+Finding (1) is closed by an abstention gate on the extractive path: before
+synthesizing, `extractiveConfidence(query, passages)` computes the best
+unique-token query support any candidate sentence in the top passages shows —
+the same sentence split and tokenizer the synthesizer itself uses, so the gate
+and the answer speak one language. Below `DEFAULT_MIN_ANSWER_CONFIDENCE`
+(0.13) the answer is a refusal with **zero citations** ("No answer found in
+the notes…" plus the closest passages as explicitly non-answer context, kept
+outside the bracket-citation format so `citationsUsed` stays empty by
+construction). A second, non-fatal floor (`MIN_SENTENCE_SUPPORT` 0.15) drops
+sub-floor padding sentences from answers when stronger sentences exist.
+
+The default is calibrated on the §18 fixture with the unique-token metric:
+unanswerable confidence tops out at **0.111**, the first answerable query
+sits at **0.143** — 0.13 separates them with margin on both sides. The gate
+deliberately scores LEXICAL support only: it guards the extractive path,
+whose sentence picker is itself lexical — a paraphrase query with zero lexical
+footing never produced a real extractive answer, only an excerpt dump wearing
+fabricated citations. LLM synthesis is untouched by the gate (its refusal
+semantics live in the prompt), and `--min-answer-confidence 0` /
+`MDSS_MIN_ANSWER_CONFIDENCE=0` restores the never-abstain behavior.
+
+Measured on the committed deterministic profile (fake embedder, k=6, the
+±5pp gate re-baselined to these numbers):
+
+| Profile | Citation precision | Citation recall | Support rate | Spurious rate (unanswerable) |
+|---|---|---|---|---|
+| extractive · gate OFF (#229 baseline) | 70.0% | 83.3% | 67.6% | **100%** |
+| extractive · gate ON (0.13) | **76.7%** | 55.0% | 55.7% | **0%** |
+
+The honest trade: recall and support drop because ~10 of the 30 answerable
+fixture queries have no lexical footing — the extractive path never truly
+answered them; it fabricated citations around an excerpts dump, and the old
+metrics counted that fabrication as recall. What the gate removes is exactly
+that fabrication: every remaining citation is lexically grounded, precision
+rises, and the unanswerable set gets an actionable refusal instead of a
+confidently wrong answer. Paraphrase-strong users should configure an LLM
+endpoint (the gate never fires on LLM answers) or lower the floor.
+
 ### Reproducing
 
 ```bash

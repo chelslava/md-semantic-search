@@ -116,6 +116,7 @@ function parseArgs(argv) {
         opts.ann = true;
       }
     }
+    else if (a === '--min-answer-confidence') opts.minAnswerConfidence = nextFloat(argv, ++i, a);
     else if (a === '--nprobe') opts.nprobe = nextInt(argv, ++i, a);
     else if (a === '--project') opts.project = nextValue(argv, ++i, a);
     else if (a === '--type') opts.type = nextValue(argv, ++i, a);
@@ -507,6 +508,12 @@ Options:
                       SSE streaming) or "ollama" (native /api/generate,
                       NDJSON streaming) (issue #199).
   --llm-model <m>     Provider-side chat model for --llm-endpoint.
+  --min-answer-confidence <n>
+                      ask/chat: abstention floor for the extractive answer
+                      (0..1, default 0.13) — below it the answer is a refusal
+                      with zero citations instead of spurious grounding
+                      (issue #238). 0 disables abstention.
+                      Env: MDSS_MIN_ANSWER_CONFIDENCE.
   --rag               tui: enable the interactive RAG panel — ask the vault from
                       inside the TUI; streams a real LLM answer when
                       --llm-endpoint is set, extractive fallback otherwise.
@@ -1313,6 +1320,8 @@ async function cmdAsk(opts) {
     llmEndpoint: opts.llmEndpoint,
     llmModel: opts.llmModel,
     llmProvider: opts.llmProvider,
+    // issue #238: extractive abstention floor (env MDSS_MIN_ANSWER_CONFIDENCE)
+    ...(opts.minAnswerConfidence !== undefined ? { minAnswerConfidence: opts.minAnswerConfidence } : {}),
     // issue #199: incremental render — first token lands immediately. JSON
     // mode stays a single machine-readable write.
     ...(opts.json ? {} : { onDelta: (d) => { streamedChars += d.length; process.stdout.write(d); } }),
@@ -1383,6 +1392,7 @@ async function cmdChat(opts) {
       llmEndpoint: opts.llmEndpoint,
       llmModel: opts.llmModel,
       llmProvider: opts.llmProvider,
+      ...(opts.minAnswerConfidence !== undefined ? { minAnswerConfidence: opts.minAnswerConfidence } : {}),
       ...(opts.json ? {} : { onDelta: (d) => { streamedChars += d.length; process.stdout.write(d); } }),
       systemPrompt: opts.systemPrompt,
     });
@@ -1469,6 +1479,7 @@ async function cmdChat(opts) {
           llmEndpoint: opts.llmEndpoint,
           llmModel: opts.llmModel,
           llmProvider: opts.llmProvider,
+          ...(opts.minAnswerConfidence !== undefined ? { minAnswerConfidence: opts.minAnswerConfidence } : {}),
           // issue #199: REPL deltas stream as they arrive; session/history
           // persistence still happens on the complete answer only.
           onDelta: (d) => { streamedChars += d.length; process.stdout.write(d); },

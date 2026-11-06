@@ -428,6 +428,7 @@ mdss chat --db ./notes --session my-session-id "What about database failover?"
 ```
 
 - **Offline Extractive Synthesis**: Zero-dependency default extracts salient factual sentences with strict `[file › heading]` source provenance.
+- **Abstention instead of fabrication** (issue #238): when no retrieved passage carries real query support, the extractive path **refuses** — "No answer found in the notes" with the closest passages as explicitly non-answer context and **zero citations** — instead of citing excerpts it cannot ground (RESEARCH §18a: the unanswerable spurious-citation rate drops 100% → 0%). Tune with `--min-answer-confidence <n>` (default 0.13; `0` restores the never-abstain behavior; env `MDSS_MIN_ANSWER_CONFIDENCE`). LLM synthesis is untouched by the gate.
 - **OpenAI-compatible chat with SSE streaming** (issue #199): with `--llm-endpoint`, synthesis speaks the `/chat/completions` lingua franca — llama.cpp, LM Studio, vLLM, and Ollama (`.../v1`) all work **without code** — and answers **stream token-by-token** into `mdss ask`, `mdss chat`, the TUI RAG panel (`mdss search -i --rag`), and the web UI (`mdss serve` → ✦ Ask): the first token renders in milliseconds instead of after the whole generation.
   ```bash
   # llama.cpp / LM Studio / vLLM (OpenAI-compatible):
@@ -684,6 +685,7 @@ Add to your `claude_desktop_config.json`:
 | `--rerank` | Re-rank the candidate pool with a cross-encoder (~144 MB default model, downloaded on first use). Slower, sharper results — see *Reranking* below. |
 | `--rerank-model <m>` | Reranker registry alias (issue #203): `bge-reranker-base` (default) or `gte-reranker-modernbert` (144 MB, 8k ctx, Apache-2.0); raw `id@revision` accepted. |
 | `--multi-query <n>` | Multi-query expansion (issue #203): N query variants (original + N−1 LLM paraphrases) fused by union-RRF; needs `--llm-endpoint`, degrades silently without it. |
+| `--min-answer-confidence <n>` | `ask`/`chat`: abstention floor for the extractive answer (0..1, default 0.13) — below it the answer is a refusal with zero citations instead of spurious grounding (issue #238). `0` disables abstention. Env `MDSS_MIN_ANSWER_CONFIDENCE`. |
 | `--graph-boost <n>` | Weight for Obsidian wikilink graph ranking and PageRank prior (search; default 0). Incorporates document centrality and 2-hop contextual propagation. |
 | `--filter <expr>` | Rich boolean filter across frontmatter tags and properties (e.g. `tag:engineering AND status != archived`). |
 | `--ann [ivf\|hnsw\|false]` | Approximate nearest neighbor search (search; auto-enables for large corpora). Engines (issue #201): `ivf` (k-means, the default sidecar) or `hnsw` (graph — no training phase, 100% measured recall at equal-or-lower query latency, `hnsw.json` sidecar, corrupt → brute-force fallback; watch rebuilds reuse the persisted graph via chunk-hash remapping instead of rebuilding it — issue #223). Bare `--ann` prefers an existing sidecar. `--ann false`/`--ann off` (issue #235) forces **exact brute force** — no ANN even when a sidecar exists and the corpus is above the threshold; omitting the flag keeps the automatic threshold behavior. |

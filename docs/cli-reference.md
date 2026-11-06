@@ -128,6 +128,12 @@ Options:
                       SSE streaming) or "ollama" (native /api/generate,
                       NDJSON streaming) (issue #199).
   --llm-model <m>     Provider-side chat model for --llm-endpoint.
+  --min-answer-confidence <n>
+                      ask/chat: abstention floor for the extractive answer
+                      (0..1, default 0.13) — below it the answer is a refusal
+                      with zero citations instead of spurious grounding
+                      (issue #238). 0 disables abstention.
+                      Env: MDSS_MIN_ANSWER_CONFIDENCE.
   --rag               tui: enable the interactive RAG panel — ask the vault from
                       inside the TUI; streams a real LLM answer when
                       --llm-endpoint is set, extractive fallback otherwise.

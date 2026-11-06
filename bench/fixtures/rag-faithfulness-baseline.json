@@ -4,18 +4,18 @@
     "name": "extractive",
     "answerable": {
       "runs": 30,
-      "citationPrecision": 0.7,
-      "citationRecall": 0.8333333333333334,
-      "supportRate": 0.6756349206349207,
+      "citationPrecision": 0.7666666666666667,
+      "citationRecall": 0.55,
+      "supportRate": 0.557063492063492,
       "p50LatencyMs": 1
     },
     "unanswerable": {
       "runs": 8,
-      "citationPrecision": 0,
+      "citationPrecision": null,
       "citationRecall": null,
       "supportRate": null,
       "p50LatencyMs": 1,
-      "spuriousCitationRate": 1
+      "spuriousCitationRate": 0
     }
   }
 }
