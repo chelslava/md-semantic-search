@@ -52,6 +52,9 @@ export const RERANKERS: Record<string, RerankerAdapter> = {
   },
   'bge-reranker-base': {
     id: 'Xenova/bge-reranker-base',
+    // issue #240: pinned to a tested commit — same supply-chain rule as the
+    // newer embedder adapters; reproducibility of the pre-#203 baseline depends on it.
+    revision: '280bcc27a84e0b898c251e06fddb25171bd9b101',
     dtype: 'q8',
     maxTokens: 512,
     family: 'bge',

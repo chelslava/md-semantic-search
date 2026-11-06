@@ -128,15 +128,16 @@ test('getPipelineModelSource keeps the remote id for offline main models', () =>
   assert.equal(source, QWEN_ID);
 });
 
-test('getPipelineModelSource preserves the default e5-base source offline', () => {
+test('getPipelineModelSource: e5-base now pins a revision (issue #240) — offline resolves to the cache path', () => {
   // Given
   const model = core.resolveModel('e5-base');
 
-  // When
-  const source = core.getPipelineModelSource(model, path.join('cache', 'models'), true);
-
-  // Then
-  assert.equal(source, model.id);
+  // When/Then — issue #240 pinned e5-base to a commit SHA, so OFFLINE
+  // resolves to the local cache path like every other pinned adapter
+  // (granite/qwen3/gemma); online keeps the hub id.
+  assert.equal(core.getPipelineModelSource(model, path.join('cache', 'models'), true),
+    path.join('cache', 'models', model.id, model.revision));
+  assert.equal(core.getPipelineModelSource(model, path.join('cache', 'models'), false), model.id);
 });
 
 test('getExtractorCacheKey separates pinned offline cache sources', () => {
@@ -383,4 +384,34 @@ test('#200: new candidates have distinct fingerprints from e5-base and each othe
     queryPrefix: '', passagePrefix: '',
   });
   assert.equal(plain.pooledOutput, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// issue #240: every registered adapter must pin an immutable commit SHA.
+// Floating `main` means a re-tagged upstream repo silently changes the
+// weights an existing alias resolves to — the one unguarded supply-chain
+// surface in a local-first tool.
+// ---------------------------------------------------------------------------
+
+test('models: every registered embedder adapter pins a non-main revision (issue #240)', async () => {
+  const { MODELS } = await import('../dist/models.js');
+  for (const [alias, adapter] of Object.entries(MODELS)) {
+    assert.ok(
+      typeof adapter.revision === 'string' &&
+      adapter.revision.length === 40 &&
+      /^[0-9a-f]{40}$/.test(adapter.revision),
+      `embedder "${alias}" must pin a 40-char commit SHA, got ${adapter.revision}`,
+    );
+  }
+});
+
+test('rerank: every registered reranker adapter pins a non-main revision (issue #240)', async () => {
+  const { RERANKERS } = await import('../dist/rerank.js');
+  for (const [alias, adapter] of Object.entries(RERANKERS)) {
+    assert.ok(
+      typeof adapter.revision === 'string' &&
+      /^[0-9a-f]{40}$/.test(adapter.revision),
+      `reranker "${alias}" must pin a 40-char commit SHA, got ${adapter.revision}`,
+    );
+  }
 });

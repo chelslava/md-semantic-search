@@ -33,6 +33,9 @@ export interface ModelAdapter {
 export const MODELS: Record<string, ModelAdapter> = {
   'e5-small': {
     id: 'Xenova/multilingual-e5-small',
+    // issue #240: pinned to a tested commit — a re-tagged upstream repo must not
+    // silently change the weights an existing alias resolves to.
+    revision: '761b726dd34fb83930e26aab4e9ac3899aa1fa78',
     nativeDim: 384,
     dim: 384,
     queryPrefix: 'query: ',
@@ -46,6 +49,8 @@ export const MODELS: Record<string, ModelAdapter> = {
   },
   'e5-base': {
     id: 'Xenova/multilingual-e5-base',
+    // issue #240: pinned to a tested commit (see e5-small).
+    revision: '1ec9243030a27d1a115d5c340572074c125b58b2',
     nativeDim: 768,
     dim: 768,
     queryPrefix: 'query: ',
@@ -59,6 +64,8 @@ export const MODELS: Record<string, ModelAdapter> = {
   },
   'e5-large': {
     id: 'Xenova/multilingual-e5-large',
+    // issue #240: pinned to a tested commit (see e5-small).
+    revision: '00fc3aeb3dbb95842de2ac1961d33c6319acf57b',
     nativeDim: 1024,
     dim: 1024,
     queryPrefix: 'query: ',
@@ -72,6 +79,8 @@ export const MODELS: Record<string, ModelAdapter> = {
   },
   'bge-m3': {
     id: 'Xenova/bge-m3',
+    // issue #240: pinned to a tested commit (see e5-small).
+    revision: '4de13258303883538bd53b696b452bf8099f0858',
     nativeDim: 1024,
     dim: 1024,
     dimensions: [64, 128, 256, 512, 1024],

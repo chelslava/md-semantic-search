@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import { buildIndex } from '../dist/indexer.js';
 import { search, searchIndex, loadIndex, tokenize, keywordScores, rrf, _stats } from '../dist/search.js';
 import { decodeVec, SCHEMA_VERSION } from '../dist/core.js';
+import { resolveModel } from '../dist/models.js';
 
 function writeIndex(idx, data) {
   const json = JSON.stringify(data);
@@ -639,7 +640,8 @@ test('searchIndex: direct loaded model substitution cannot override canonical in
       cacheDir: dir, query: 'coffee', k: 1, embedFn });
 
     assert.equal(receivedModel.id, 'Xenova/multilingual-e5-base');
-    assert.equal(receivedModel.revision, 'main');
+    assert.equal(receivedModel.revision, resolveModel('e5-base').revision,
+      'canonical index metadata keeps the pinned revision (issue #240)');
     assert.equal(receivedModel.queryPrefix, 'query: ');
   } finally {
     safeRm(dir);

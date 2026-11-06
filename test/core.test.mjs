@@ -159,7 +159,8 @@ test('globToRegExp: anchored, case-insensitive, escapes regex metachars', () => 
 
 test('resolveModel: aliases resolve; raw ids pin revisions via id@revision', () => {
   assert.equal(resolveModel('e5-base').id, 'Xenova/multilingual-e5-base');
-  assert.equal(resolveModel('e5-base').revision, undefined, 'registry models use default revision');
+  assert.equal(resolveModel('e5-base').revision, '1ec9243030a27d1a115d5c340572074c125b58b2',
+    'registry models pin tested revisions (issue #240)');
   assert.equal(resolveModel('').id, 'onnx-community/granite-embedding-311m-multilingual-r2-ONNX', 'empty → default model (issue #227)');
   assert.equal(resolveModel(undefined).id, 'onnx-community/granite-embedding-311m-multilingual-r2-ONNX', 'undefined → default model (issue #227)');
 
