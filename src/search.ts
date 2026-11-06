@@ -937,6 +937,11 @@ export interface SearchResultHit {
   score: number;
   matches: string[];
   snippet: string;
+  /** issue #249: the chunk's source line range — --open, the TUI Enter path
+   * and the web UI deep links jump here; RuntimeChunk always had it but the
+   * assembled hit dropped it (so --open silently opened line 1). */
+  startLine?: number;
+  endLine?: number;
   meta?: DocumentMetadata;
   graphScore?: number;
   explain?: {
@@ -1426,6 +1431,8 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
       score: +r.fscore.toFixed(4),
       matches,
       snippet: c.text.replace(/\s+/g, ' ').slice(0, 220),
+      ...(c.startLine !== undefined ? { startLine: c.startLine } : {}),
+      ...(c.endLine !== undefined ? { endLine: c.endLine } : {}),
       ...(hasMetaFields(c.meta) ? { meta: c.meta } : {}),
       ...(gScore !== undefined ? { graphScore: +gScore.toFixed(4) } : {}),
       ...(explain

@@ -138,3 +138,156 @@ test('runTui handles interactive sessions, filter DSL toggling (Ctrl+F), and inv
   }
 });
 
+
+// ---------------------------------------------------------------------------
+// issue #249: TUI ergonomics — editor-launch parity with `search --open`,
+// wide-char (surrogate-pair) input, and the ?/F1 help overlay.
+// ---------------------------------------------------------------------------
+
+function buildTuiFixture(root) {
+  const indexDir = path.join(root, '.mdss');
+  const cacheDir = path.join(root, '.cache');
+  fs.mkdirSync(indexDir, { recursive: true });
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const fakeVec = Buffer.alloc(768 * 4).toString('base64');
+  const fakeIndex = {
+    schemaVersion: 3,
+    format: 'binary-v1',
+    db: root,
+    model: 'Xenova/multilingual-e5-base@main',
+    modelAlias: 'e5-base',
+    dim: 768,
+    built: new Date().toISOString(),
+    chunkCount: 1,
+    lexical: { format: 'bm25-v1', documentLengths: [1], postings: { token: [[0, 1]] } },
+    chunks: [
+      { file: 'auth.md', title: 'Authentication', heading: 'Tokens', headingPath: ['Tokens'], text: 'JWT token auth implementation.', startLine: 1, chunkHash: 'h1', vec: fakeVec },
+    ],
+  };
+  const json = JSON.stringify(fakeIndex);
+  fs.writeFileSync(path.join(indexDir, 'vectors.json'), json, 'utf8');
+  return { indexDir, cacheDir, json };
+}
+
+async function withFakeTty(fn) {
+  const origStdin = process.stdin;
+  const origStdout = process.stdout;
+  const fakeStdin = new EventEmitter();
+  fakeStdin.isTTY = true;
+  fakeStdin.isRaw = false;
+  fakeStdin.setRawMode = () => {};
+  fakeStdin.resume = () => {};
+  fakeStdin.pause = () => {};
+  let output = '';
+  const fakeStdout = {
+    isTTY: true,
+    rows: 24,
+    columns: 80,
+    write: (chunk) => { output += String(chunk); },
+    on: () => {},
+    removeListener: () => {},
+  };
+  Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true });
+  Object.defineProperty(process, 'stdout', { value: fakeStdout, configurable: true });
+  try {
+    return await fn(fakeStdin, () => output);
+  } finally {
+    Object.defineProperty(process, 'stdin', { value: origStdin, configurable: true });
+    Object.defineProperty(process, 'stdout', { value: origStdout, configurable: true });
+  }
+}
+
+test('tui: Enter routes through the shared opener (MDSS_EDITOR precedence, --goto) (issue #249)', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-tui-open-'));
+  const crypto = await import('node:crypto');
+  try {
+    const { indexDir, cacheDir, json } = buildTuiFixture(root);
+    const digest = crypto.createHash('sha256').update(json).digest('hex');
+    fs.writeFileSync(path.join(indexDir, 'vectors.json.sha256'), `${digest}  vectors.json
+`, 'utf8');
+
+    const launches = [];
+    process.env.MDSS_EDITOR = 'code';
+    try {
+      await withFakeTty(async (fakeStdin) => {
+        const tuiPromise = runTui({
+          indexDir, cacheDir, db: root, query: 'token', debounceMs: 10,
+          embedFn: async () => [new Float32Array(768)],
+          // issue #249 test seam
+          openRunner: (command, args) => launches.push({ command, args }),
+        });
+        await new Promise((r) => setTimeout(r, 50));
+        fakeStdin.emit('keypress', '', { name: 'return' });
+        await tuiPromise;
+      });
+    } finally {
+      delete process.env.MDSS_EDITOR;
+    }
+    assert.equal(launches.length, 1, 'the shared opener ran once');
+    assert.equal(launches[0].command, 'code');
+    assert.deepEqual(launches[0].args, ['--goto', path.join(root, 'auth.md') + ':1'],
+      'VS Code gets --goto with the chunk start line — identical to search --open');
+  } finally {
+    safeRm(root);
+  }
+});
+
+test('tui: surrogate-pair and multi-unit input reaches the query line (issue #249)', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-tui-wide-'));
+  const crypto = await import('node:crypto');
+  try {
+    const { indexDir, cacheDir, json } = buildTuiFixture(root);
+    const digest = crypto.createHash('sha256').update(json).digest('hex');
+    fs.writeFileSync(path.join(indexDir, 'vectors.json.sha256'), `${digest}  vectors.json
+`, 'utf8');
+
+    await withFakeTty(async (fakeStdin, getOutput) => {
+      const tuiPromise = runTui({
+        indexDir, cacheDir, db: root, debounceMs: 10,
+        embedFn: async () => [new Float32Array(768)],
+      });
+      await new Promise((r) => setTimeout(r, 50));
+      // a CJK grapheme and an emoji surrogate pair — the old single-char
+      // guard (length === 1) dropped the emoji entirely
+      fakeStdin.emit('keypress', '日', { name: undefined });
+      fakeStdin.emit('keypress', '😀', { name: undefined });
+      await new Promise((r) => setTimeout(r, 30));
+      assert.ok(getOutput().includes('日'), 'CJK input lands in the query line');
+      assert.ok(getOutput().includes('😀'), 'surrogate-pair emoji lands in the query line');
+      fakeStdin.emit('keypress', '', { name: 'escape' });
+      await tuiPromise;
+    });
+  } finally {
+    safeRm(root);
+  }
+});
+
+test('tui: ? toggles the help overlay when the query is empty (issue #249)', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-tui-help-'));
+  const crypto = await import('node:crypto');
+  try {
+    const { indexDir, cacheDir, json } = buildTuiFixture(root);
+    const digest = crypto.createHash('sha256').update(json).digest('hex');
+    fs.writeFileSync(path.join(indexDir, 'vectors.json.sha256'), `${digest}  vectors.json
+`, 'utf8');
+
+    await withFakeTty(async (fakeStdin, getOutput) => {
+      const tuiPromise = runTui({
+        indexDir, cacheDir, db: root, debounceMs: 10,
+        embedFn: async () => [new Float32Array(768)],
+      });
+      await new Promise((r) => setTimeout(r, 50));
+      fakeStdin.emit('keypress', '?', { name: undefined });
+      await new Promise((r) => setTimeout(r, 20));
+      assert.ok(getOutput().includes('key bindings'), 'the overlay renders');
+      assert.ok(getOutput().includes('Ctrl+F'), 'it lists the bindings');
+      fakeStdin.emit('keypress', '?', { name: undefined });
+      await new Promise((r) => setTimeout(r, 20));
+      assert.ok(getOutput().includes('Passage Preview'), 'a second ? returns to the search view');
+      fakeStdin.emit('keypress', '', { name: 'escape' });
+      await tuiPromise;
+    });
+  } finally {
+    safeRm(root);
+  }
+});

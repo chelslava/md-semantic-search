@@ -398,6 +398,7 @@ test('ann: prewarmAnnRuntime builds the runtime IVF off the query path (issue #2
     const hot = await searchIndex({
       loaded, cacheDir: dir, query: 'topic 3', k: 10, embedFn: fakeEmbed235,
     });
+    assert.equal(hot.length, 10, 'the prewarmed runtime serves the query');
     assert.ok(logs.some((m) => /prebuilt the in-memory IVF/.test(m)), 'prewarm logs its work');
     // idempotent: a second prewarm is a no-op (ivf already attached)
     const logs2 = [];

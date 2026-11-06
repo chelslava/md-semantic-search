@@ -309,7 +309,9 @@ test('search: schema-v1 index without headingPath remains searchable with unchan
 
     assert.equal(results.length, 1);
     assert.deepEqual(Object.keys(results[0]).sort(), [
-      'cosine', 'file', 'heading', 'matches', 'score', 'snippet', 'title',
+      // issue #249: startLine/endLine joined the hit shape (line jumps for
+      // --open, the TUI Enter path and the web UI deep links)
+      'cosine', 'endLine', 'file', 'heading', 'matches', 'score', 'snippet', 'startLine', 'title',
     ]);
     assert.equal('headingPath' in results[0], false);
   } finally {
@@ -1250,9 +1252,6 @@ test('search: query-time dimensions truncation matches a truncated brute-force r
     const loaded = loadIndex(idx);
     const common = { loaded, cacheDir: path.join(dir, '.c'), query: 'coffee', k: 5, embedFn: fakeEmbed16 };
 
-    // full-dim baseline
-    const full = await searchIndex({ ...common });
-
     // truncated sweep: rank-for-rank against an explicit truncated query
     // semanticOnly isolates the dense sweep — the hybrid fusion legitimately
     // re-orders relative to a pure cosine comparison
@@ -1263,14 +1262,6 @@ test('search: query-time dimensions truncation matches a truncated brute-force r
     for (const x of qVecTrunc) norm += x * x;
     norm = Math.sqrt(norm);
     const renorm = qVecTrunc.map((x) => x / norm);
-    const manual = loaded.index.chunks
-      .map((c, i) => {
-        const vec = c.vec;
-        let dot = 0;
-        for (let j = 0; j < 8; j++) dot += renorm[j] * vec[j];
-        return { i, cos: dot }; // stored vectors are unit-normalized full-dim; partial cos needs partial norms — compare ORDER via dot/(norm of slice) below
-      })
-      .sort((a, b) => b.cos - a.cos);
     // partial cosine = dot / ||slice|| (stored full-dim vectors are normalized, slices are not)
     const sliceNorms = loaded.index.chunks.map((c) => {
       let n = 0;

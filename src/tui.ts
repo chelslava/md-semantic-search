@@ -1,15 +1,55 @@
 import readline from 'node:readline';
-import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { loadIndex, searchIndex, SearchResultHit } from './search.js';
 import { extractAnswerFallback, synthesizeAnswer } from './rag.js';
 import { parseFilter, FilterNode } from './filter.js';
+import { tokenize } from './lexical.js';
+import { openHit } from './open.js';
 import { ChatProviderId } from './providers.js';
+
+// issue #249: display-width helpers — surrogate pairs (CJK, emoji) occupy
+// two terminal cells, so char-count clipping miscalculates line lengths.
+function displayWidth(str: string): number {
+  let w = 0;
+  for (const ch of str) {
+    const cp = ch.codePointAt(0) as number;
+    w += cp > 0xffff ? 2 : 1;
+  }
+  return w;
+}
+
+function clipByWidth(str: string, width: number): string {
+  let w = 0;
+  let out = '';
+  for (const ch of str) {
+    const cp = ch.codePointAt(0) as number;
+    const cw = cp > 0xffff ? 2 : 1;
+    if (w + cw > width) break;
+    out += ch;
+    w += cw;
+  }
+  return out;
+}
+
+// issue #249: SGR term highlighting for the preview pane — the same terms the
+// results list matches, wrapped in reverse video (the preview is plain text,
+// so the spans stand out without nesting SGR state).
+const SGR_REVERSE = '\x1b[7m';
+const SGR_NORMAL = '\x1b[27m';
+
+function highlightTerms(text: string, terms: string[]): string {
+  if (terms.length === 0) return text;
+  const escaped = terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const re = new RegExp(`(${escaped.join('|')})`, 'gi');
+  return text.replace(re, `${SGR_REVERSE}$1${SGR_NORMAL}`);
+}
 
 export interface TuiOptions {
   indexDir: string;
   cacheDir: string;
   db?: string;
+  /** issue #249 test seam: the editor-launch runner (defaults to openHit's detached spawn). */
+  openRunner?: (command: string, args: string[], opts: { detached: boolean; stdio: 'ignore' }) => void;
   query?: string;
   k?: number;
   semanticOnly?: boolean;
@@ -50,6 +90,9 @@ export async function runTui(opts: TuiOptions): Promise<SearchResultHit | null> 
   let results: SearchResultHit[] = [];
   let searching = false;
   let debounceTimer: NodeJS.Timeout | null = null;
+  // issue #249: preview term highlighting + the `?`/F1 help overlay
+  let previewTerms: string[] = [];
+  let showHelp = false;
 
   const performSearch = async () => {
     if (activeFilter.trim()) {
@@ -167,6 +210,26 @@ export async function runTui(opts: TuiOptions): Promise<SearchResultHit | null> 
     buf += '\x1b[?25l'; // hide cursor
     buf += '\x1b[H\x1b[J'; // clear screen from cursor down
 
+    // issue #249: the `?`/F1 help overlay replaces the whole screen
+    if (showHelp) {
+      const bindings: Array<[string, string]> = [
+        ['type', 'search-as-you-type (debounced live results)'],
+        ['Ctrl+F', 'edit the filter expression (tag:eng AND status != archived)'],
+        ['Up / Down', 'move the selection (Ctrl+J / Ctrl+K also work)'],
+        ['Enter', 'open the selected hit in your editor (MDSS_EDITOR/VISUAL/$EDITOR, VS Code --goto, GUI opener)'],
+        ['Tab', 'toggle the RAG QA panel (needs --rag; streams with --llm-endpoint)'],
+        ['?', 'toggle this help (only while the query line is empty)'],
+        ['Esc', 'quit'],
+      ];
+      buf += `\x1b[1m mdss TUI — key bindings\x1b[0m\n\n`;
+      for (const [k, v] of bindings) {
+        buf += `  \x1b[7m${k.padEnd(12)}\x1b[0m ${v}\n`;
+      }
+      buf += `\n\n\x1b[2m press ? or F1 again to return\x1b[0m`;
+      process.stdout.write(buf);
+      return;
+    }
+
     // Header Line 1: Mode & Query
     const searchStatus = searching ? ' [searching...]' : '';
     const modeLabel = showRag ? 'RAG QA & Synthesis' : 'search';
@@ -216,10 +279,10 @@ export async function runTui(opts: TuiOptions): Promise<SearchResultHit | null> 
       maybeStartRag();
       buf += `\x1b[1m--- Grounded Answer Synthesis & Citations ---\x1b[0m\n`;
       const answer = ragText ?? extractAnswerFallback(query, results);
-      const answerLines = answer.split('\n');
+      const answerLines = answer.split('\n').map((l) => highlightTerms(l, previewTerms));
       for (let i = 0; i < previewHeight; i++) {
         if (i < answerLines.length) {
-          buf += `  ${answerLines[i].slice(0, cols - 3)}\n`;
+          buf += `  ${clipByWidth(answerLines[i], cols - 3)}\n`;
         } else {
           buf += '\n';
         }
@@ -228,10 +291,10 @@ export async function runTui(opts: TuiOptions): Promise<SearchResultHit | null> 
       buf += `\x1b[1m--- Passage Preview ---\x1b[0m\n`;
       const selectedHit = results[selectedIndex];
       if (selectedHit) {
-        const textLines = selectedHit.snippet.split('\n');
+        const textLines = selectedHit.snippet.split('\n').map((l) => highlightTerms(l, previewTerms));
         for (let i = 0; i < previewHeight; i++) {
           if (i < textLines.length) {
-            buf += `  ${textLines[i].slice(0, cols - 3)}\n`;
+            buf += `  ${clipByWidth(textLines[i], cols - 3)}\n`;
           } else {
             buf += '\n';
           }
@@ -326,10 +389,17 @@ export async function runTui(opts: TuiOptions): Promise<SearchResultHit | null> 
         cleanupTui();
         process.removeListener('keypress', onKeypress);
         if (hit) {
-          const editor = process.env.EDITOR || process.env.VISUAL || 'code';
-          const filePath = path.resolve(db, hit.file);
+          // issue #249: route through the shared opener — MDSS_EDITOR/VISUAL/
+          // $EDITOR precedence, VS Code --goto, +line editors, and the GUI
+          // opener fallback (identical to `search --open`)
           try {
-            spawn(editor, [filePath], { stdio: 'inherit', detached: true });
+            openHit(
+              { file: path.resolve(db, hit.file), line: (hit as SearchResultHit & { startLine?: number }).startLine },
+              {
+                editor: process.env.MDSS_EDITOR || process.env.VISUAL || process.env.EDITOR,
+                ...(opts.openRunner ? { runner: opts.openRunner } : {}),
+              },
+            );
           } catch {
             /* editor launch failed */
           }
@@ -355,7 +425,19 @@ export async function runTui(opts: TuiOptions): Promise<SearchResultHit | null> 
         return;
       }
 
-      if (_str && _str.length === 1 && _str.charCodeAt(0) >= 32) {
+      // issue #249: the ?/F1 help overlay. '?' only toggles while the query
+      // line is empty — mid-typing it stays a typeable character.
+      if (key.name === 'f1' || (_str === '?' && query.length === 0 && editingField === 'query' && activeFilter.length === 0)) {
+        showHelp = !showHelp;
+        render();
+        return;
+      }
+      if (showHelp) return; // any other key while the overlay is up does nothing
+
+      // issue #249: accept whole graphemes — surrogate pairs (CJK, emoji) and
+      // multi-unit keypress input were dropped by the old single-char guard.
+      // Named keys (key.name set) stay exclusive to the handlers above.
+      if (_str && !key.name && [..._str].every((ch) => ch.codePointAt(0)! >= 32)) {
         if (editingField === 'query') {
           query += _str;
           scheduleSearch();
