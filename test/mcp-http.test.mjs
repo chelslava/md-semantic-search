@@ -394,3 +394,117 @@ test('mcp-http: sampling stays best-effort — no SSE stream → extractive answ
     safeRm(dir);
   }
 });
+
+// ---------------------------------------------------------------------------
+// issue #237: DELETE /mcp must invalidate the minted session (stale POSTs
+// 404), and response-only POSTs must resolve BEFORE the fairness gates so a
+// sampling reply can never 429/503 itself into a deadlock against the
+// pending tools/call that holds the only concurrency slot.
+// ---------------------------------------------------------------------------
+
+test('mcp-http: DELETE terminates the session — stale POSTs 404 afterwards (issue #237)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-mcph-del-'));
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Coffee\n\ncoffee beans roasted ground notes here\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: path.join(dir, '.c'), modelName: 'e5-base', embedFn: fakeEmbed });
+    const svc = await createServe({
+      indexDir: idx, cacheDir: path.join(dir, '.c'), embedFn: fakeEmbed,
+      mcp: true, apiKey: 'sekret', ui: false, rateLimit: 0,
+    });
+    await new Promise((r) => svc.server.listen(0, r));
+    const url = `http://127.0.0.1:${svc.server.address().port}`;
+    try {
+      const init = await mcpPost(url, {
+        jsonrpc: '2.0', id: 1, method: 'initialize',
+        params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 't', version: '0' } },
+      });
+      const sid = init.headers['mcp-session-id'];
+      assert.ok(sid);
+
+      const alive = await mcpPost(url, { jsonrpc: '2.0', id: 2, method: 'tools/list' }, sid);
+      assert.equal(alive.status, 200, 'session works before DELETE');
+
+      const del = await mcpPost(url, { jsonrpc: '2.0', id: 3, method: 'ping' }, sid);
+      // DELETE via helper below (mcpPost is POST-only)
+      assert.notEqual(del.status, 404, 'pre-DELETE sanity');
+      await new Promise((resolve, reject) => {
+        const u = new URL(url);
+        const req = http.request({
+          hostname: u.hostname, port: u.port, path: '/mcp', method: 'DELETE',
+          headers: { authorization: 'Bearer sekret', 'mcp-session-id': sid },
+        }, (res) => { res.resume(); res.on('end', resolve); });
+        req.on('error', reject);
+        req.end();
+      });
+
+      const after = await mcpPost(url, { jsonrpc: '2.0', id: 4, method: 'tools/list' }, sid);
+      assert.equal(after.status, 404, 'the terminated id is stale — 404, not silent success');
+      assert.equal(after.headers['mcp-session-id'], undefined, 'no session id is echoed back after termination');
+    } finally {
+      await svc.close();
+    }
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('mcp-http: a session id presented with no live session is 404 (issue #237)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-mcph-nosess-'));
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Tea\n\ntea leaves notes\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: path.join(dir, '.c'), modelName: 'e5-base', embedFn: fakeEmbed });
+    const svc = await createServe({
+      indexDir: idx, cacheDir: path.join(dir, '.c'), embedFn: fakeEmbed,
+      mcp: true, apiKey: 'sekret', ui: false,
+    });
+    await new Promise((r) => svc.server.listen(0, r));
+    const url = `http://127.0.0.1:${svc.server.address().port}`;
+    try {
+      // fresh server, nothing minted yet: a presented id has nothing to match
+      const stale = await mcpPost(url, { jsonrpc: '2.0', id: 1, method: 'tools/list' }, 'made-up-session-id');
+      assert.equal(stale.status, 404, 'an id without a live session is stale by definition');
+    } finally {
+      await svc.close();
+    }
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('mcp-http: response-only POSTs bypass the fairness gates (issue #237)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-mcph-gate-'));
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Coffee\n\ncoffee beans roasted ground notes here\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: path.join(dir, '.c'), modelName: 'e5-base', embedFn: fakeEmbed });
+    const svc = await createServe({
+      indexDir: idx, cacheDir: path.join(dir, '.c'), embedFn: fakeEmbed,
+      mcp: true, apiKey: 'sekret', ui: false,
+      rateLimit: 1, // one request per minute: the 2nd request POST must 429
+    });
+    await new Promise((r) => svc.server.listen(0, r));
+    const url = `http://127.0.0.1:${svc.server.address().port}`;
+    try {
+      const init = await mcpPost(url, {
+        jsonrpc: '2.0', id: 1, method: 'initialize',
+        params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 't', version: '0' } },
+      });
+      const sid = init.headers['mcp-session-id'];
+      assert.equal(init.status, 200, 'the one allowed request POST');
+
+      const limited = await mcpPost(url, { jsonrpc: '2.0', id: 2, method: 'tools/list' }, sid);
+      assert.equal(limited.status, 429, 'the rate gate still applies to request POSTs');
+
+      // the sampling-reply shape (no method, carries result): under the old
+      // ordering this hit the 429 too and self-deadlocked the pending call
+      const reply = await mcpPost(url, { jsonrpc: '2.0', id: 99, result: { answer: 'x' } }, sid);
+      assert.equal(reply.status, 202, 'response-only POST resolves BEFORE the gates');
+    } finally {
+      await svc.close();
+    }
+  } finally {
+    safeRm(dir);
+  }
+});

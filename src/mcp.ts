@@ -346,6 +346,13 @@ export interface McpHandlerState {
   cacheDir: string;
   offline: boolean;
   embedFn?: any;
+  /**
+   * issue #237: the resolved index directory — where `<indexDir>/sessions/`
+   * lives. Session persistence must never guess this from `<db>/.mdss`: a
+   * server started with `--index-dir` elsewhere would otherwise read/write
+   * sessions from the wrong directory and silently start fresh conversations.
+   */
+  indexDir?: string;
   channel?: McpClientChannel;
   clientCapabilities?: any;
   output?: { write(chunk: string): void };
@@ -490,8 +497,67 @@ export async function handleMcpRequest(req: any, state: McpHandlerState): Promis
     }
 
     if (uri.startsWith('mdss://vault')) {
+      // issue #237: the advertised template is `mdss://vault/{vault}` — parse
+      // the vault argument and resolve it against the server's trust domain
+      // (the indexed db root, widened only via MDSS_ROOT_GUARD, mirroring the
+      // #179 federated-search rule). The old handler matched any
+      // `mdss://vault…` prefix and returned ALL indexed files regardless of
+      // the requested vault — the template was effectively a stub.
+      const rawVault = uri.slice('mdss://vault'.length);
+      if (!rawVault.startsWith('/') || rawVault.length <= 1) {
+        return {
+          jsonrpc: '2.0',
+          id,
+          error: { code: -32602, message: 'vault URI must be mdss://vault/{vault} — a vault name or full path' },
+        };
+      }
+      const vaultName = decodeURIComponent(rawVault.slice(1));
+      const vaultRoots = [
+        state.loaded.index.db,
+        ...(process.env.MDSS_ROOT_GUARD
+          ? process.env.MDSS_ROOT_GUARD.split(path.delimiter).map((p) => p.trim()).filter(Boolean)
+          : []),
+      ].filter(Boolean);
+      let vaultRoot = vaultRoots.find((r) => r === vaultName);
+      if (!vaultRoot) {
+        const byBase = vaultRoots.filter((r) => path.basename(r) === vaultName);
+        if (byBase.length === 1) {
+          vaultRoot = byBase[0];
+        } else if (byBase.length > 1) {
+          return {
+            jsonrpc: '2.0',
+            id,
+            error: { code: -32602, message: `vault name '${vaultName}' is ambiguous — pass the full path` },
+          };
+        }
+      }
+      if (!vaultRoot) {
+        return {
+          jsonrpc: '2.0',
+          id,
+          error: {
+            code: -32602,
+            message: `unknown vault '${vaultName}' — known vaults: ${vaultRoots.map((r) => path.basename(r)).join(', ')}`,
+          },
+        };
+      }
+      // The server's own index if the vault is the db root; otherwise load the
+      // vault's own `<vault>/.mdss` index on demand (trust-rooted, same cost
+      // class as the federated search path).
+      let vaultChunks: Array<{ file: string }> = state.loaded.index.chunks;
+      if (vaultRoot !== state.loaded.index.db) {
+        try {
+          vaultChunks = loadIndex(path.join(vaultRoot, '.mdss')).index.chunks;
+        } catch (e: any) {
+          return {
+            jsonrpc: '2.0',
+            id,
+            error: { code: -32602, message: `vault '${vaultName}' has no readable index: ${e.message}` },
+          };
+        }
+      }
       const fileCounts = new Map<string, number>();
-      for (const c of state.loaded.index.chunks) {
+      for (const c of vaultChunks) {
         fileCounts.set(c.file, (fileCounts.get(c.file) || 0) + 1);
       }
       const files = [...fileCounts.entries()].map(([file, count]) => ({ file, chunksCount: count }));
@@ -837,7 +903,10 @@ export async function handleMcpRequest(req: any, state: McpHandlerState): Promis
         // refusal, timeout) degrades to the extractive answer as before.
         const sampling = createSamplingSynthesizer(state);
         if (sessionId && typeof sessionId === 'string') {
-          const indexDir = state.loaded.indexDir || (state.loaded.index?.db ? path.join(state.loaded.index.db, '.mdss') : state.cacheDir);
+          // issue #237: the resolved indexDir rides the handler state now —
+          // the old `<db>/.mdss` guess silently forked sessions for servers
+          // started with --index-dir elsewhere.
+          const indexDir = state.indexDir || state.loaded.indexDir || (state.loaded.index?.db ? path.join(state.loaded.index.db, '.mdss') : state.cacheDir);
           const session = loadChatSession(indexDir, sessionId);
           const turnResult = await chatTurn({
             session,
@@ -959,6 +1028,7 @@ export async function startMcpServer(opts: StartMcpServerOptions): Promise<{ sta
     cacheDir,
     offline,
     embedFn,
+    indexDir,
     output,
   };
 

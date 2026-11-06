@@ -597,3 +597,103 @@ test('stdio e2e: negotiate → ping → sampling round-trip through the real lin
 });
 
 
+
+// ---------------------------------------------------------------------------
+// issue #237: four MCP-surface defects.
+// (1) mdss://vault/{vault} must honor its argument (was: any mdss://vault*
+//     prefix returned ALL indexed files); (2) ask sessionId must resolve the
+//     session store from the handler state's indexDir (was: a <db>/.mdss
+//     guess that forked sessions for --index-dir deployments).
+// ---------------------------------------------------------------------------
+
+test('resources/read mdss://vault/{vault} honors the vault argument (issue #237)', async () => {
+  const { loaded, dir } = await makeIndex();
+  const prevGuard = process.env.MDSS_ROOT_GUARD;
+  try {
+    const state = { loaded, cacheDir: dir, offline: true, embedFn: fakeEmbed };
+
+    // the server's own vault, addressed by basename → its files
+    const own = await handleMcpRequest(
+      { jsonrpc: '2.0', id: 30, method: 'resources/read', params: { uri: `mdss://vault/${path.basename(dir)}` } },
+      state,
+    );
+    assert.equal(own.id, 30);
+    assert.ok(!own.error, `own vault resolves without error: ${own.error?.message || ''}`);
+    const files = JSON.parse(own.result.contents[0].text);
+    assert.ok(Array.isArray(files) && files.length >= 2, 'lists the db vault files');
+    assert.ok(files.every((f) => typeof f.file === 'string' && typeof f.chunksCount === 'number'));
+
+    // bare mdss://vault (no argument) is a params error, not a full listing
+    const bare = await handleMcpRequest(
+      { jsonrpc: '2.0', id: 31, method: 'resources/read', params: { uri: 'mdss://vault' } },
+      state,
+    );
+    assert.equal(bare.error?.code, -32602, 'bare vault uri → -32602');
+
+    // unknown vault → -32602 with the known list
+    const unknown = await handleMcpRequest(
+      { jsonrpc: '2.0', id: 32, method: 'resources/read', params: { uri: 'mdss://vault/definitely-not-a-vault' } },
+      state,
+    );
+    assert.equal(unknown.error?.code, -32602);
+    assert.match(unknown.error.message, /unknown vault/i);
+
+    // a SECOND vault with its own index, trusted via MDSS_ROOT_GUARD, is
+    // resolved on demand — not answered with the server's own files
+    const vaultB = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-vaultb-'));
+    fs.writeFileSync(path.join(vaultB, 'other.md'), '# Other\n\nother vault unrelated notes content\n');
+    await buildIndex({ db: vaultB, indexDir: path.join(vaultB, '.mdss'), cacheDir: vaultB, modelName: 'e5-base', embedFn: fakeEmbed });
+    process.env.MDSS_ROOT_GUARD = vaultB;
+    try {
+      const second = await handleMcpRequest(
+        { jsonrpc: '2.0', id: 33, method: 'resources/read', params: { uri: `mdss://vault/${path.basename(vaultB)}` } },
+        state,
+      );
+      assert.ok(!second.error, `second vault resolves: ${second.error?.message || ''}`);
+      const bFiles = JSON.parse(second.result.contents[0].text);
+      assert.ok(bFiles.some((f) => f.file.includes('other.md')), 'lists the second vault’s OWN files');
+      assert.ok(!bFiles.some((f) => f.file.includes('guide.md')), 'does not leak the primary vault’s files');
+    } finally {
+      fs.rmSync(vaultB, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+    }
+  } finally {
+    if (prevGuard === undefined) delete process.env.MDSS_ROOT_GUARD;
+    else process.env.MDSS_ROOT_GUARD = prevGuard;
+    safeRm(dir);
+  }
+});
+
+test('ask_knowledge_base with a sessionId resolves sessions from the handler indexDir (issue #237)', async () => {
+  // the --index-dir-elsewhere deployment: db at dirA with a default index,
+  // a second index at idxB — the server was started against idxB
+  const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-dba-'));
+  const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-idxb-'));
+  const idxA = path.join(dirA, '.mdss');
+  const idxB = path.join(dirB, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dirA, 'guide.md'), '# Guide\n\n## Intro\n\nWelcome to mdss search guide\n');
+    await buildIndex({ db: dirA, indexDir: idxA, cacheDir: dirA, modelName: 'e5-base', embedFn: fakeEmbed });
+    await buildIndex({ db: dirA, indexDir: idxB, cacheDir: dirB, modelName: 'e5-base', embedFn: fakeEmbed });
+    const loaded = loadIndex(idxB);
+    const state = { loaded, cacheDir: dirB, offline: true, embedFn: fakeEmbed, indexDir: idxB };
+
+    const res = await handleMcpRequest(
+      {
+        jsonrpc: '2.0', id: 40, method: 'tools/call',
+        params: { name: 'ask_knowledge_base', arguments: { query: 'search guide', sessionId: 'sess_237' } },
+      },
+      state,
+    );
+    assert.ok(!res.error, `ask ran: ${res.error?.message || ''}`);
+    assert.ok(!res.result.isError, `tool did not fail: ${res.result?.content?.[0]?.text || ''}`);
+    const payload = res.result.structuredContent;
+    assert.equal(payload.sessionId, 'sess_237');
+    assert.equal(payload.turnsCount, 1, 'the turn was persisted in the resolved session');
+    assert.ok(fs.existsSync(path.join(idxB, 'sessions', 'sess_237.json')), 'session stored under the STATE indexDir');
+    assert.ok(!fs.existsSync(path.join(idxA, 'sessions')),
+      'the <db>/.mdss guess never ran — no session fork under the default index');
+  } finally {
+    safeRm(dirA);
+    safeRm(dirB);
+  }
+});

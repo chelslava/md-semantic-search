@@ -1343,6 +1343,18 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
  */
 async function handleMcpHttp(req: http.IncomingMessage, res: http.ServerResponse, state: ServeState): Promise<void> {
   if (req.method === 'DELETE') {
+    // issue #237: a terminated session must stop being usable — drop the
+    // minted id (stale POSTs now hit the 404 session gate below) and close
+    // the server→client SSE downlink the spec says DELETE ends.
+    state.mcpSessionId = undefined;
+    if (state.mcpSseRes) {
+      try {
+        state.mcpSseRes.end();
+      } catch {
+        /* already gone */
+      }
+      state.mcpSseRes = undefined;
+    }
     res.writeHead(204);
     res.end();
     return;
@@ -1393,21 +1405,62 @@ async function handleMcpHttp(req: http.IncomingMessage, res: http.ServerResponse
 
   // issue #182: session binding before any work — the server mints its own id
   // and rejects mismatching client ids with 404 instead of adopting them
-  // (session fixation) or feeding them to res.setHeader (500 on bad headers)
+  // (session fixation) or feeding them to res.setHeader (500 on bad headers).
+  // issue #237: an id presented when NO live session exists (e.g. after a
+  // DELETE terminated it) is stale by definition — 404 as well; id-less
+  // requests keep passing for stateless clients.
   const requested = req.headers['mcp-session-id'];
-  if (
-    typeof requested === 'string' &&
-    requested &&
-    state.mcpSessionId &&
-    requested !== state.mcpSessionId
-  ) {
-    json(res, 404, { error: 'session not found — re-initialize' });
+  if (typeof requested === 'string' && requested) {
+    if (!state.mcpSessionId || requested !== state.mcpSessionId) {
+      json(res, 404, { error: 'session not found — re-initialize' });
+      return;
+    }
+  }
+
+  // Read the body BEFORE the fairness gates (issue #237): the #197 comment
+  // claimed response POSTs bypass the gates, but the code gated every POST
+  // first — a client whose sampling reply got 429/503 self-deadlocked the
+  // pending tools/call (which holds the only concurrency slot) until its
+  // sampling timeout. Responses resolve below, before any gating.
+  let body = '';
+  for await (const chunk of req) {
+    body += chunk;
+    if (body.length > MAX_BODY_BYTES) {
+      json(res, 413, { error: `payload too large (limit ${MAX_BODY_BYTES} bytes)` });
+      return;
+    }
+  }
+  let messages: any;
+  try {
+    messages = JSON.parse(body || '{}');
+  } catch (e: any) {
+    json(res, 400, { error: `invalid JSON: ${e.message}` });
+    return;
+  }
+  const batch = Array.isArray(messages);
+  const items = batch ? messages : [messages];
+
+  // issue #197: answers to server→client requests (sampling) arrive as plain
+  // POSTs and correlate without holding a slot.
+  let sawResponseOnly = items.length > 0;
+  for (const msg of items) {
+    if (!msg || typeof msg !== 'object') {
+      continue;
+    }
+    const isResponse = msg.method === undefined && (msg.result !== undefined || msg.error !== undefined);
+    if (isResponse) {
+      state.mcpChannel?.handleResponse(msg);
+    } else {
+      sawResponseOnly = false;
+    }
+  }
+  if (sawResponseOnly) {
+    res.writeHead(202);
+    res.end();
     return;
   }
 
   // Same fairness gate as /search — tools/call can trigger embedding work.
-  // (The gates run AFTER body parse below: responses to server→client
-  // requests must bypass them, see issue #197.)
   const limited = state.limiter?.gate(req.socket.remoteAddress || 'unknown');
   if (limited) {
     res.setHeader('retry-after', String(limited.retryAfterSec));
@@ -1422,45 +1475,6 @@ async function handleMcpHttp(req: http.IncomingMessage, res: http.ServerResponse
   }
 
   try {
-    let body = '';
-    for await (const chunk of req) {
-      body += chunk;
-      if (body.length > MAX_BODY_BYTES) {
-        json(res, 413, { error: `payload too large (limit ${MAX_BODY_BYTES} bytes)` });
-        return;
-      }
-    }
-    let messages: any;
-    try {
-      messages = JSON.parse(body || '{}');
-    } catch (e: any) {
-      json(res, 400, { error: `invalid JSON: ${e.message}` });
-      return;
-    }
-    const batch = Array.isArray(messages);
-    const items = batch ? messages : [messages];
-
-    // issue #197: answers to server→client requests (sampling) arrive as
-    // plain POSTs. Resolve them BEFORE the fairness gates — the tools/call
-    // waiting on this response may hold the only concurrency slot, so
-    // queueing it behind itself would self-deadlock at max_concurrency 1.
-    let sawResponseOnly = items.length > 0;
-    for (const msg of items) {
-      if (!msg || typeof msg !== 'object') {
-        continue;
-      }
-      const isResponse = msg.method === undefined && (msg.result !== undefined || msg.error !== undefined);
-      if (isResponse) {
-        state.mcpChannel?.handleResponse(msg);
-      } else {
-        sawResponseOnly = false;
-      }
-    }
-    if (sawResponseOnly) {
-      res.writeHead(202);
-      res.end();
-      return;
-    }
 
     const responses: any[] = [];
     for (const msg of items) {
@@ -1472,6 +1486,7 @@ async function handleMcpHttp(req: http.IncomingMessage, res: http.ServerResponse
         cacheDir: state.cacheDir,
         offline: state.offline,
         embedFn: state.embedFn,
+        indexDir: state.indexDir, // issue #237: sessions resolve here, not via a <db>/.mdss guess
         channel: state.mcpChannel,
         clientCapabilities: state.mcpClientCapabilities,
       });
