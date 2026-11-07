@@ -85,6 +85,14 @@ test('integrity: stale vectors.bin sidecar falls back to vectors.json instead of
     fs.writeFileSync(path.join(dir, 'test.md'), '# Coffee Guide\n\n## Brewing\n\ncoffee guide beans roasted ground\n');
     await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
 
+    // issue #187's tie-break: when vectors.bin and vectors.json carry the SAME
+    // mtime, vectors.json (the format of record) wins and the binary sidecar
+    // is never consulted — back-to-back writes land in one millisecond on fast
+    // linux runners. Make the binary cache deterministically fresher so this
+    // test actually exercises the stale-sidecar fallback path.
+    const binFresher = new Date(Date.now() + 50);
+    fs.utimesSync(path.join(idx, 'vectors.bin'), binFresher, binFresher);
+
     const shaBinPath = path.join(idx, 'vectors.bin.sha256');
     assert.equal(fs.existsSync(shaBinPath), true, 'binary sidecar exists');
     // make the binary sidecar stale without touching vectors.json
