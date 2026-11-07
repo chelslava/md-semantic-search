@@ -14,6 +14,20 @@ import {
 import { buildIndex } from '../dist/indexer.js';
 import { loadIndex } from '../dist/search.js';
 
+/** See chat-provider.test.mjs — timeout guards don't keep the loop alive and
+ * injected fetch stubs hold no handles; hold a refed keepalive for the test
+ * duration so the guards can fire on every node version. */
+function withLoopKeepalive(ms, fn) {
+  return async (...args) => {
+    const keep = setTimeout(() => {}, ms);
+    try {
+      return await fn(...args);
+    } finally {
+      clearTimeout(keep);
+    }
+  };
+}
+
 const CLI = fileURLToPath(new URL('../bin/cli.mjs', import.meta.url));
 
 function fakeEmbed(texts, kind, model) {
@@ -441,7 +455,7 @@ test('ask_knowledge_base: sampling-capable client gets the client-LLM answer (is
   }
 });
 
-test('ask_knowledge_base: sampling refusal and timeout degrade to extractive (issue #197)', async () => {
+test('ask_knowledge_base: sampling refusal and timeout degrade to extractive (issue #197)', withLoopKeepalive(5_000, async () => {
   const { loaded, dir } = await makeIndex();
   try {
     // a) client answers the sampling request with a JSON-RPC error
@@ -499,7 +513,7 @@ test('ask_knowledge_base: sampling refusal and timeout degrade to extractive (is
   } finally {
     safeRm(dir);
   }
-});
+}));
 
 test('ask_knowledge_base: sampling flows through session chat turns too (issue #197)', async () => {
   const { loaded, dir } = await makeIndex();

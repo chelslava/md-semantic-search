@@ -139,7 +139,7 @@ test('expand: hyde without endpoint degrades silently; with endpoint uses the pa
 });
 
 
-test('expand: hydePassage degrades to null when the endpoint hangs past the fetch timeout (issue #184)', async () => {
+test('expand: hydePassage degrades to null when the endpoint hangs past the fetch timeout (issue #184)', withLoopKeepalive(5_000, async () => {
   const orig = process.env.MDSS_FETCH_TIMEOUT_MS;
   process.env.MDSS_FETCH_TIMEOUT_MS = '50';
   try {
@@ -155,11 +155,25 @@ test('expand: hydePassage degrades to null when the endpoint hangs past the fetc
     if (orig === undefined) delete process.env.MDSS_FETCH_TIMEOUT_MS;
     else process.env.MDSS_FETCH_TIMEOUT_MS = orig;
   }
-});
+}));
 
 // ── issue #203: multi-query expansion + reranker registry ──
 import { paraphraseQueries } from '../dist/search.js';
 import { resolveReranker, RERANKERS, DEFAULT_RERANKER } from '../dist/rerank.js';
+
+/** See chat-provider.test.mjs — timeout guards don't keep the loop alive and
+ * injected fetch stubs hold no handles; hold a refed keepalive for the test
+ * duration so the guards can fire on every node version. */
+function withLoopKeepalive(ms, fn) {
+  return async (...args) => {
+    const keep = setTimeout(() => {}, ms);
+    try {
+      return await fn(...args);
+    } finally {
+      clearTimeout(keep);
+    }
+  };
+}
 
 function llmStub(content, { status = 200, calls = [] } = {}) {
   const fn = async (url, init) => {

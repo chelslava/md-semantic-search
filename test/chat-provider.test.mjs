@@ -4,6 +4,24 @@ import {
   createSseParser, openAiDeltaText, ollamaDeltaText, resolveChatProvider,
 } from '../dist/providers.js';
 
+/** The unref'd timeout guards (idle guard, AbortSignal.timeout, sampling
+ * timer) fire only while the event loop is alive; injected fetch stubs hold
+ * no handles, so the loop can drain before the guard fires — the node:test
+ * runner holds it on some versions (24) and drains it on others (22).
+ * Tests that WAIT on such a guard hold a refed keepalive timer for their
+ * duration; production behavior is untouched. */
+function withLoopKeepalive(ms, fn) {
+  return async (...args) => {
+    const keep = setTimeout(() => {}, ms);
+    try {
+      return await fn(...args);
+    } finally {
+      clearTimeout(keep);
+    }
+  };
+}
+
+
 /** Collect SSE parser output for a scripted sequence of raw chunks. */
 function feed(chunks) {
   const out = [];
@@ -164,7 +182,7 @@ function hangingBody(init, prelude = '') {
   return body();
 }
 
-test('chat: hung streaming endpoint aborts on the IDLE timeout, not a whole-request deadline (issue #199 x #184)', async () => {
+test('chat: hung streaming endpoint aborts on the IDLE timeout, not a whole-request deadline (issue #199 x #184)', withLoopKeepalive(5_000, async () => {
   const orig = process.env.MDSS_FETCH_TIMEOUT_MS;
   process.env.MDSS_FETCH_TIMEOUT_MS = '60';
   try {
@@ -195,7 +213,7 @@ test('chat: hung streaming endpoint aborts on the IDLE timeout, not a whole-requ
     if (orig === undefined) delete process.env.MDSS_FETCH_TIMEOUT_MS;
     else process.env.MDSS_FETCH_TIMEOUT_MS = orig;
   }
-});
+}));
 
 test('chat: external signal cancels an in-flight stream (serve client disconnect)', async () => {
   const f = async (url, init) => ({

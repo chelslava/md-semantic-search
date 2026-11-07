@@ -4,6 +4,21 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { resolveExternalEmbedder } from '../dist/providers.js';
+
+/** See chat-provider.test.mjs — the outbound AbortSignal.timeout does not keep
+ * the loop alive; injected stubs hold no handles. Hold a refed keepalive for
+ * the test duration so the unref'd/ref-less guard timers can actually fire. */
+function withLoopKeepalive(ms, fn) {
+  return async (...args) => {
+    const keep = setTimeout(() => {}, ms);
+    try {
+      return await fn(...args);
+    } finally {
+      clearTimeout(keep);
+    }
+  };
+}
+
 import { embeddingAdapterFingerprint } from '../dist/models.js';
 import { isNetworkError } from '../dist/core.js';
 
@@ -96,7 +111,7 @@ test('providers: provider mismatch produces DIFFERENT fingerprints; local flow u
   await assert.rejects(() => bad.descriptor(), /HTTP 500/);
 });
 
-test('providers: hung embedder endpoint aborts on the outbound fetch timeout (issue #184)', async () => {
+test('providers: hung embedder endpoint aborts on the outbound fetch timeout (issue #184)', withLoopKeepalive(5_000, async () => {
   const orig = process.env.MDSS_FETCH_TIMEOUT_MS;
   process.env.MDSS_FETCH_TIMEOUT_MS = '50';
   try {
@@ -120,4 +135,4 @@ test('providers: hung embedder endpoint aborts on the outbound fetch timeout (is
     if (orig === undefined) delete process.env.MDSS_FETCH_TIMEOUT_MS;
     else process.env.MDSS_FETCH_TIMEOUT_MS = orig;
   }
-});
+}));
