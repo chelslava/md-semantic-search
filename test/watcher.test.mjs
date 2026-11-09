@@ -119,8 +119,14 @@ test('watcher: a fatal native error degrades to polling and changes are still de
     assert.ok(logs.some((m) => /switched to interval polling/i.test(m)), 'one loud degradation line');
     assert.ok(logs.some((m) => /changes are still detected/i.test(m)));
 
-    // polling must now carry the changes the dead native stream cannot
+    // polling must now carry the changes the dead native stream cannot.
+    // Give the degradation's initial mtime snapshot a beat to settle, then
+    // stamp doc2 with an EXPLICIT future mtime: the test is about the
+    // fallback path, not about mtime granularity on a loaded runner.
+    await new Promise((r) => setTimeout(r, 120));
     fs.writeFileSync(path.join(dir, 'doc2.md'), '# Second Document\n');
+    const future = new Date(Date.now() + 500);
+    fs.utimesSync(path.join(dir, 'doc2.md'), future, future);
     assert.equal(await waitForChange(() => changeCount >= 1), true, 'polling detected the change');
 
     watcher.close();
@@ -165,7 +171,10 @@ test('watcher: an unexpected close without an error also switches to polling (is
     nativeHandle.emit('close');
     assert.equal(watcher.isNative, false, 'closed handle → polling');
 
+    await new Promise((r) => setTimeout(r, 120));
     fs.writeFileSync(path.join(dir, 'doc2.md'), '# Second Document\n');
+    const future = new Date(Date.now() + 500);
+    fs.utimesSync(path.join(dir, 'doc2.md'), future, future);
     assert.equal(await waitForChange(() => changeCount >= 1), true, 'polling detected the change');
 
     watcher.close();
