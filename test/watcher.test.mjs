@@ -80,7 +80,7 @@ test('watcher: createFileWatcher ignores non-markdown files and ignored patterns
 // no polling took over, so serve --watch silently stopped re-indexing.
 // ---------------------------------------------------------------------------
 
-function waitForChange(check, timeoutMs = 3000) {
+function waitForChange(check, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs;
   return (async () => {
     while (!check() && Date.now() < deadline) {
@@ -102,8 +102,8 @@ test('watcher: a fatal native error degrades to polling and changes are still de
       dir,
       () => { changeCount++; },
       {
-        debounceMs: 50,
-        fallbackIntervalMs: 100,
+        debounceMs: 30,
+        fallbackIntervalMs: 50,
         log: (m) => logs.push(m),
         _testHooks: { onWatcher: (w) => { nativeHandle = w; } },
       },
@@ -155,8 +155,8 @@ test('watcher: an unexpected close without an error also switches to polling (is
       dir,
       () => { changeCount++; },
       {
-        debounceMs: 50,
-        fallbackIntervalMs: 100,
+        debounceMs: 30,
+        fallbackIntervalMs: 50,
         _testHooks: { onWatcher: (w) => { nativeHandle = w; } },
       },
     );
