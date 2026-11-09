@@ -792,7 +792,7 @@ test('cli: mdss related returns related notes and supports --json (issue #141)',
   }
 });
 
-test('cli: mdss chat executes one-shot turn and persists session (issue #147)', () => {
+test('cli: mdss chat executes one-shot turn and persists session (issue #147)', async () => {
   const dir = tempDir('cli-chat');
   try {
     fs.writeFileSync(path.join(dir, 'doc.md'), '# Architecture\nWe use Redis for session caching.\n');
@@ -805,7 +805,20 @@ test('cli: mdss chat executes one-shot turn and persists session (issue #147)', 
       ],
     });
 
-    const res = runCli(['chat', '--db', dir, '--session', 'cli-sess-1', '--json', 'What is used for session caching?']);
+    // The spawned CLI has no injected embedFn: without a warm L2 query cache
+    // it downloads the real embedding model, so this e2e turn used to depend
+    // on the runner's network speed (a slow azure day => the 30s spawn
+    // timeout). Prewarm the disk query cache through the same public API the
+    // CLI reads (buildDiskKey over the index's model identity), so the embed
+    // resolves offline and no model download happens.
+    const cacheDir = path.join(dir, '.cache');
+    const { buildDiskKey, diskQueryPut, flushQueryCacheNow } = await import('../dist/query-cache-disk.js');
+    const diskKey = buildDiskKey('Xenova/multilingual-e5-base', 'main', 768, 'what is used for session caching?');
+    const warmVec = new Float32Array(768).fill(1 / 27.7);
+    diskQueryPut(cacheDir, diskKey, warmVec);
+    flushQueryCacheNow(cacheDir);
+
+    const res = runCli(['chat', '--db', dir, '--cache-dir', cacheDir, '--session', 'cli-sess-1', '--json', 'What is used for session caching?']);
     assert.equal(res.status, 0, res.stderr);
     const json = JSON.parse(res.stdout);
     assert.equal(json.session.id, 'cli-sess-1');
