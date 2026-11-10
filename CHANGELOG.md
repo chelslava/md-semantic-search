@@ -4,7 +4,180 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-11-10
+
+**Upgrade notes:** the legacy embedding/reranker adapters (`e5-small`,
+`e5-base`, `e5-large`, `bge-m3`, `bge-reranker-base`) are now pinned to
+tested commit SHAs (issue #240) — the revision is part of the model
+identity, so indexes built with those adapters **invalidate once**: the
+next `mdss index` performs a full re-embed (pin `md-semantic-search@2.2.1`
+to defer). The default embedder is unchanged (`granite-multilingual-311m`,
+introduced in 2.2.0). Search hits carry `startLine`/`endLine` (issue #249)
+and `mdss://vault/{vault}` now answers errors for unknown vaults instead of
+silently listing everything (issue #237) — both are additive/strictening
+changes to machine-consumed shapes.
+
+### Added
+- **Issue #243** — **federated multi-vault search over HTTP**: `mdss serve
+  --vault <dir>` (repeatable) plus a `vaults` body field on `/search` and
+  `/ask` ("all" or configured vault names only — the client can never name
+  an arbitrary path; trust roots pinned per #179). Hits carry vault
+  attribution, per-vault failures surface as `vaultErrors` instead of fake
+  zero results (#189), `/health` lists the configured vaults, and the web UI
+  gains a vault chip row plus a vault badge on every result card. The
+  single-vault contract is byte-identical without the flag.
+- **Issue #244** — `GET /facets`: tag/type/status/project (+ `custom.<key>`)
+  value → count maps computed from the loaded index (no model, no FS walk);
+  prefix filtering and field-name validation; surfaced in the web UI as
+  count-annotated tag chips and type/status datalist suggestions.
+- **Issue #245** — web UI result ergonomics: shareable query URLs (hash-based
+  state, back/forward restore), per-result open/copy-link deep links into
+  `GET /doc?file=…&fromLine=…`, a results-per-query control (10/20/50/100,
+  was hardcoded 20), JSON/CSV export of the current result set, a minimal
+  **escape-first markdown renderer** for RAG answers (fenced/inline code,
+  wikilinks → /doc deep links, http(s)/same-origin links only — XSS vectors
+  pinned by unit tests), and aria-live/listbox accessibility — all within
+  the strict-CSP contract (no inline code, no eval).
+- **Issue #248** — **query-time MRL truncation**: `--dimensions` /
+  `dimensions` in `/search` now sweeps a full-dim index at a reduced
+  dimension without a rebuild (truncated renormalized query vector; int8
+  sweeps per-D truncated norms cached per generation; ANN probing force-
+  disabled since sidecars index full-dim vectors; `explain` reports the
+  effective dim). Granite r2 declares vendor-spec'd MRL dims
+  [128, 256, 384, 512, 768]. Measured on the 186-query dev slice (real
+  granite, offline): nDCG@10 0.8601 at 512 (−0.0052 vs 768), 0.8501 at 256
+  (−0.0152), 0.8399 at 128 (−0.0254), Hit@10 ≥ 0.9355 and Recall@10 ≥ 0.9946
+  across the board — the vendor's graceful-degradation claim holds; the 768
+  anchor reproduces the #227 baseline exactly. Table in RESEARCH §14;
+  `scripts/run-bench.mjs --search-dimensions <csv>` runs the sweep.
+- **Issue #238** — **extractive abstention** (RESEARCH §18): when no passage
+  carries real query support, the extractive answerer now REFUSES ("No
+  answer found in the notes", zero citations, closest passages as explicitly
+  non-answer context) instead of citing excerpts it cannot ground.
+  `extractiveConfidence()` gates on unique-token sentence support with a
+  calibrated floor (0.13; `--min-answer-confidence` /
+  `MDSS_MIN_ANSWER_CONFIDENCE`, 0 = never abstain) plus a per-sentence
+  support floor inside answers. Measured (deterministic profile, ±5pp gate
+  re-baselined): spurious-citation rate on unanswerable queries
+  **100% → 0%**, citation precision 70.0% → 76.7%; the recall/support drop
+  is the fabricated-grounding tail the gate removes. `chatTurn` now scores
+  the extractive stage against the context-enriched retrieval query, so
+  anaphoric follow-ups ("What percentage?") resolve against carried context
+  instead of falling into the excerpts dump. `mode: 'abstained'` propagates
+  through sessions, the /ask done frame and the MCP `answerMode`.
+- **Issue #250** — launcher parity: Raycast gains an `ask-notes` command
+  (streamed POST /ask into a Detail view, launch-argument query) and
+  tag/type/status filter preferences; Alfred gains `#tag:eng`-style filter
+  keywords and an `ask.mjs` script filter (answer + openable citations,
+  abstention-aware). `integrations/README.md` carries the honest client
+  capability matrix.
+- **Issue #251** — `server.json` manifest for the official MCP Registry
+  (npm transport + documented Streamable-HTTP remote), version-synced with
+  package.json by a drift-guard test; CONTRIBUTING documents the per-release
+  registry checklist.
+- **Issue #249** — TUI ergonomics: Enter routes through the shared opener
+  (`resolveOpenCommand` — MDSS_EDITOR/VISUAL/$EDITOR, VS Code `--goto`,
+  `+line` editors, GUI fallback) with an injectable runner seam; query-term
+  highlighting in the preview and RAG panes (SGR reverse video); a `?`/F1
+  help overlay; whole-grapheme input (CJK/emoji surrogate pairs were
+  dropped) and display-width-aware line clipping. `SearchResultHit` now
+  carries `startLine`/`endLine` (RuntimeChunk always had them; the hit shape
+  dropped them — `--open` and deep links silently opened line 1).
+- **Issue #254** — RESEARCH §13 sweep-kernel profiling gate executed:
+  `bench/sweep-profile.mjs` measures warm hybrid latency against the
+  isolated dense sweep at 50k (21.1% JS float math) and 100k (41.5%) chunks
+  — the pre-registered 40% trigger is breached at 100k, licensing a
+  pointwise SIMD sweep prototype as follow-up work (the #228 batching
+  kernel does not transfer to a single-vector dot; no production code
+  changed). Decision record in RESEARCH §13 and the roadmap gate table.
+
+### Changed
+- **Issue #235** — `ann:false` now forces exact brute force: it used to
+  behave exactly like `undefined` (auto), leaving no way to disable ANN on a
+  large corpus once a sidecar existed. The CLI accepts
+  `--ann false|off|none`; bare `--ann` and engine names are unchanged.
+- **Issue #236** — a native `fs.watch` handle that dies mid-run
+  (inotify ENOSPC/EMFILE, EPERM/EACCES, unexpected close) now degrades to
+  interval polling with one loud stderr line; previously `mdss serve --watch`
+  silently stopped re-indexing while looking healthy. `FileWatcher.isNative`
+  became a live getter. Watcher-death semantics deliberately differ from the
+  #116 read-side classification: codes "transient" for reads are fatal to
+  the event stream.
+- **Issue #240** — immutable revision pinning for the legacy adapters:
+  e5-small/e5-base/e5-large/bge-m3 and bge-reranker-base floated on `main`;
+  a re-tagged upstream repo silently changed the weights an alias resolves
+  to while the adapter fingerprint keyed on the literal string. Every
+  registered embedder and reranker now pins a tested commit (unit-tested);
+  offline resolution uses the pinned local cache path like the other
+  pinned adapters.
+- **Issue #247** — fuzzy title/alias scoring runs through a per-array
+  vocabulary index (exact-token inverted index + length buckets) with a
+  length prefilter instead of a brute scan of every chunk's title tokens;
+  `rrf` sorts in place (all callers pass throwaway arrays). Measured on 50k
+  chunks: one ~550 ms vocabulary build per generation, warm scans ~50 ms
+  (the brute scan paid 200k+ DP calls per query).
+- **Issue #242** — the ANN cold path dequantizes once per index generation
+  (`getDequantizedVectors`/`getVecList` cached on the runtime state, shared
+  with the related-notes path), hoists per-query-variant allocations, and
+  drives the in-query HNSW build with the #228 WASM kernel: explicit
+  `ann:'hnsw'` first query on a 520-chunk int8 fixture dropped
+  **42 s → 1.9 s**. `mdss serve` prewarms the in-memory IVF in the
+  background when no sidecar exists and the corpus is ANN-sized.
+- **Issue #246** — `findRelatedNotes` caches the per-file grouping,
+  LinkDoc list and relationship graph on a WeakMap keyed by the loaded
+  index: `/related` and MCP `related_notes` stop rebuilding the graph and
+  dequantizing every vector per call (measured ~49× on the second call of a
+  40-file fixture; results byte-identical).
+- **Issue #239** — CI: npm caching in every job, a windows-latest row in the
+  test matrix (win32 is first-class — path rules, longpath, CRLF), coverage
+  thresholds documented as the merge gate, `timeout-minutes` everywhere, and
+  the failing-test output uploaded as an artifact.
+- **Issue #252** — Docker: both stages pinned to the `node:22-alpine`
+  digest, OCI `org.opencontainers.*` labels, `src/` dropped from the
+  runtime stage (bin imports only ../dist); Dependabot's docker ecosystem
+  configured; docs/deploy.md documents the refresh policy.
+
+### Security
+- **Issue #241** — `mdss serve` gains explicit per-connection time bounds
+  (`headersTimeout` 30 s cuts slowloris-style header dribbles;
+  `requestTimeout` 300 s bounds request receive; the /ask SSE stream is
+  governed by its per-token idle timeout as before) and
+  `--trust-proxy <ip|cidr>`: operator-configured reverse-proxy peers key the
+  fairness buckets on the LAST X-Forwarded-For hop, so a team behind one
+  nginx no longer shares a single 60/min budget. Default OFF (the header is
+  spoofable); `/health` reports the active keying (`client_key`).
+- **Issue #234** — `releaseIndexLock` re-verifies lock ownership before
+  unlink: a writer that stalled past the staleness window and lost its lock
+  to a reclaiming peer no longer deletes the NEW owner's live lock on exit
+  (the release-side twin of the #188 re-verify discipline).
+- **Issue #252** — the Docker base image (the last unpinned supply-chain
+  input) is digest-pinned; runtime surface provenance is preserved by the
+  packed-artifact verification job.
+
+### Fixed
+- **Issue #237** — four MCP-surface defects: `mdss://vault/{vault}` honored
+  its argument (was: any `mdss://vault` prefix returned ALL files);
+  `ask_knowledge_base` resolves the session store from the handler's
+  `indexDir` (was: a `<db>/.mdss` guess that forked sessions for every
+  `--index-dir` deployment); `DELETE /mcp` terminates the session (stale
+  POSTs 404, SSE downlink closes); sampling response POSTs resolve BEFORE
+  the fairness gates (a rejected reply used to self-deadlock the pending
+  `tools/call` until its sampling timeout).
+- **tests** — timeout-guard suites made deterministic across node versions
+  (a refed keepalive for tests awaiting unref'd guards; node 22.21 drained
+  the event loop where 24 held it — cascading `cancelledByParent`), the
+  stale-binary-sidecar integrity test made mtime-deterministic (#187
+  tie-break), the CLI chat e2e prewarms the L2 query cache (a slow runner
+  day used to lose the 30s race against the granite download), and the
+  watcher degradation tests stamp explicit future mtimes (mtime-granularity
+  flake on loaded runners).
+- **eval infrastructure** — `.gitattributes` marks `bench/corpus/**` and
+  `bench/fixtures/**` as `-text`: the golden runner fingerprints both, and
+  `core.autocrlf=true` on Windows broke both fingerprints (the real-model
+  golden set could not run on Windows at all). Blob contents unchanged.
+
 ## [2.2.1] - 2026-11-06
+
 
 ### Fixed
 - **Issue #227 follow-up** — `mdss models` labeled `e5-base` as "Default":

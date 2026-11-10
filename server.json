@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-22/server.schema.json",
   "name": "io.github.chelslava/md-semantic-search",
   "description": "Local, private semantic (vector) search over any folder of Markdown files. Finds passages by meaning — cross-lingual — hybrid dense+BM25F ranking, HNSW/IVF ANN, citation-first RAG, and an MCP server with 8 tools, resources, prompts, and client-side sampling. No API keys, no cloud, no vector database.",
-  "version": "2.2.1",
+  "version": "2.3.0",
   "packages": [
     {
       "registry_type": "npm",
