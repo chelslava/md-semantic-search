@@ -305,6 +305,30 @@ mdss index --db ./notes --model qwen3-embedding-0.6b --dimensions 256
 mdss search --db ./notes --dimensions 256 "query"
 ```
 
+### Query-time truncation — measured on the golden set (issue #248 follow-up)
+
+Granite r2 is vendor-spec'd for MRL (HF card: "Truncate embeddings to 512,
+384, 256, or 128 dimensions with graceful degradation"), so the adapter now
+declares `dimensions: [128, 256, 384, 512, 768]` and `--dimensions` works at
+**search** time against a full-dim index without a rebuild. Measured on the
+186-query dev slice, real granite, offline, hybrid path (`scripts/run-bench.mjs
+--model granite-multilingual-311m --slice dev --k 10 --search-dimensions …`):
+
+| dim | nDCG@10 | MRR | Hit@10 | Recall@10 | Δ nDCG vs 768 |
+|---|---|---|---|---|---|
+| 768 (full) | 0.8653 | 0.8495 | 0.9624 | 1.0000 | — |
+| 512 | 0.8601 | 0.8448 | 0.9624 | 1.0000 | −0.0052 |
+| 384 | 0.8502 | 0.8366 | 0.9462 | 1.0000 | −0.0151 |
+| 256 | 0.8501 | 0.8384 | 0.9462 | 0.9946 | −0.0152 |
+| 128 | 0.8399 | 0.8265 | 0.9355 | 1.0000 | −0.0254 |
+
+The 768 anchor reproduces the committed #227 baseline (0.8653) exactly — the
+measurement environment is validated. Verdict: the vendor's "graceful
+degradation" claim holds on this corpus — 512 costs half a point of nDCG@10
+for a 33% sweep reduction, 256 costs 1.5 points (Hit@10 0.9462, Recall ~1.0),
+and even 128 stays within 2.5 points. Latency payoffs apply to the sweep only
+(dim-linear dot cost); lexical scoring and fusion are unchanged.
+
 ---
 
 ## 15. Research Evaluation: Modern Embedding Adapter Candidates (Issue #200)

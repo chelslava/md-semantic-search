@@ -1,0 +1,5 @@
+# Eval artifacts must be byte-identical across platforms: the golden-set
+# runner fingerprints the frozen corpus and the fixture JSON, and CRLF
+# conversion (core.autocrlf=true on Windows) breaks both fingerprints.
+bench/corpus/** -text
+bench/fixtures/** -text

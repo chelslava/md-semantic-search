@@ -113,6 +113,10 @@ export const MODELS: Record<string, ModelAdapter> = {
     revision: '8f039f21d4181327268271bea4b11ddcc7eef88d',
     nativeDim: 768,
     dim: 768,
+    // vendor-spec'd MRL (HF card: "Truncate embeddings to 512, 384, 256, or
+    // 128 dimensions with graceful degradation") — query-time truncation
+    // measured on the golden set in RESEARCH §14 (issue #248 follow-up).
+    dimensions: [128, 256, 384, 512, 768],
     queryPrefix: '',
     passagePrefix: '',
     pooling: 'cls',
@@ -120,7 +124,7 @@ export const MODELS: Record<string, ModelAdapter> = {
     dtype: 'q8',
     maxTokens: 8192,
     family: 'granite',
-    note: '~298 MB q8. IBM Granite r2, ModernBERT (8k context), CLS pooling, Apache-2.0. Issue #200.',
+    note: '~298 MB q8. IBM Granite r2, ModernBERT (8k context), CLS pooling, Apache-2.0, MRL 128-768. Issue #200.',
   },
   'embeddinggemma-300m': {
     id: 'onnx-community/embeddinggemma-300m-ONNX',

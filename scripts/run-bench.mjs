@@ -11,11 +11,17 @@
  *   node scripts/run-bench.mjs [--fixture bench/fixtures/dev-golden.json]
  *                              [--slice dev|test|holdout] [--k 10]
  *                              [--model e5-base]
+ *                              [--search-dimensions 768,512,256,128]
  *                              [--index-dir <path>] [--cache-dir <path>]
  *                              [--fast] [--json] [--fake]
  *                              [--gate bench/fixtures/golden-baseline.json]
  *                              [--update-baseline bench/fixtures/golden-baseline.json]
  *
+ * --search-dimensions <csv>
+ *             query-time MRL truncation sweep (issue #248 follow-up): runs the
+ *             full slice once per listed dimension against the SAME full-dim
+ *             index (queries embed once, truncation is post-cache), reporting
+ *             a per-dimension metrics table. Real-model runs only.
  * --fast      smoke mode: k=3, tiny candidate pool — for CI, not for real eval.
  * --fake      deterministic hash embedder (no model download, fully offline) —
  *             for CI smoke; numbers are NOT comparable to real-model eval.
@@ -100,6 +106,8 @@ function parseArgs(argv) {
     gate: null, updateBaseline: null,
     // issue #203: reranker/multi-query measurement passthrough
     rerank: false, rerankModel: null, multiQuery: 0,
+    // issue #248 follow-up: query-time MRL truncation sweep (csv of dims)
+    searchDimensions: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -120,6 +128,10 @@ function parseArgs(argv) {
     else if (a === '--rerank') args.rerank = true;
     else if (a === '--rerank-model') args.rerankModel = next();
     else if (a === '--multi-query') args.multiQuery = Number(next());
+    else if (a === '--search-dimensions') {
+      args.searchDimensions = next().split(',').map((x) => Number(x.trim())).filter((n) => Number.isInteger(n) && n > 0);
+      if (args.searchDimensions.length === 0) throw new Error(`--search-dimensions: no valid dimensions in the list`);
+    }
     else if (a === '--gate') args.gate = next();
     else if (a === '--update-baseline') args.updateBaseline = next();
     else throw new Error(`unknown flag: ${a}`);
@@ -129,6 +141,9 @@ function parseArgs(argv) {
   }
   if ((args.gate || args.updateBaseline) && (args.fake || args.fast)) {
     throw new Error('--gate/--update-baseline need real-model metrics — do not combine with --fake/--fast');
+  }
+  if (args.searchDimensions && (args.fake || args.fast || args.rerank || args.multiQuery >= 2)) {
+    throw new Error('--search-dimensions measures the plain hybrid path — do not combine with --fake/--fast/--rerank/--multi-query');
   }
   return args;
 }
@@ -200,36 +215,52 @@ async function main() {
 
   /** @type {Array<{id:string, category:string, language:string, ndcg:number, mrr:number, hit:0|1, recall:number}>} */
   const perQuery = [];
-  for (const q of queries) {
-    const hits = await searchIndex({
-      loaded, cacheDir, query: q.text, k, embedFn, offline,
-      // issue #203: reranker registry / multi-query measurement
-      ...(args.rerank ? { rerank: true } : {}),
-      ...(args.rerankModel ? { rerankModel: args.rerankModel } : {}),
-      ...(args.multiQuery >= 2 ? { multiQuery: args.multiQuery } : {}),
-    });
-    const ranked = [...new Set(hits.map((h) => h.file))];
-    /** @type {Record<string, number>} */
-    const docGrades = {};
-    for (const qr of q.qrels) docGrades[qr.doc] = qr.grade;
-    const qm = queryMetrics(ranked, docGrades, {
-      k,
-      allRelevant: Object.keys(docGrades),
-    });
-    perQuery.push({ id: q.id, category: q.category, language: q.language, ...qm });
+  /** issue #248 follow-up: query-time MRL sweep — one aggregate per dim. */
+  const dimRows = [];
+  const dimsToRun = args.searchDimensions || [null]; // null = the untruncated default path
+  const searchOptsFor = (dim) => ({
+    loaded, cacheDir, embedFn, offline, k,
+    // issue #203: reranker registry / multi-query measurement
+    ...(args.rerank ? { rerank: true } : {}),
+    ...(args.rerankModel ? { rerankModel: args.rerankModel } : {}),
+    ...(args.multiQuery >= 2 ? { multiQuery: args.multiQuery } : {}),
+    ...(dim ? { dimensions: dim } : {}),
+  });
+  for (const dim of dimsToRun) {
+    for (const q of queries) {
+      const hits = await searchIndex({ ...searchOptsFor(dim), query: q.text });
+      const ranked = [...new Set(hits.map((h) => h.file))];
+      /** @type {Record<string, number>} */
+      const docGrades = {};
+      for (const qr of q.qrels) docGrades[qr.doc] = qr.grade;
+      const qm = queryMetrics(ranked, docGrades, {
+        k,
+        allRelevant: Object.keys(docGrades),
+      });
+      perQuery.push({ id: q.id, category: q.category, language: q.language, ...qm, ...(dim ? { dim } : {}) });
+    }
+    if (dim) {
+      const dimAgg = aggregateMetrics(perQuery.filter((r) => r.dim === dim));
+      dimRows.push({ dim, mean: dimAgg.mean });
+      perQuery.length = 0; // next dim starts a fresh slice
+    }
   }
 
-  const agg = aggregateMetrics(perQuery);
+  const dimsMode = Boolean(args.searchDimensions);
+  // dims mode: every finished slice was folded into dimRows and perQuery
+  // cleared; the single-slice path keeps the historical shape untouched
+  const agg = dimsMode ? { mean: dimRows[dimRows.length - 1]?.mean } : aggregateMetrics(perQuery);
   const report = {
     name: fixture.name,
     model: args.model,
     slice: args.slice,
     k,
-    queries: perQuery.length,
+    queries: dimsMode ? queries.length : perQuery.length,
     corpusHash,
     fixtureHash: sha256(fs.readFileSync(args.fixture)),
     indexed: { files: build.files, chunks: build.chunks },
     mean: agg.mean,
+    ...(dimsMode ? { searchDimensions: dimRows } : {}),
   };
 
   // issue #198: (re)generate the committed baseline from this run
@@ -298,6 +329,18 @@ async function main() {
 
   if (args.json) {
     console.log(JSON.stringify(report, null, 2));
+  } else if (dimsMode) {
+    console.log(`fixture: ${fixture.name} (${fixture.corpusPath})`);
+    console.log(`slice:   ${args.slice} · queries: ${queries.length} per dim · k: ${k} · model: ${args.model}`);
+    console.log(`corpus:  ${corpusHash.slice(0, 12)}… · indexed ${build.files} files → ${build.chunks} chunks`);
+    console.log('');
+    console.log('  dim    nDCG@k  MRR     Hit@k   Recall@k');
+    for (const row of dimRows) {
+      const m = row.mean;
+      console.log(
+        `  ${String(row.dim).padEnd(6)} ${m.ndcg.toFixed(4)}  ${m.mrr.toFixed(4)}  ${m.hit.toFixed(4)}  ${m.recall.toFixed(4)}`);
+    }
+    console.log('');
   } else {
     console.log(`fixture: ${fixture.name} (${fixture.corpusPath})`);
     console.log(`slice:   ${args.slice} · queries: ${perQuery.length} · k: ${k} · model: ${args.model}`);
