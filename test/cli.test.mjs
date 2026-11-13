@@ -954,7 +954,11 @@ test('server.json: MCP Registry manifest matches package.json (issue #251)', asy
   assert.ok(manifest.packages.some((p) => p.registryType === 'npm' && p.identifier === pkg.name),
     'the npm package is registered as a transport (2025-12-11 schema: camelCase registryType)');
   assert.match(manifest.description, /Markdown/);
-  assert.ok(manifest.remotes.some((r) => r.type === 'streamable-http'), 'the HTTP transport is documented');
+  // no `remotes` in the manifest: the registry rejects non-public URLs
+  // (loopback `mdss serve --mcp` is a local opt-in transport, not a hosted
+  // remote — documented in docs/api-reference.md instead)
+  assert.ok(!Array.isArray(manifest.remotes) || manifest.remotes.length === 0,
+    'no loopback/fake remotes — the registry semantically validates remote URLs');
   // the 2025-10-22 schema was silently deleted from static.modelcontextprotocol.io
   // (HTTP 404) — pin the manifest to a schema version that still resolves.
   const schemaUrl = new URL(manifest.$schema);

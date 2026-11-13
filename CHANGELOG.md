@@ -19,7 +19,12 @@ and caches are untouched.
   schema (camelCase `registryType`, remote items as `{type, url,
   description}`): the previously declared `2025-10-22` schema was silently
   deleted from `static.modelcontextprotocol.io` (HTTP 404) and would have
-  failed registry validation.
+  failed registry validation. Registry-side semantic validation also
+  enforced two manifest changes, caught locally by
+  `mcp-publisher validate` before any submission: **description ≤ 100
+  chars** and **no `remotes`** — the loopback `mdss serve --mcp` URL is
+  rejected as a remote (the registry expects publicly reachable endpoints;
+  the HTTP transport stays documented in docs/api-reference.md).
 - The `server.json` drift-guard test now also pins `package.json:mcpName ===
   server.json:name` and fetches the declared `$schema` URL, so a schema
   removal upstream fails the suite instead of a release.
