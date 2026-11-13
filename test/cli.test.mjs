@@ -948,8 +948,16 @@ test('server.json: MCP Registry manifest matches package.json (issue #251)', asy
   assert.equal(manifest.version, pkg.version, 'manifest version tracks package.json — bump both in the release flow');
   assert.equal(manifest.name, `io.github.chelslava/${path.basename(pkg.repository.url.replace(/\.git$/, ''))}`,
     'registry name derives from the repo identity');
-  assert.ok(manifest.packages.some((p) => p.registry_type === 'npm' && p.identifier === pkg.name),
-    'the npm package is registered as a transport');
+  // ownership-verification marker: registry validates that the published npm
+  // package carries mcpName === server.json name (GitHub-auth namespace rule)
+  assert.equal(pkg.mcpName, manifest.name, 'package.json mcpName must equal the registry server name');
+  assert.ok(manifest.packages.some((p) => p.registryType === 'npm' && p.identifier === pkg.name),
+    'the npm package is registered as a transport (2025-12-11 schema: camelCase registryType)');
   assert.match(manifest.description, /Markdown/);
-  assert.ok(manifest.remotes.some((r) => r.transport_type === 'streamable-http'), 'the HTTP transport is documented');
+  assert.ok(manifest.remotes.some((r) => r.type === 'streamable-http'), 'the HTTP transport is documented');
+  // the 2025-10-22 schema was silently deleted from static.modelcontextprotocol.io
+  // (HTTP 404) — pin the manifest to a schema version that still resolves.
+  const schemaUrl = new URL(manifest.$schema);
+  const schemaRes = await fetch(schemaUrl, { signal: AbortSignal.timeout(15000) });
+  assert.equal(schemaRes.ok, true, `declared $schema must resolve: ${manifest.$schema} -> HTTP ${schemaRes.status}`);
 });

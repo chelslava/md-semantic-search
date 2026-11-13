@@ -136,19 +136,33 @@ map above and reality disagree, trust the code and send a docs fix.
 5. For larger work, comment on the issue before starting so effort isn't
    duplicated — and comment "I'd like to work on this" on any issue you pick up.
 
-## Releasing to the MCP Registry (issue #251)
+## Releasing to the MCP Registry (issues #251, #258)
 
 `server.json` at the repo root is the MCP Registry manifest — it must stay in
 sync with `package.json`:
 
 1. Bump **both** `package.json` and `server.json` versions in the release
    commit (the drift-guard test in `test/cli.test.mjs` fails the suite if
-   they diverge).
-2. After publishing to npm, submit/update the listing at
-   [registry.modelcontextprotocol.io](https://registry.modelcontextprotocol.io)
-   with the `server.json` payload (a manual step per version).
-3. If a release renames the repo or the npm package, update the registry
-   `name` / `identifier` and re-validate the listing.
+   they diverge, if `mcpName` stops matching the registry name, or if the
+   declared `$schema` URL stops resolving — the 2025-10-22 schema was deleted
+   upstream, so the manifest now pins 2025-12-11).
+2. Publish the npm package first (the registry validates ownership against
+   the published package, which must carry `mcpName` =
+   `io.github.chelslava/md-semantic-search`).
+3. Register/update the listing with the official CLI:
+
+   ```bash
+   # one-time: install mcp-publisher (Windows: download the release asset
+   # mcp-publisher_windows_amd64.tar.gz and put mcp-publisher.exe on PATH)
+   mcp-publisher login github   # device flow: authorize in the browser
+   mcp-publisher publish        # from the repo root, submits server.json
+   curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.chelslava/md-semantic-search"
+   ```
+
+   With GitHub auth the server name must stay under
+   `io.github.chelslava/…` — the namespace matches the authenticating account.
+4. If a release renames the repo or the npm package, update `mcpName` /
+   `name` / `identifier` together and re-validate the listing.
 
 ## Reporting bugs
 

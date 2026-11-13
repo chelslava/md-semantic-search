@@ -4,6 +4,31 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.1] - 2026-11-14
+
+**Upgrade notes:** none — a packaging-only release to satisfy the official
+MCP Registry ownership verification (issue #258). No source changes; indexes
+and caches are untouched.
+
+### Added
+- **Issue #258** — the npm ownership-verification marker `mcpName`
+  (`io.github.chelslava/md-semantic-search`) in `package.json`: the official
+  MCP Registry validates that the published npm package carries the marker
+  before accepting a `server.json` submission (GitHub-auth namespace rule).
+- **Issue #258** — `server.json` migrated to the live **2025-12-11** registry
+  schema (camelCase `registryType`, remote items as `{type, url,
+  description}`): the previously declared `2025-10-22` schema was silently
+  deleted from `static.modelcontextprotocol.io` (HTTP 404) and would have
+  failed registry validation.
+- The `server.json` drift-guard test now also pins `package.json:mcpName ===
+  server.json:name` and fetches the declared `$schema` URL, so a schema
+  removal upstream fails the suite instead of a release.
+
+### Changed
+- CONTRIBUTING: the MCP Registry checklist documents the actual
+  `mcp-publisher` flow (`login github` device flow → `publish` → registry
+  API verification) instead of an abstract "submit manually".
+
 ## [2.3.0] - 2026-11-10
 
 **Upgrade notes:** the legacy embedding/reranker adapters (`e5-small`,

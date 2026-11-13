@@ -1,12 +1,13 @@
 {
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-22/server.schema.json",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.chelslava/md-semantic-search",
   "description": "Local, private semantic (vector) search over any folder of Markdown files. Finds passages by meaning — cross-lingual — hybrid dense+BM25F ranking, HNSW/IVF ANN, citation-first RAG, and an MCP server with 8 tools, resources, prompts, and client-side sampling. No API keys, no cloud, no vector database.",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "packages": [
     {
-      "registry_type": "npm",
+      "registryType": "npm",
       "identifier": "md-semantic-search",
+      "version": "2.3.1",
       "transport": {
         "type": "stdio"
       }
@@ -14,7 +15,7 @@
   ],
   "remotes": [
     {
-      "transport_type": "streamable-http",
+      "type": "streamable-http",
       "url": "http://127.0.0.1:8747/mcp",
       "description": "Opt-in Streamable HTTP transport mounted by `mdss serve --db <dir> --mcp` — loopback-only by default, behind the same auth/Host-allowlist/rate-limit gates as /search (issues #123, #119, #120)."
     }
