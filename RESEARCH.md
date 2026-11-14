@@ -247,6 +247,42 @@ If no candidate meets the multilingual non-inferiority gate, `bge-reranker-base`
 - **Late Chunking Concept:** Passing full documents through a long-context transformer, extracting token-level hidden states, and pooling chunk token spans post-hoc.
 - **Evaluation Gate:** Late chunking adds high memory overhead, token-offset alignment complexity, and custom model batching. It will be prototyped **only if** heading-path contextualization exhibits a measured context-recall deficit on long-document ablation benchmarks.
 
+### Measured — the gate closes as DECLINED (issue #260, 2026-11-14)
+`bench/late-chunking.mjs` implements the late-chunking prototype and runs the
+ablation with everything else held constant: same frozen corpus, same
+structural chunks, same BM25F postings, same RRF fusion, same query embeddings
+(real granite) — only the passage vectors differ (heading-path contextualized
+independent chunks vs whole-document forward + per-chunk span mean-pooling).
+The granite tokenizer does not expose `offsets_mapping`, so char spans are
+derived by accumulating per-token decode lengths (byte-level BPE decodes each
+token id exactly; the prototype verifies `cursor === docText.length` per doc
+and falls back loudly otherwise). On golden v2 dev (186 queries, k=10):
+**112/112 chunks span-pooled, 0 fallback, 0 truncated, 0 unaligned.**
+
+| Variant | nDCG@10 | MRR | Hit@10 | long-doc-section nDCG@10 |
+|---|---|---|---|---|
+| baseline (heading-path context) | **0.8627** | **0.8459** | **0.9624** | **0.8087** |
+| late chunking (span mean-pool) | 0.8186 | 0.7956 | 0.9140 | 0.6693 |
+| Δ (late − baseline) | **−0.0441** | −0.0503 | −0.0484 | **−0.1394** |
+
+Late chunking loses everywhere except noise-level moves (cross-lingual
++0.0035, hard-negative −0.005) — and loses **most of all on the
+`long-doc-section` slice that motivated the §12 question** (−0.1394 nDCG,
+Hit@10 0.90 → 0.75). Recall@10 stays 1.0 in both: the lexical channel keeps
+coverage; the damage is dense-ranking quality. The mechanism is consistent
+with the adapter contract: granite is a **CLS-pooled** model — span
+mean-pooling produces passage representations whose distribution mismatches
+the CLS query side, and the explicit title + heading-path tokens (the
+production context) are stronger signal than implicit token-state context.
+§12's pre-registered trigger (a measured context-recall deficit of
+heading-path contextualization) is not met — it points the other way.
+**Decision: heading-path contextualization stays; late chunking is a
+documented non-goal for CLS-pooled adapters.** (Caveat kept honest: the
+canonical late-chunking formulation mean-pools; a CLS-of-span variant was not
+measured, and late chunking remains plausible for mean-pooling-trained
+embedders such as jina-v3 — re-evaluation would ride on a §15-style adapter
+decision, not on this gate.)
+
 ---
 
 ## 13. Research Evaluation: WASM SIMD & ANN/IVF Scale Triggers (Issues #31 & #32)

@@ -31,7 +31,7 @@ These are the only places where the retrieval stack may change; each has a measu
 |---|---|---|---|
 | RESEARCH §15 | ~~Should `embeddinggemma-300m` replace `e5-base` as the default embedder?~~ **Resolved (#227):** default → `granite-multilingual-311m` (Apache-2.0); gemma opt-in under license veto. Re-evaluation triggers documented (Apache-2.0 EmbeddingGemma successor, or a decisive quality gap). | — | closed |
 | RESEARCH §17 | ~~Should HNSW become the default ANN engine?~~ **Declined (#228):** build acceleration measured at ×1.27 end-to-end (kernel ×6 on batches) — the order-of-magnitude trigger is unreachable; IVF stays default. | — | closed |
-| RESEARCH §12 | Late chunking vs heading-path context? | Ablation slice exists (#226 `long-doc-section`) — read the measured result on it | #260 |
+| RESEARCH §12 | ~~Late chunking vs heading-path context?~~ **Declined (#260):** the `bench/late-chunking.mjs` prototype loses on golden v2 dev (nDCG −0.0441) and loses most of all on the `long-doc-section` slice that motivated the question (−0.1394) — heading-path contextualization stays; late chunking is a documented non-goal for CLS-pooled adapters. | — | closed |
 | RESEARCH §13 | WASM SIMD dot-product kernels (sweep side)? **Profiled (#254):** the 40% trigger is breached at 100k chunks (41.5%) but not at 50k (21.1%) — prototype conditions met at the larger scale. | prototype with acceptance rule (expected payoff bounded ~21% at ×2) | #259 |
 
 ---

@@ -7,6 +7,18 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Issue #260** — **§12 late-chunking ablation measured — gate closed as declined**
+  (`bench/late-chunking.mjs`): the prototype forwards each whole document
+  through granite once and mean-pools token states over per-chunk char spans
+  (the tokenizer does not expose `offsets_mapping`, so spans come from
+  per-token decode accumulation, verified exact per doc; 112/112 chunks
+  pooled, 0 fallbacks). Everything else held constant (chunks, BM25F, RRF,
+  query embeddings): late chunking **loses on golden v2 dev** (nDCG@10
+  −0.0441) and loses most of all on the `long-doc-section` slice that
+  motivated §12 (−0.1394, Hit@10 0.90 → 0.75). Mechanism: granite is
+  CLS-pooled — span mean-pooling mismatches the CLS query side, and the
+  explicit heading-path context is stronger signal. Report in RESEARCH §12;
+  production code unchanged.
 - **Issue #262** — **agent-skill pack**: [`integrations/agent-skill/SKILL.md`](integrations/agent-skill/SKILL.md)
   (agent-consumable recipe: search → read → cite, `answerMode` semantics,
   abstention handling, CLI/MCP duality) and
