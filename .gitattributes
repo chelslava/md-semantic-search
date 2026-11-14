@@ -3,3 +3,5 @@
 # conversion (core.autocrlf=true on Windows) breaks both fingerprints.
 bench/corpus/** -text
 bench/fixtures/** -text
+
+integrations/agent-skill/** -text

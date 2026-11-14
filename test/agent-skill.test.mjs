@@ -13,7 +13,9 @@ import { MCP_TOOLS, MCP_RESOURCE_TEMPLATES, MCP_PROMPTS } from '../dist/mcp.js';
 // ---------------------------------------------------------------------------
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
+// normalize CRLF — windows checkouts materialize LF-committed docs with \r\n,
+// and the frontmatter/recipe regexes below match on \n
+const read = (p) => fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n');
 
 test('agent-skill: SKILL.md has valid frontmatter with name and description', () => {
   const skill = read('integrations/agent-skill/SKILL.md');

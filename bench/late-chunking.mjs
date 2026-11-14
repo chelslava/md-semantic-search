@@ -153,7 +153,8 @@ async function main() {
     for (const ch of chunks) {
       const passage = canonicalPassage(ch);
       const [cs, ce] = spanOf(ch);
-      let acc = new Float32Array(dim), n = 0;
+      const acc = new Float32Array(dim);
+      let n = 0;
       if (aligned) {
         for (let t = 0; t < spans.length; t++) {
           const sp = spans[t];
