@@ -13,6 +13,14 @@ import { buildRelationshipGraph, computePageRank, expandGraphNeighborhood, Relat
 import { evaluateFilter, FilterNode } from './filter.js';
 import { deserializeBinaryIndex } from './binary-format.js';
 import { dequantizeFromInt8, int8Norm, asymmetricCosineInt8CachedNorm } from './quantization.js';
+import {
+  collectFlatCorpus,
+  createWasmSweepEngine,
+  resolveSweepKernel,
+  sweepFp32Flat,
+  sweepInt8Flat,
+} from './sweep-kernel.js';
+import type { SweepKernelMode, WasmSweepEngine } from './sweep-kernel.js';
 import { buildDiskKey, diskQueryGet, diskQueryPut } from './query-cache-disk.js';
 
 export { tokenize } from './lexical.js';
@@ -267,6 +275,14 @@ export interface RuntimeIndexState {
    * load only) — lets the dense sweep compute the dot product alone.
    */
   chunkNorms?: Float32Array;
+  /**
+   * issue #259 prototype: lazily built flat corpus for the sweep-kernel
+   * candidates (null after a failed build — do not retry). Same cold-cache
+   * pattern as ivf/hnsw/dequantized.
+   */
+  sweepFlat?: { i8: Int8Array | null; f32: Float32Array | null } | null;
+  /** issue #259 prototype: lazily built WASM sweep engine (null = compile/build failed). */
+  sweepWasm?: WasmSweepEngine | null;
 }
 
 /** issue #190 tool/test seam: the cached int8 sweep norms, when present. */
@@ -609,6 +625,72 @@ export function getDequantizedVectors(runtime: RuntimeIndexState): Float32Array[
 }
 
 /**
+ * issue #259 prototype: score the WHOLE candidate list with one of the
+ * sweep-kernel candidates (`js-flat` / `wasm`, see src/sweep-kernel.ts) in a
+ * single pass over flat buffers — out[j] is the score of candidates[j]. The
+ * corpus + norms are copied into the WASM engine once per index generation,
+ * lazily on the first kernel-mode query (same cold-build pattern as the
+ * runtime IVF/HNSW caches). Returns null → caller keeps the shipped
+ * per-chunk path (empty list, non-float query vector, ragged corpus, WASM
+ * compile failure, int8 corpus without cached norms).
+ */
+function computeSweepKernelScores(
+  runtime: RuntimeIndexState,
+  mode: SweepKernelMode,
+  candidates: Array<{ chunk: RuntimeChunk; idx: number }>,
+  qVec: Float32Array,
+  norms: Float32Array | undefined,
+  probed: Set<number> | null,
+): Float32Array | null {
+  const n = candidates.length;
+  if (n === 0 || !(qVec instanceof Float32Array)) return null;
+  const dim = qVec.length;
+  if (!(dim > 0)) return null;
+  const isInt8 = candidates[0].chunk.vec instanceof Int8Array;
+  if (isInt8 && !(norms instanceof Float32Array)) return null;
+
+  let flat = runtime.sweepFlat;
+  if (!flat) {
+    flat = collectFlatCorpus(runtime.chunks);
+    runtime.sweepFlat = flat;
+  }
+  if (!flat) return null;
+  const corpus = isInt8 ? flat.i8 : flat.f32;
+  if (!corpus) return null;
+
+  const indices = new Uint32Array(n);
+  for (let j = 0; j < n; j++) indices[j] = candidates[j].idx;
+  const out = new Float32Array(n);
+  if (mode === 'js-flat') {
+    if (isInt8) {
+      sweepInt8Flat(qVec, corpus as Int8Array, indices, out, norms as Float32Array, dim);
+    } else {
+      sweepFp32Flat(qVec, corpus as Float32Array, indices, out, dim);
+    }
+  } else {
+    let engine = runtime.sweepWasm;
+    if (engine === undefined) {
+      engine = createWasmSweepEngine(
+        corpus as Int8Array | Float32Array,
+        isInt8 ? (norms as Float32Array) : null,
+        dim,
+        runtime.chunks.length,
+      );
+      runtime.sweepWasm = engine; // null is cached too — never retry a failed compile
+    }
+    if (!engine) return null;
+    engine.sweep(qVec, indices, out);
+  }
+  // issue #203: probed-excluded candidates score -1, exactly like the JS path
+  if (probed) {
+    for (let j = 0; j < n; j++) {
+      if (!probed.has(indices[j])) out[j] = -1;
+    }
+  }
+  return out;
+}
+
+/**
  * issue #242: build the runtime ANN structures in the background (serve warmup)
  * so the first user query never pays the in-query graph/k-means cold build.
  * Only engages when NO sidecar exists and the corpus is ANN-sized — exactly the
@@ -927,6 +1009,16 @@ export interface SearchOptions {
   graphBoost?: number;
   filter?: string | FilterNode;
   dimensions?: number;
+  /**
+   * issue #259: dense-sweep engine — 'wasm' (default; SIMD128 sweep kernel,
+   * one call per sweep, scores may differ from the legacy JS path in the
+   * last ulp), 'js' (the shipped per-chunk path — escape hatch for
+   * last-ulp-exact legacy scores), 'js-flat' (measured candidate, kept for
+   * reference: no win over 'js'). Every unsupported shape falls back to 'js'
+   * silently; `MDSS_SWEEP_KERNEL` env is the override when this option is
+   * omitted.
+   */
+  sweepKernel?: SweepKernelMode;
 }
 
 export interface SearchResultHit {
@@ -1254,10 +1346,34 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
         return probedUnion;
       })()
     : null;
+  // issue #259: the WASM SIMD sweep kernel measured a −23.5% (50k) / −15.2%
+  // (100k) warm-hybrid p50 win with a byte-exact golden-gate match
+  // (nDCG@10 0.8653 → 0.8653), so it IS the default sweep path; every
+  // unsupported shape (truncated query, ragged corpus, WASM compile failure,
+  // int8 without cached norms) silently falls back to the shipped per-chunk
+  // JS path. `sweepKernel: 'js'` (or MDSS_SWEEP_KERNEL=js) is the documented
+  // escape hatch for last-ulp-exact legacy scores.
+  let sweepMode: SweepKernelMode = 'wasm';
+  if (opts.sweepKernel !== undefined) {
+    sweepMode = resolveSweepKernel(opts.sweepKernel);
+  } else if (process.env.MDSS_SWEEP_KERNEL) {
+    try {
+      sweepMode = resolveSweepKernel(process.env.MDSS_SWEEP_KERNEL);
+    } catch {
+      sweepMode = 'wasm';
+    }
+  }
+  if (truncating) sweepMode = 'js';
+  const kernelScores =
+    sweepMode !== 'js'
+      ? computeSweepKernelScores(runtime, sweepMode, candidates, qVec as Float32Array, norms, probed)
+      : null;
   if (qVecs.length > 1) {
     // issue #203: multi-query — one dense sweep per variant, rankings fused by
     // union-RRF. `cos` stays anchored to the ORIGINAL query's cosine so the
     // hit shape (and score display) keeps its meaning.
+    // issue #259: the sweep-kernel prototype covers the single-query sweep
+    // only — multi-query stays on the per-chunk JS path.
     const sweepWith = (vec: Float32Array | number[]) => (chunk: RuntimeChunk, idx: number): number =>
       norms && chunk.vec instanceof Int8Array
         ? asymmetricCosineInt8CachedNorm(vec as Float32Array, chunk.vec, norms[idx])
@@ -1278,20 +1394,24 @@ export async function searchIndex(opts: SearchOptions): Promise<SearchResultHit[
     // with the stable tie-break toward the smaller idx.
     semantic = topKByScore(
       candidates.length,
-      (i) => {
-        const { chunk, idx } = candidates[i];
-        if (probed && !probed.has(idx)) return -1;
-        return sweepScore(chunk, idx);
-      },
+      kernelScores
+        ? (i) => kernelScores[i]
+        : (i) => {
+            const { chunk, idx } = candidates[i];
+            if (probed && !probed.has(idx)) return -1;
+            return sweepScore(chunk, idx);
+          },
       pool,
     );
   } else {
-    semantic = candidates.map(({ chunk, idx }) => {
-      if (probed && !probed.has(idx)) {
-        return { idx, score: -1 };
-      }
-      return { idx, score: sweepScore(chunk, idx) };
-    });
+    semantic = kernelScores
+      ? candidates.map(({ idx }, j) => ({ idx, score: kernelScores[j] }))
+      : candidates.map(({ chunk, idx }) => {
+          if (probed && !probed.has(idx)) {
+            return { idx, score: -1 };
+          }
+          return { idx, score: sweepScore(chunk, idx) };
+        });
     cosByIdx = new Map(semantic.map((s) => [s.idx, s.score]));
   }
 

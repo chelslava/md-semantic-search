@@ -7,6 +7,26 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Issue #259** — **§13 WASM SIMD pointwise sweep kernel measured and LANDED as the default
+  dense-sweep path** (RESEARCH.md §13): `src/sweep-kernel.ts` — a 994-byte hand-written WAT
+  SIMD128 module (`sweep_f32` for fp32 corpora, `sweep_i8` for int8 corpora with the JS-cached
+  chunk norms; i8 lanes widened exactly via extmul-with-1 + `f32x4.convert_i32x4_s`; zero
+  native dependencies, silent JS fallback on compile failure) scores the whole candidate list
+  in ONE boundary crossing per sweep; corpus + norms are copied into WASM linear memory once
+  per index generation, lazily on the first kernel query. Measured with the interleaved
+  equally-warmed methodology (#228): **×3.74 / ×3.50 on the isolated sweep** and
+  **−23.5% / −15.2% warm-hybrid p50** (50k dim 768 / 100k dim 384, int8) — above the issue's
+  ×2/−21% premise; `bench/e2e.mjs` improves every profile (hybrid −7.9%, semantic −19.4%,
+  miss −25.2%, RSS unchanged). Retrieval is unchanged — the golden gate reproduces the
+  committed baseline **exactly (nDCG@10 0.8653 → 0.8653, Recall@10 1.0000)** with the kernel
+  as default. Fallbacks are silent and complete (MRL-truncated queries, ragged corpora,
+  no-SIMD runtimes, int8 without cached norms → shipped per-chunk JS path);
+  `sweepKernel: 'js'` / `MDSS_SWEEP_KERNEL=js` is the escape hatch for last-ulp-exact legacy
+  scores. The `js-flat` candidate (unrolled scalar flat-buffer sweep) was measured and
+  REJECTED — slower than the per-chunk path; kept behind the flag as the reference
+  measurement. Bench harness: `--kernel js|js-flat|wasm|all` in `bench/sweep-profile.mjs`
+  (`all` = interleaved, the only trustworthy warm comparison), `--sweep-kernel` in
+  `bench/e2e.mjs` / `scripts/run-bench.mjs`; correctness pinned by `test/sweep-kernel.test.mjs`.
 - **Issue #260** — **§12 late-chunking ablation measured — gate closed as declined**
   (`bench/late-chunking.mjs`): the prototype forwards each whole document
   through granite once and mean-pools token states over per-chunk char spans

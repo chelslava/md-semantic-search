@@ -14,6 +14,7 @@
  *                              [--search-dimensions 768,512,256,128]
  *                              [--index-dir <path>] [--cache-dir <path>]
  *                              [--fast] [--json] [--fake]
+ *                              [--sweep-kernel js|js-flat|wasm]  # issue #259 dense-sweep candidate
  *                              [--gate bench/fixtures/golden-baseline.json]
  *                              [--update-baseline bench/fixtures/golden-baseline.json]
  *
@@ -45,6 +46,7 @@ import { loadFixture, corpusFingerprint } from '../bench/fixture.mjs';
 import { queryMetrics, aggregateMetrics } from '../dist/metrics.js';
 import { DEFAULT_MODEL } from '../dist/models.js';
 import { buildIndex, loadIndex, searchIndex } from '../dist/index.js';
+import { resolveSweepKernel } from '../dist/sweep-kernel.js';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -105,7 +107,7 @@ function parseArgs(argv) {
     indexDir: null, cacheDir: null, json: false, fast: false, fake: false,
     gate: null, updateBaseline: null,
     // issue #203: reranker/multi-query measurement passthrough
-    rerank: false, rerankModel: null, multiQuery: 0,
+    rerank: false, rerankModel: null, multiQuery: 0, sweepKernel: null,
     // issue #248 follow-up: query-time MRL truncation sweep (csv of dims)
     searchDimensions: null,
   };
@@ -128,6 +130,7 @@ function parseArgs(argv) {
     else if (a === '--rerank') args.rerank = true;
     else if (a === '--rerank-model') args.rerankModel = next();
     else if (a === '--multi-query') args.multiQuery = Number(next());
+    else if (a === '--sweep-kernel') args.sweepKernel = resolveSweepKernel(next());
     else if (a === '--search-dimensions') {
       args.searchDimensions = next().split(',').map((x) => Number(x.trim())).filter((n) => Number.isInteger(n) && n > 0);
       if (args.searchDimensions.length === 0) throw new Error(`--search-dimensions: no valid dimensions in the list`);
@@ -220,6 +223,8 @@ async function main() {
   const dimsToRun = args.searchDimensions || [null]; // null = the untruncated default path
   const searchOptsFor = (dim) => ({
     loaded, cacheDir, embedFn, offline, k,
+    // issue #259: dense-sweep kernel candidate under test (default: shipped path)
+    ...(args.sweepKernel ? { sweepKernel: args.sweepKernel } : {}),
     // issue #203: reranker registry / multi-query measurement
     ...(args.rerank ? { rerank: true } : {}),
     ...(args.rerankModel ? { rerankModel: args.rerankModel } : {}),
@@ -269,6 +274,7 @@ async function main() {
       name: fixture.name,
       model: args.model,
       slice: args.slice,
+      sweepKernel: args.sweepKernel || 'js',
       k,
       corpusHash,
       fixtureHash: report.fixtureHash,

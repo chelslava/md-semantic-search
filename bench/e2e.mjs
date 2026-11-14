@@ -10,6 +10,7 @@
  *   node bench/e2e.mjs [--files 120] [--sections 10] [--seed 196]
  *                      [--rounds 4] [--queries-per-round 30] [--k 10]
  *                      [--model e5-base]          # real model (default: offline fake embedder)
+ *                      [--sweep-kernel js|js-flat|wasm]  # issue #259 dense-sweep candidate
  *                      [--index-dir <path>] [--cache-dir <path>] [--keep]
  *                      [--json]
  *                      [--compare bench/fixtures/e2e-latency-baseline.json]
@@ -203,7 +204,7 @@ function nextValue(argv, i) {
 function parseArgs(argv) {
   const args = {
     files: 120, sections: 10, seed: 196, rounds: 4, queriesPerRound: 30,
-    k: 10, model: null, indexDir: null, cacheDir: null, keep: false,
+    k: 10, model: null, sweepKernel: null, indexDir: null, cacheDir: null, keep: false,
     json: false, compare: null, updateBaseline: null, tolerancePct: 20,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -215,6 +216,7 @@ function parseArgs(argv) {
     else if (a === '--queries-per-round') args.queriesPerRound = Number(nextValue(argv, ++i));
     else if (a === '--k') args.k = Number(nextValue(argv, ++i));
     else if (a === '--model') args.model = nextValue(argv, ++i);
+    else if (a === '--sweep-kernel') args.sweepKernel = nextValue(argv, ++i);
     else if (a === '--index-dir') args.indexDir = nextValue(argv, ++i);
     else if (a === '--cache-dir') args.cacheDir = nextValue(argv, ++i);
     else if (a === '--keep') args.keep = true;
@@ -252,6 +254,8 @@ async function main() {
   const embedFn = args.model ? undefined : fakeEmbed;
   const offline = !args.model;
   const cacheDir = args.cacheDir ?? undefined;
+  // issue #259: dense-sweep kernel candidate under test (default: shipped path)
+  const sweepKernel = args.sweepKernel || undefined;
 
   try {
     const tBuild = performance.now();
@@ -302,7 +306,7 @@ async function main() {
     // warmup (JIT + runtime IVF/graph caches); results discarded
     for (const p of profiles) {
       for (const q of p.make(999).query.slice(0, 5)) {
-        await searchIndex({ loaded, cacheDir, query: q, k: args.k, embedFn, offline, ...Object.fromEntries(Object.entries(p.make(999)).slice(1)) });
+        await searchIndex({ loaded, cacheDir, query: q, k: args.k, embedFn, offline, sweepKernel, ...Object.fromEntries(Object.entries(p.make(999)).slice(1)) });
       }
     }
 
@@ -315,7 +319,7 @@ async function main() {
         const staticOpts = Object.fromEntries(Object.entries(p.make(round)).slice(1));
         for (const q of p.make(round).query) {
           const t = performance.now();
-          await searchIndex({ loaded, cacheDir, query: q, k: args.k, embedFn, offline, ...staticOpts });
+          await searchIndex({ loaded, cacheDir, query: q, k: args.k, embedFn, offline, sweepKernel, ...staticOpts });
           latencies[p.name].push(performance.now() - t);
           queriesRun++;
         }
@@ -355,7 +359,7 @@ async function main() {
         indexedFiles: build.files, chunks: chunkCount,
         embedder: args.model || 'fake-hash-offline',
       },
-      run: { rounds: args.rounds, queriesPerRound: args.queriesPerRound, k: args.k, queriesRun },
+      run: { rounds: args.rounds, queriesPerRound: args.queriesPerRound, k: args.k, queriesRun, sweepKernel: args.sweepKernel || 'js' },
       metrics,
     };
 

@@ -314,6 +314,59 @@ decision, not on this gate.)
   integration + the same recall determinism contract) is the follow-up work
   this measurement licenses; no production code changed in #254.
 
+- **Prototype measured — the kernel LANDED into the default path (issue #259).**
+  `src/sweep-kernel.ts`: a 994-byte hand-written WAT SIMD128 module
+  (`sweep_f32` for fp32 corpora, `sweep_i8` for int8 corpora with the
+  JS-cached chunk norms — i8 lanes widened via extmul-with-1 +
+  `f32x4.convert_i32x4_s`, exact for every int8 value) that scores the WHOLE
+  candidate list in ONE boundary crossing per sweep; corpus + norms are
+  copied into WASM linear memory once per index generation, lazily on the
+  first kernel query (same cold-build pattern as the runtime IVF/HNSW
+  caches). A second candidate, `js-flat` (unrolled scalar sweep over flat
+  buffers — the same accumulation order, dropping per-chunk closure/
+  `instanceof`/view overhead), was measured and REJECTED: it is *slower*
+  than the per-chunk path (119.6 vs 96.9 ms isolated at 50k) — V8's own
+  codegen is already optimal, the win has to come from SIMD, not from
+  plumbing.
+
+  Measured with `bench/sweep-profile.mjs --kernel all` (all candidates
+  INTERLEAVED on one build — equally-warmed, the #228 methodology;
+  single-kernel runs proved worthless: the same js build measured
+  warm p50 811 ms in one run and 280 ms in another on identical code):
+
+  | Scale | Kernel | Warm hybrid p50 | Isolated sweep p50 | Share |
+  |---|---|---|---|---|
+  | 50,004 chunks, dim 768, int8 | js (legacy) | 279.60 ms | 96.88 ms | 34.7% |
+  | | js-flat | 295.55 ms | 119.62 ms | 40.5% |
+  | | **wasm** | **213.94 ms (−23.5%)** | **25.88 ms (×3.74)** | 12.1% |
+  | 100,008 chunks, dim 384, int8 | js (legacy) | 403.37 ms | 93.56 ms | 23.2% |
+  | | js-flat | 421.13 ms | 107.23 ms | 25.5% |
+  | | **wasm** | **341.93 ms (−15.2%)** | **26.72 ms (×3.50)** | 7.8% |
+
+  (The 100k point is dim 384 — `e5-small` — because the 8 GB dev machine
+  cannot complete a dim-768 100k build at all: the OS commit limit kills
+  the process, reproduced with a build-only script importing none of the
+  kernel modules. The dim-768 100k js baseline from #254 — warm 439 ms,
+  isolated sweep 182 ms — stays the reference for that scale.)
+
+  The measured sweep speedup (×3.5–3.7) exceeds the issue's ×2 premise, so
+  the end-to-end win (−15.2%…−23.5% warm hybrid p50) exceeds the pre-registered
+  ~21% upper bound. Retrieval is unchanged: the accumulation order differs
+  from the JS path in the last f32 ulp only, and the golden gate confirms it
+  does not move a single rank — `run-bench --gate` reproduces the committed
+  baseline EXACTLY, both with the kernel flag and with the kernel as default:
+  **nDCG@10 0.8653 → 0.8653 (drop 0.0000), Recall@10 1.0000 → 1.0000.**
+  `bench/e2e.mjs` (fp32 path, 1200 chunks) improves across every profile:
+  hybrid −7.9%, semantic −19.4%, ann −14.9%, miss −25.2% p50, RSS unchanged.
+
+  **Decision:** the kernel is the DEFAULT dense-sweep path. Fallbacks are
+  silent and complete — MRL-truncated queries, ragged corpora, int8 without
+  cached norms, and any runtime without WebAssembly SIMD all keep the
+  shipped per-chunk JS path; `sweepKernel: 'js'` (or `MDSS_SWEEP_KERNEL=js`)
+  is the documented escape hatch for last-ulp-exact legacy scores. Scores
+  stay deterministic per engine (same engine → same bytes), matching the
+  #228 sidecar contract.
+
 ### ANN / IVF Scale Threshold & K-Means++ Seeding (Issues #32 & #139)
 - **Baseline:** Exact $O(N \cdot d)$ linear sweep.
 - **K-Means++ Seeding:** Uses deterministic pseudo-random $D^2$-weighted centroid seeding (Mulberry32) to prevent initial centroid collapse on correlated notes corpora.

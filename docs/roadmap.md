@@ -32,7 +32,7 @@ These are the only places where the retrieval stack may change; each has a measu
 | RESEARCH §15 | ~~Should `embeddinggemma-300m` replace `e5-base` as the default embedder?~~ **Resolved (#227):** default → `granite-multilingual-311m` (Apache-2.0); gemma opt-in under license veto. Re-evaluation triggers documented (Apache-2.0 EmbeddingGemma successor, or a decisive quality gap). | — | closed |
 | RESEARCH §17 | ~~Should HNSW become the default ANN engine?~~ **Declined (#228):** build acceleration measured at ×1.27 end-to-end (kernel ×6 on batches) — the order-of-magnitude trigger is unreachable; IVF stays default. | — | closed |
 | RESEARCH §12 | ~~Late chunking vs heading-path context?~~ **Declined (#260):** the `bench/late-chunking.mjs` prototype loses on golden v2 dev (nDCG −0.0441) and loses most of all on the `long-doc-section` slice that motivated the question (−0.1394) — heading-path contextualization stays; late chunking is a documented non-goal for CLS-pooled adapters. | — | closed |
-| RESEARCH §13 | WASM SIMD dot-product kernels (sweep side)? **Profiled (#254):** the 40% trigger is breached at 100k chunks (41.5%) but not at 50k (21.1%) — prototype conditions met at the larger scale. | prototype with acceptance rule (expected payoff bounded ~21% at ×2) | #259 |
+| RESEARCH §13 | ~~WASM SIMD dot-product kernels (sweep side)?~~ **Landed (#259):** the measured SIMD sweep kernel beats the ×2 premise (×3.5–3.7 isolated, −23.5%/−15.2% warm-hybrid p50 at 50k/100k interleaved) and reproduces the golden baseline byte-exactly (nDCG@10 0.8653 → 0.8653) — default dense-sweep path; the js-flat plumbing-only candidate measured and rejected. | — | closed |
 
 ---
 
@@ -58,11 +58,13 @@ market-driven packaging item.
   PUT), then submit `server.json`@2.3.0 to the official MCP Registry per the
   CONTRIBUTING checklist. The MCP Registry is the primary discovery channel
   for retrieval servers in 2026; the publish workflow is rerun-safe.
-- [ ] **§13 sweep-kernel prototype** (#259): the #254 profile breached the 40%
-  trigger at 100k chunks (41.5%; 21.1% at 50k) — build the pointwise SIMD
-  sweep prototype with an explicit acceptance rule (land only if the measured
-  end-to-end win justifies it; expected payoff bounded ~21% at a ×2 kernel);
-  otherwise close declined-with-measurements.
+- [x] **§13 sweep-kernel prototype** (#259): the #254 profile breached the 40%
+  trigger at 100k chunks (41.5%; 21.1% at 50k). The WAT SIMD128 sweep kernel
+  (`src/sweep-kernel.ts`) measured ×3.5–3.7 on the isolated sweep and
+  −23.5%/−15.2% warm-hybrid p50 (50k/100k, interleaved equally-warmed), with
+  the golden gate reproducing the baseline exactly (0.8653 → 0.8653) —
+  the acceptance rule's land branch fired; wasm is the default dense-sweep
+  path with silent JS fallbacks (js-flat measured and rejected: no win).
 - [ ] **§12 ablation decision** (#260): read the `long-doc-section` slice
   (#226) as heading-path baseline vs late-chunking prototype; either a
   design proposal (measured context-recall gap) or a documented non-goal
@@ -88,7 +90,7 @@ market-driven packaging item.
 
 - **Late chunking** — prototype only if the #226 ablation slice shows a measured context-recall deficit of heading-path contextualization (§12).
 - **Learned sparse (SPLADE-family)** — BM25F is sufficient at the current corpus scale; revisit if target corpora grow an order of magnitude.
-- **WASM SIMD sweep kernels** — the §13 profile (#254) breached the 40% trigger at 100k chunks (41.5%; 21.1% at 50k): prototype conditions met, but the payoff is bounded (~21% total at a ×2 kernel) and the #228 batching kernel does not transfer to a pointwise sweep. Prototype now tracked as #259 with an explicit acceptance rule.
+- **WASM SIMD sweep kernels** — closed by #259: the pointwise SIMD sweep kernel landed as the default (−23.5%/−15.2% warm-hybrid p50 at 50k/100k, golden gate byte-exact); the #228 batching kernel observation stays true — batching amortizes only with multiple queries in flight, and the win came from one-crossing-per-sweep SIMD, not from batching.
 - **Vector databases / distributed indexes** — out of the project segment (10k–50k chunks, zero-infra), unchanged.
 
 ---
