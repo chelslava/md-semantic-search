@@ -10,6 +10,7 @@ for the pinned contract.
 
 | Integration | Kind | Release automation |
 |---|---|---|
+| `agent-skill/` | Agent skill pack (`SKILL.md`, issue #262) — teaches AI agents the mdss retrieval workflow; human guide: [`docs/agent-integration.md`](../docs/agent-integration.md) | Ships with the repo/npm package — no separate release |
 | `vscode/` | VS Code extension | Tag `integrations/vscode/vX.Y.Z` → CI builds the VSIX from source, attaches it to a GitHub Release; marketplace publish runs **only** when the repo secret `VSCE_PAT` exists |
 | `obsidian/` | Obsidian plugin (BRAT/manual) | Tag `integrations/obsidian/vX.Y.Z` → CI verifies `manifest.json` version, zips plugin files, attaches to a GitHub Release |
 | `raycast/` | Raycast extension | Manual store submission (below) |

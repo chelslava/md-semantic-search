@@ -4,6 +4,27 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Issue #262** — **agent-skill pack**: [`integrations/agent-skill/SKILL.md`](integrations/agent-skill/SKILL.md)
+  (agent-consumable recipe: search → read → cite, `answerMode` semantics,
+  abstention handling, CLI/MCP duality) and
+  [`docs/agent-integration.md`](docs/agent-integration.md) (human guide:
+  three setup paths — stdio MCP, daemon + Streamable HTTP MCP, raw HTTP —
+  tool/URI/prompt reference, honest limitations). The recipe was validated
+  end-to-end against the published npm package: `npx -y md-semantic-search
+  mcp` handshake, all 7 tools, `mdss://` templates, a real hybrid search
+  carrying `startLine`/`endLine`, `get_lines`, and an extractive `ask` with
+  citations. A drift-guard suite (`test/agent-skill.test.mjs`) pins the docs
+  to the actual MCP tool/resource/prompt registry, the `--help` command
+  surface, README/integrations links, and npm `keywords` — documentation
+  drift fails the build instead of steering agents wrong.
+- npm `keywords` extended for agent-client discoverability (`mcp`,
+  `mcp-server`, `model-context-protocol`, `ai-agents`, `knowledge-base`,
+  `claude`, `cursor`, `local-first`); README and the integrations capability
+  matrix link the pack.
+
 ## [2.3.1] - 2026-11-14
 
 **Upgrade notes:** none — a packaging-only release to satisfy the official

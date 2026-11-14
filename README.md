@@ -686,6 +686,13 @@ Add to your `claude_desktop_config.json`:
 }
 ```
 
+**Agent skill pack:** [`integrations/agent-skill/SKILL.md`](./integrations/agent-skill/SKILL.md)
+teaches agents the retrieval workflow (search → read → cite, `answerMode`
+semantics, abstention handling) and [`docs/agent-integration.md`](./docs/agent-integration.md)
+is the human companion — setup paths, tool reference, raw-HTTP recipes for
+custom agents. The published MCP Registry listing:
+[`io.github.chelslava/md-semantic-search`](https://registry.modelcontextprotocol.io).
+
 ### Options
 
 | Flag | Meaning |
@@ -933,7 +940,7 @@ is an in-memory dot-product sweep.
 ## Integrations
 
 - **Obsidian**: An official plugin is available in [`integrations/obsidian`](./integrations/obsidian) providing a live semantic search panel directly in your vault connected to `mdss serve`.
-- **Model Context Protocol (MCP)**: Native stdio JSON-RPC 2.0 server (`mdss mcp`) integrating with Claude Desktop, Cursor, Copilot, Antigravity, and AI agents for local knowledge retrieval.
+- **Model Context Protocol (MCP)**: Native stdio JSON-RPC 2.0 server (`mdss mcp`) integrating with Claude Desktop, Cursor, Copilot, Antigravity, and AI agents for local knowledge retrieval. Listed in the official [MCP Registry](https://registry.modelcontextprotocol.io) as `io.github.chelslava/md-semantic-search`; the agent workflow lives in the [skill pack](./integrations/agent-skill/SKILL.md) and [docs/agent-integration.md](./docs/agent-integration.md).
 - **VS Code / Raycast / Alfred**: see [`integrations/README.md`](./integrations/README.md). Releases are automated — tagging `integrations/vscode/vX.Y.Z` builds and attaches the VSIX to a GitHub Release from source (no binaries are committed; issue #112).
 - **Windows tray icon**: [`integrations/windows/`](./integrations/windows/) — a zero-dependency system-tray companion for `mdss serve` (pure PowerShell + .NET WinForms, built into Windows): state-colored icon, indexing stats on hover (chunks / model / index age), a balloon when your notes get re-indexed. One-command start:
 

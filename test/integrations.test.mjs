@@ -19,8 +19,8 @@ test('integrations: every integration ships a README (issue #230)', () => {
     .map((d) => d.name);
   assert.deepEqual(
     dirs.slice().sort(),
-    ['alfred', 'obsidian', 'raycast', 'shared', 'vscode', 'windows'],
-    'the six known integrations exist',
+    ['agent-skill', 'alfred', 'obsidian', 'raycast', 'shared', 'vscode', 'windows'],
+    'the seven known integrations exist',
   );
   for (const dir of dirs) {
     assert.ok(
