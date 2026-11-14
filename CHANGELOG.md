@@ -7,6 +7,32 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Issue #264** — **§19 low-priority indexing gate measured — closed as declined, no product
+  code shipped** (`bench/priority-probe.mjs`): a real granite q8 build of a 3,000-chunk corpus
+  ran interleaved [normal, below-normal, normal, below] while two spin-preemption probe
+  processes measured foreground scheduling gaps (QPC-based — the first tick-drift instrument
+  was replaced before any mode comparison after measuring an ~11 ms idle floor from the
+  Windows ~15.6 ms timer clamp on setInterval/setTimeout/Atomics.wait). The pre-registered
+  gate failed on cost: foreground p95 gaps halve (7.26 → 4.07 ms, −43.9%) and p50 improves
+  −17.4%, but build wall-time costs **+30%** (every below run slower than every normal run) —
+  below-normal priority gives CPU away under contention by design. The prototype plumbing
+  (priority scoped per buildIndex call, best-effort restore, env-level overrides) measured
+  correctly behind 14 unit tests and was reverted after the gate. The shipped alternative is
+  the OS-level recipe documented in README ("Indexing without slowing the machine down"):
+  `start /low /b mdss index …` / `nice -n 10 mdss index …` plus `MDSS_INTRA_OP_THREADS=2`
+  and `--workers 1`. Report in RESEARCH §19; gate row in docs/roadmap.md.
+- **Issue #265** — **§20 full-build peak memory quantified** (`bench/peak-memory.mjs`): the
+  §13 footnote ("the 8 GB machine cannot complete a dim-768 100k build") is now a measured
+  allocation curve. With the hash embedder (deliberate — isolates the mdss-side curve from
+  the ONNX working set), peak RSS is linear (~7–9 KB/chunk): 265 MB → 585 MB → 828 MB at
+  10k/50k/100k dim 768 (fp32), and **int8 storage does not bend the curve** (911 MB at 100k) —
+  the peak lives in the base64 `vec` envelope copies, the whole-index `JSON.stringify`
+  (mid-run checkpoints every ~30 s land the sampled peak there), and the sidecar `rawVecs`
+  pass, not in `vectors.bin`. mdss-side ≈ 1.2 GB at 100k; §13's commit-limit kill was this
+  curve plus the ONNX working set on the same box. All large allocations are build-time-only
+  and byte-identical-representable — step 2 (the batch-streamed persistence prototype:
+  stream the envelope per-chunk, checkpoint without re-stringifying, release vecs after
+  encode) is licensed; the §11 format gate stays untripped. Report in RESEARCH §20.
 - **Issue #259** — **§13 WASM SIMD pointwise sweep kernel measured and LANDED as the default
   dense-sweep path** (RESEARCH.md §13): `src/sweep-kernel.ts` — a 994-byte hand-written WAT
   SIMD128 module (`sweep_f32` for fp32 corpora, `sweep_i8` for int8 corpora with the JS-cached

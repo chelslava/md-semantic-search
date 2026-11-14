@@ -729,6 +729,167 @@ endpoint (the gate never fires on LLM answers) or lower the floor.
 
 ```bash
 node bench/rag-faithfulness.mjs                                     # deterministic baseline path
-node bench/rag-faithfulness.mjs --model granite-multilingual-311m   # real-embedder extractive
-node bench/rag-faithfulness.mjs --endpoint http://127.0.0.1:8080/v1 # + LLM profile
+node bench/rag-faithfulness.mjs --model granite-multilingual-311m   # real embedder, report-only
+node bench/rag-faithfulness.mjs --endpoint http://127.0.0.1:8080/v1 # adds the LLM profile
 ```
+
+---
+
+## 19. Research Evaluation: Low-Priority Indexing (Issue #264)
+
+### Question
+
+RESEARCH measured build *throughput* exhaustively (#194 threading, #228 build
+kernel, #259 sweep kernel) but never **system responsiveness during a build**.
+The user-facing complaint: a full build pins up to `min(4, physical)` intra-op
+ONNX threads at normal OS priority and the desktop lags under it. Prototype
+question: does running the build at below-normal priority keep the desktop
+responsive at an acceptable cost?
+
+**Decision rule (pre-registered in issue #264 and in
+`bench/priority-probe.mjs` before any mode comparison):** SHIP the polite mode
+iff (a) median build wall(below) ≤ 1.05 × wall(normal), (b) foreground-probe
+p50 AND p95 improve ≥ 25%, (c) both clear the probe-only calibration floor.
+Otherwise: declined-with-measurements, manual OS-level recipe documented
+instead, no product code shipped.
+
+### Instrument
+
+`bench/priority-probe.mjs`: a deterministic 3,000-chunk fixture is embedded
+with the **real default model** (granite q8, offline), while two separate probe
+processes run a 100%-duty spin loop recording the gaps (>1 ms) between
+consecutive QPC reads — the stretches the scheduler did not run a
+foreground-like thread. Runs are interleaved [normal, below, normal, below],
+one fresh index dir per run (the #259 equally-warmed discipline).
+
+Honest instrument note, recorded because it changed the harness **before** any
+mode comparison ran: a first tick-drift probe (deadline-based 20 ms setInterval
+loop) measured an **~11 ms p50 drift floor on an IDLE machine** — Windows
+clamps `setInterval`/`setTimeout`/`Atomics.wait` to ~15.6 ms (measured directly:
+`Atomics.wait(5)` takes 15.0–16.0 ms), dwarfing the 1–3 ms contention signal
+the probe was meant to detect. The spin instrument reads QPC directly and has
+no such floor. No mode comparison data existed when the instrument was replaced.
+
+### Measured — the gate closes as DECLINED (2026-11-15)
+
+8 GB machine, 8 logical CPUs (4c/8t), Windows 10.0.26200 x64, Node v24.14.1,
+granite-multilingual-311m (q8, real model, offline), 3,000 chunks, 2 spin
+probes. Calibration (probes alone): p50 0.00 / p95 0.00 ms — on this idle
+machine the floor is effectively zero, so every non-zero gap during a build is
+build-induced.
+
+| Mode | Run | Wall (s) | Probe p50 (ms) | Probe p95 (ms) | Max gap (ms) |
+|---|---|---:|---:|---:|---:|
+| normal | 0 | 462.3 | 0.92 | 7.26 | 453.1 |
+| below | 1 | 560.8 | 0.63 | 3.75 | 60.2 |
+| normal | 2 | 393.2 | 0.69 | 7.26 | 100.6 |
+| below | 3 | 551.7 | 0.69 | 4.39 | 160.8 |
+| **median** | | **427.7 → 556.2 (+30.0%)** | **0.80 → 0.66 (−17.4%)** | **7.26 → 4.07 (−43.9%)** | noisy |
+
+Reading it honestly:
+
+1. **The wall cost is real, not noise.** Every below run is slower than every
+   normal run (551.7/560.8 vs 393.2/462.3 — a consistent +130–160 s). Gate
+   condition (a) (≤5%) fails by 6×.
+2. **The responsiveness gain is real but fails the registered bar on p50.**
+   p95 halves (−43.9%, passes ≥25%), p50 improves only −17.4% (fails). The
+   tail, not the median, is where contention shows — and at normal priority
+   the median foreground gap is already sub-millisecond.
+3. **The max-gap tail is too noisy to gate on** (453/100 ms normal vs
+   60/161 ms below — run 3's tail is worse than run 2's), which is exactly why
+   the rule pinned p50/p95 medians.
+4. **Mechanism.** Below-normal priority *gives CPU away under contention* —
+   that is its job. With the ONNX thread pool at below-normal class, the two
+   normal-priority probes preempt the pool's compute threads (and its internal
+   spin/barrier sync), so the build pays wall time precisely in the scenario
+   the mode targets. On an idle desktop the cost collapses to ~0 — but then
+   there is nothing to be responsive *for*.
+
+### Decision
+
+**DECLINED.** The polite mode is not shipped: no `--polite` flag, no
+`MDSS_INDEX_PRIORITY` env, product code reverted (the prototype's priority
+plumbing measured correctly — 14 unit tests — but the gate is about value, not
+mechanics). The harness stays (`bench/priority-probe.mjs`; below-mode priority
+is now set parent-side on the build process so the bench survives without the
+declined code), matching the §12/#260 and §17(a)/#228 declined-gate precedent.
+
+The documented alternative is OS-level, opt-in, and the same mechanism without
+a product surface: `start /low /b mdss index …` (Windows) / `nice -n 10 mdss
+index …` (Unix), plus the always-available knobs `MDSS_INTRA_OP_THREADS=2` and
+`--workers 1`; see README "Indexing without slowing the machine down".
+
+---
+
+## 20. Research Evaluation: Full-Build Peak Memory (Issue #265)
+
+### Question
+
+RESEARCH §13 recorded, as a measurement footnote: "the 8 GB dev machine cannot
+complete a dim-768 100k build at all: the OS commit limit kills the process".
+The footnote was routed around (the §13 100k point was measured at dim 384) and
+never quantified. Question: **where does the build's peak memory go, and does
+it license a batch-streamed persistence prototype?**
+
+### Instrument
+
+`bench/peak-memory.mjs`: a deterministic markdown fixture (12 sections/file) is
+indexed with the **hash embedder** — deliberately, to isolate the mdss-side
+allocation curve from the ONNX working set (constant across scales, orthogonal
+to the question). Samples at 500 ms: rss / heapUsed / external / arrayBuffers,
+phase-tagged from `onProgress`. Each scale runs in its own subprocess — an OOM
+is a measured row, not a harness crash. Two honest instrument fixes, both
+before any table was recorded: a failed build now reports a JSON error row
+(the first ENOSPC run crashed the summarizer on an empty sample set), and the
+hash embedder yields one macrotask per batch (`setImmediate`) — a synchronous
+embedder starves the sampler through the microtask-only await chain (measured:
+0 samples over a 286 s build).
+
+### Measured (2026-11-15, 8 GB / 4c8t, Windows 10.0.26200, Node v24.14.1, dim 768)
+
+| Chunks | Storage | Peak RSS | external+ab | Peak phase | Wall |
+|---:|---|---:|---:|---|---:|
+| 10,000 | fp32 | 265.4 MB | 23.9 + 20.3 MB | embed | 22 s |
+| 50,000 | fp32 | 585.4 MB | 130.3 + 126.7 MB | embed | 196 s |
+| 100,000 | fp32 | 828.3 MB | 288.1 + 284.5 MB | embed | 651 s |
+| 10,000 | int8 | 280.8 MB | 25.4 + 21.8 MB | embed | 18 s |
+| 50,000 | int8 | 566.8 MB | 141.2 + 137.6 MB | embed | 186 s |
+| 100,000 | int8 | 911.1 MB | 295.8 + 292.2 MB | embed | 430 s |
+
+Findings:
+
+1. **The curve is linear (~7–9 KB of peak RSS per chunk) and int8 does NOT
+   bend it** (911 vs 828 MB at 100k — noise-level difference). The quantized
+   `vectors.bin` buffer is ~77 MB at 100k/dim768; the peak lives in the
+   format-agnostic parts: the live fp32 chunk vectors (~300 MB), the base64
+   `vec` copies inside the persisted envelope (4/3 × fp32 ≈ 410 MB),
+   `JSON.stringify` of the whole index (checkpoint snapshots every ~30 s
+   during embed — the sampled peak lands there — plus the final full-index
+   string), and the sidecar `rawVecs` pass. This is why `--quantize int8`
+   saves disk and search RAM but not build RAM.
+2. **mdss-side peak at 100k/dim768 ≈ 1.2 GB** (0.9 GB RSS + 0.3 GB
+   external/arrayBuffers). The hash-embedder build COMPLETES on this machine
+   — §13's commit-limit kill was the real-model configuration, i.e. this
+   ~1.2 GB curve **plus** the ONNX working set (~0.5–1 GB q8 session + batch
+   buffers) on the same 8 GB box.
+3. Every large allocation is **build-time-only and byte-identical-representable**:
+   the envelope's JSON bytes would be unchanged if assembled per-chunk into a
+   stream instead of materialized as one `JSON.stringify` string; checkpoints
+   serialize an already-frozen snapshot shape; the base64 vec copy exists only
+   inside `chunks.map(...)` at persistence time. None of this touches the
+   persisted format → no §11 trigger.
+
+### Decision (step 2 of #265, licensed by the table)
+
+The pre-registered scope guard holds: this gate targets **build-time peak**,
+not a new index format version (§11 stays untripped). The numbers license the
+**batch-streamed persistence prototype** on exactly three fronts — (a) stream
+the `vectors.json` envelope per-chunk instead of one giant `JSON.stringify`
+(byte-identical output), (b) checkpoint without re-stringifying the whole
+index-so-far into one string, (c) release each chunk's fp32 vec as soon as its
+encoded form is written. Gate: a dim-768 100k build completes on the 8 GB
+machine with peak RSS bounded to (model + int8 corpus + measured working set)
+and the golden `--gate` reproduces the committed baseline byte-exactly; else
+decline and document `--dimensions 256` (§14) as the low-RAM build profile.
+
+

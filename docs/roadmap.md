@@ -33,6 +33,7 @@ These are the only places where the retrieval stack may change; each has a measu
 | RESEARCH §17 | ~~Should HNSW become the default ANN engine?~~ **Declined (#228):** build acceleration measured at ×1.27 end-to-end (kernel ×6 on batches) — the order-of-magnitude trigger is unreachable; IVF stays default. | — | closed |
 | RESEARCH §12 | ~~Late chunking vs heading-path context?~~ **Declined (#260):** the `bench/late-chunking.mjs` prototype loses on golden v2 dev (nDCG −0.0441) and loses most of all on the `long-doc-section` slice that motivated the question (−0.1394) — heading-path contextualization stays; late chunking is a documented non-goal for CLS-pooled adapters. | — | closed |
 | RESEARCH §13 | ~~WASM SIMD dot-product kernels (sweep side)?~~ **Landed (#259):** the measured SIMD sweep kernel beats the ×2 premise (×3.5–3.7 isolated, −23.5%/−15.2% warm-hybrid p50 at 50k/100k interleaved) and reproduces the golden baseline byte-exactly (nDCG@10 0.8653 → 0.8653) — default dense-sweep path; the js-flat plumbing-only candidate measured and rejected. | — | closed |
+| RESEARCH §19 | ~~Low-priority indexing (a `--polite` build mode)?~~ **Declined (#264):** the pre-registered gate failed on cost — below-normal priority halves foreground scheduling gaps (p95 7.3 → 4.1 ms) but costs +30% build wall-time under the measured busy-desktop load; p50 improvement (−17.4%) misses the ≥25% bar. No product code shipped; the opt-in recipe is OS-level (`start /low` / `nice -n 10`), documented in README. | — | closed |
 
 ---
 

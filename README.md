@@ -821,6 +821,27 @@ Example `.mdssrc.json`:
 
 Run `mdss check` to validate your configuration file schema and detect unknown keys.
 
+### Indexing without slowing the machine down
+
+There is no `--polite` flag: the below-normal-priority build mode was prototyped
+and **declined** on the pre-registered gate (issue #264, RESEARCH §19) — under a
+busy desktop it halved foreground scheduling gaps (p95 7.3 → 4.1 ms) but cost
++30% build wall-time on the measurement machine. If you index while working and
+the build makes the desktop lag, the measured-friendly recipe is OS-level and
+opt-in:
+
+```bash
+# Windows: run the build at below-normal priority
+start /low /b mdss index --db ./notes
+# Unix: nice the build
+nice -n 10 mdss index --db ./notes
+```
+
+…plus the always-available throughput knobs: `MDSS_INTRA_OP_THREADS=2` (default:
+up to 4 — `src/core.ts`) and `--workers 1` (default) make each build gentler at
+the cost of wall-time, and `mdss index` re-uses unchanged chunks via `chunkHash`,
+so watch-mode rebuilds are cheap.
+
 ## Models
 
 ```bash

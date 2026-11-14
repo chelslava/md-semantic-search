@@ -18,6 +18,9 @@ vectors.json
 # npm pack artifacts (produced by scripts/verify-pack.mjs on failure) — never commit.
 *.tgz
 
+# Local bench artifacts (large synthetic corpora + indexes from bench/peak-memory.mjs)
+.bench-tmp/
+
 # Generated documentation site
 site/
 
