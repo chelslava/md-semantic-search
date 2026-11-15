@@ -6,7 +6,29 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-11-15
+
+**Upgrade notes:** Node ≥ 22 is now required — the `engines` floor moved from
+≥ 20.9 (issue #263), exactly as the #224 deprecation warning announced; Node
+20 reached EOL on 2026-04-30 and CI has tested only the maintained LTS lines
+(22/24) since #224. The pre-22 stderr deprecation notice is retired with the
+floor (the pattern is preserved in git history for the next floor). Nothing
+else changes for existing deployments: no index-format migration, no
+default-model or default-engine switch, no forced re-index — the §21–§24 gate
+outcomes absorbed into this major required no migration UX (the SIMD IVF
+sidecar (#268) changes values only on rebuild and stays byte-compatible;
+`granite-97m` (#269) is an opt-in alias; the thread-default (#271) and
+static-tier (#270) probes closed declined). Tag and npm publish follow the
+#258 prerequisite (npm-token).
+
 ### Changed
+- **Breaking — issue #263: `engines` floor → Node ≥ 22** (`package.json`,
+  `package-lock.json`, `server.json`, `integrations/vscode` version mirror):
+  v3.0.0 is the breaking-platform-floor anchor promised in #224. The
+  Node-20 end-of-life deprecation notice (`MDSS_NO_NODE_WARNING` machinery,
+  two stderr-ordering tests) is removed — running on a pre-22 runtime is now
+  an unsupported configuration caught by `engines` at install time, not a
+  warned one.
 - **Issue #270 — static-embedding fast tier gate closed DECLINED — the measured quality/speed
   frontier is recorded** (`scripts/run-bench.mjs` + RESEARCH §24): a `potion-multilingual-128m`
   static-embedding adapter path (safetensors token-embedding matrix + tokenizer lookup +

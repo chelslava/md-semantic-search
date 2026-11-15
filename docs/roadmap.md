@@ -84,12 +84,12 @@ market-driven packaging item.
   onboarding docs (MCP registration snippets, `mdss://` URIs, ask/related
   patterns) — market finding: agent-facing distribution (the QMD/Claude Code
   pattern) drives adoption in this segment more than raw search quality.
-- [ ] **v3.0.0 floor** (#263): the breaking-platform-floor anchor
+- [x] **v3.0.0 floor** (#263): the breaking-platform-floor anchor
   (`engines` → Node ≥ 22) — see the outlook below.
 
 ## v3.0.0 — Breaking platform floor (outlook)
 
-- [ ] `engines` floor → **Node ≥ 22** (breaking; the 18 → 20.9 precedent in v2.0.0). Announced via the #224 deprecation warning well in advance. Tracked by [#263](https://github.com/chelslava/md-semantic-search/issues/263).
+- [x] `engines` floor → **Node ≥ 22** (breaking; the 18 → 20.9 precedent in v2.0.0). Announced via the #224 deprecation warning well in advance; the pre-22 notice path retired with the floor. Tracked by [#263](https://github.com/chelslava/md-semantic-search/issues/263).
 - [ ] Absorb whatever the §12/§13 gates decide — a default-embedder or default-engine switch ships here if the migration UX requires a major.
 
 ## Deferred by triggers (not scheduled)
