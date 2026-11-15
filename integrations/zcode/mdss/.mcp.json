@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "mdss": {
+      "command": "npx",
+      "args": ["-y", "md-semantic-search", "mcp"],
+      "env": {
+        "MDSS_DB": "./notes"
+      }
+    }
+  }
+}

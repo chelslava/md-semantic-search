@@ -106,3 +106,50 @@ test('agent-skill: `mdss skill` prints SKILL.md verbatim', async () => {
   const out = execFileSync(process.execPath, [path.join(root, 'bin', 'cli.mjs'), 'skill'], { encoding: 'utf8' });
   assert.equal(out.replace(/\r\n/g, '\n'), expected, 'mdss skill output must equal the shipped SKILL.md');
 });
+
+// ---------------------------------------------------------------------------
+// issue #275: host-native packaging — the ZCode plugin bundles a drift-guarded
+// skill copy and declares only resources that exist; OpenCode ships the mcp
+// block + commands.
+// ---------------------------------------------------------------------------
+
+test('agent-skill: ZCode plugin bundles the skill copy and declares existing resources (issue #275)', () => {
+  const canonical = read('integrations/agent-skill/SKILL.md');
+  const bundled = read('integrations/zcode/mdss/skills/mdss-notes-search/SKILL.md');
+  assert.equal(bundled, canonical, 'plugin skill copy must match the canonical SKILL.md byte-for-byte (CRLF-normalized)');
+
+  const manifest = JSON.parse(read('integrations/zcode/mdss/.zcode-plugin/plugin.json'));
+  assert.equal(manifest.name, 'mdss');
+  assert.match(manifest.name, /^[a-z0-9-]+$/, 'plugin name is lower-case hyphenated');
+  for (const p of [manifest.skills, manifest.commands, manifest.mcpServers]) {
+    assert.ok(fs.existsSync(path.join(root, 'integrations', 'zcode', 'mdss', p)), `plugin resource exists: ${p}`);
+  }
+
+  const mcp = JSON.parse(read('integrations/zcode/mdss/.mcp.json'));
+  const server = mcp.mcpServers?.mdss;
+  assert.ok(server, '.mcp.json registers the mdss server');
+  assert.ok(server.command === 'npx', 'server runs through npx');
+
+  const market = JSON.parse(read('integrations/zcode/.claude-plugin/marketplace.json'));
+  const entry = market.plugins.find((p) => p.name === 'mdss');
+  assert.ok(entry, 'marketplace lists the mdss plugin');
+  assert.equal(entry.version, manifest.version, 'marketplace version follows the manifest');
+  assert.equal(entry.source, './mdss', 'marketplace source resolves inside the root');
+});
+
+test('agent-skill: OpenCode integration ships a valid mcp config and commands (issue #275)', () => {
+  const cfg = JSON.parse(read('integrations/opencode/opencode.json'));
+  const mdss = cfg.mcp?.mdss;
+  assert.ok(mdss, 'opencode.json defines the mdss mcp block');
+  assert.equal(mdss.type, 'local');
+  assert.deepEqual(mdss.command.slice(0, 3), ['npx', '-y', 'md-semantic-search']);
+
+  for (const cmd of ['integrations/opencode/command/mdss-search.md', 'integrations/opencode/command/mdss-index.md']) {
+    const doc = read(cmd);
+    assert.match(doc, /^---\ndescription: /, `${cmd} carries a description frontmatter`);
+    assert.ok(doc.includes('$ARGUMENTS'), `${cmd} passes arguments through`);
+  }
+  // the AGENTS.md recipe must stay accurate: the skill ships in the npm tarball
+  const pkg = JSON.parse(read('package.json'));
+  assert.ok(pkg.files.includes('integrations/agent-skill/'), '`npx md-semantic-search skill` relies on the tarball-shipped skill');
+});

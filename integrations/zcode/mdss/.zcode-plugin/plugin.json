@@ -1,0 +1,9 @@
+{
+  "name": "mdss",
+  "version": "0.1.0",
+  "description": "Local private semantic search over the user's Markdown notes (md-semantic-search): hybrid retrieval MCP server + agent skill + /mdss-index command. Nothing leaves the machine.",
+  "author": { "name": "chelslava" },
+  "skills": "./skills",
+  "commands": "./commands",
+  "mcpServers": "./.mcp.json"
+}

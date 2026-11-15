@@ -1,0 +1,17 @@
+{
+  "name": "mdss-market",
+  "plugins": [
+    {
+      "name": "mdss",
+      "source": "./mdss",
+      "version": "0.1.0",
+      "description": "Local private semantic search over the user's Markdown notes (md-semantic-search): MCP server registration, agent skill and an /mdss-index command. Nothing leaves the machine.",
+      "displayName": "mdss — local notes memory",
+      "displayName_i18n": { "ru-RU": "mdss — локальная память заметок" },
+      "description_i18n": {
+        "ru-RU": "Локальный приватный семантический поиск по Markdown-заметкам (md-semantic-search): MCP-сервер, агентский skill и команда /mdss-index. Ничего не покидает машину."
+      },
+      "category": "developer-tools"
+    }
+  ]
+}

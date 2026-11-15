@@ -47,6 +47,63 @@ Project-scoped `.mcp.json` (Claude Code, Cline, and most MCP clients):
 Claude Desktop and Cursor configs are in the
 [README MCP section](../README.md#4-mcp-server-claude-desktop-cursor-copilot-antigravity).
 
+Other hosts — the same stdio server:
+
+**Codex CLI** (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.mdss]
+command = "npx"
+args = ["-y", "md-semantic-search", "mcp"]
+env = { "MDSS_DB" = "D:\\Notes" }
+```
+
+**Gemini CLI** (`~/.gemini/settings.json` or project `.gemini/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "mdss": {
+      "command": "npx",
+      "args": ["-y", "md-semantic-search", "mcp"],
+      "env": { "MDSS_DB": "./notes" }
+    }
+  }
+}
+```
+
+**Zed** (`~/.config/zed/settings.json`) — see the
+[Zed integration analysis](#zed--integration-analysis-issue-275) for why no
+Zed extension is needed:
+
+```json
+{
+  "context_servers": {
+    "mdss": {
+      "source": "custom",
+      "command": "npx",
+      "args": ["-y", "md-semantic-search", "mcp"],
+      "env": { "MDSS_DB": "./notes" }
+    }
+  }
+}
+```
+
+**Universal workflow recipe (any AGENTS.md host — OpenCode, Codex CLI, Gemini
+CLI, Zed, …):** the skill pack ships inside the npm package, so one line
+teaches the agent the retrieval workflow:
+
+```bash
+npx md-semantic-search skill >> AGENTS.md
+```
+
+Host-native packaging: a **ZCode plugin** lives in
+[`integrations/zcode/`](../integrations/zcode) (a marketplace root bundling
+the MCP registration, the agent skill and an `/mdss-index` command) and
+**OpenCode** templates in [`integrations/opencode/`](../integrations/opencode)
+(the `opencode.json` `mcp` block plus `/mdss-search` and `/mdss-index`
+commands and the AGENTS.md recipe).
+
 ### B. daemon + Streamable HTTP MCP
 
 ```bash
@@ -132,6 +189,28 @@ The daemon binds loopback by default. For team/LAN exposure:
 start otherwise), plus `--trust-proxy <ip|cidr>` behind a reverse proxy for
 per-client rate limiting. See [Securing remote deployments](../README.md#securing-remote-deployments)
 and [SECURITY.md](../SECURITY.md).
+
+## Zed — integration analysis (issue #275)
+
+Zed needs **no extension** to use mdss. Its Agent Panel speaks MCP natively,
+and the `context_servers` settings block above registers the same 9 tools the
+other hosts get — including `reindex` and the `mdss://status` subscriptions
+over the daemon transport. Workflow guidance goes into `AGENTS.md`/`.rules`
+(Zed has no skill loader — use the universal
+`npx md-semantic-search skill >> AGENTS.md` recipe).
+
+A **native Zed extension** (a Rust crate compiled to WASM against
+`zed_extension_api`, distributed through the `zed-industries/extensions`
+registry) was analyzed and **deferred**:
+
+- What it could add: install-and-go server lifecycle bundling, a settings
+  surface for the notes path, and registry discoverability.
+- Why deferred: mdss ships no binaries — `npx` resolves everything at runtime,
+  so the extension would be a thin wrapper around a settings block; every
+  mdss release would then ride the extension's review/release cycle instead
+  of npm; and the `context_servers` path is already one paste. Revisit if the
+  Zed extension registry becomes a discovery channel that justifies the
+  release coupling.
 
 ## Registration in the MCP Registry
 
