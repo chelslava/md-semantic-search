@@ -114,7 +114,7 @@ deprecation warning announced it well in advance). Supported runtimes:
 
 | Runtime | Status | Support |
 |---|---|---|
-| **Node 22, 24** | Maintained LTS lines | Tested in CI |
+| **Node 22, 24, 26** | Maintained LTS lines | Tested in CI |
 
 Native dependencies ship as prebuilt binaries — no compiler toolchain needed
 on any platform.

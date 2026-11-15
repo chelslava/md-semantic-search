@@ -37,7 +37,8 @@ jobs:
         # drive-letter rules, test/longpath.test.mjs, UNC rejection, CRLF) —
         # the suite must gate merges on it, not just on Linux.
         os: [ubuntu-latest, windows-latest]
-        node: [22, 24]
+        # all maintained LTS lines; 26 joined with the node:26-alpine image (#267)
+        node: [22, 24, 26]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
