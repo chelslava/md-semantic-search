@@ -17,9 +17,11 @@ mdss/                             ← the plugin
 1. Open **Plugin Marketplace → Add → Add Plugin Marketplace** and paste this
    directory's absolute path (e.g. `D:\Repo\md-semantic-search\integrations\zcode`).
 2. **Personal → mdss-market → mdss → Install**.
-3. Point the bundled MCP server at your notes: edit `mdss/.mcp.json` →
-   `env.MDSS_DB` (absolute path; Windows needs escaped backslashes
-   `"D:\\Notes"`), or remove the env block to rely on `.mdssrc.json` discovery.
+3. Point the bundled MCP server at your notes — the `.mcp.json` ships with no
+   `env` block on purpose: set the user-level variable
+   `setx MDSS_DB "D:\\Notes"` (recommended; survives plugin updates), or add
+   an `env` block to `mdss/.mcp.json` per install, or rely on
+   `.mdssrc.json` discovery from the session's working directory.
 4. Trial: run `/mdss-index <your notes folder>` — expect the index build
    report (chunk/file counts, build timestamp), then ask a question about your
    notes and expect a cited answer with `file.md#Heading` line references.

@@ -10,14 +10,18 @@ Bundles `md-semantic-search` as a one-command install for ZCode:
 
 ## Setup
 
-The MCP server needs to know where the notes live. Two options:
+The MCP server needs to know where the notes live. In order of precedence:
 
-1. **Edit the bundled config** — in `.mcp.json`, set `MDSS_DB` to the real
-   notes folder (absolute path recommended; Windows paths need escaped
-   backslashes in JSON: `"D:\\Notes"`), or
-2. **Zero-config discovery** — leave `MDSS_DB` unset by removing the env
-   block; mdss then discovers `.mdssrc.json` upward from the session's
-   working directory.
+1. **User environment variable (recommended — survives plugin updates)**:
+   `setx MDSS_DB "D:\\Notes"` (Windows) or `export MDSS_DB=...` (Unix). The
+   bundled `.mcp.json` deliberately carries no `env` block, so the server
+   inherits it — a marketplace refresh/reinstall never loses the path.
+2. **Per-install pin**: add an `env` block in `.mcp.json` —
+   `"env": { "MDSS_DB": "D:\\Notes" }` (Windows paths need escaped
+   backslashes in JSON). Note this overrides the environment variable and is
+   overwritten by plugin updates.
+3. **Config discovery**: with neither set, mdss discovers `.mdssrc.json`
+   upward from the session's working directory.
 
 The first `mdss` call downloads the embedding model (~300 MB) once, then
 everything stays local and offline.
