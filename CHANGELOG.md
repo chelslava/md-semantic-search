@@ -38,6 +38,11 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
   recorded as a pre-registered config gate (unset-by-default iff ≥ ×1.08 on the real
   pipeline AND the golden gate holds with drop ≤ 0.005). The stale "wasm sessions" comment
   in `src/core.ts` corrected. Survey only — no product change from the section itself.
+  **Thread-default gate closed DECLINED** (`bench/thread-default.mjs`, issue #271): on the
+  real granite pipeline (2,004-chunk fixture, interleaved ×2) the unset arms measured
+  ×1.046 / ×1.033 vs the clamp — both below the ×1.08 bar, with in-arm spread (5–26%)
+  of the same order as the effect; intra-8 confirmed the #194 hyperthread-contention
+  finding (×0.932). The clamp stays as the default; measurement plumbing reverted.
 - **Issue #264** — **§19 low-priority indexing gate measured — closed as declined, no product
   code shipped** (`bench/priority-probe.mjs`): a real granite q8 build of a 3,000-chunk corpus
   ran interleaved [normal, below-normal, normal, below] while two spin-preemption probe

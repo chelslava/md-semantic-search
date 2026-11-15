@@ -1034,6 +1034,30 @@ build AND the golden gate holds with drop ≤ 0.005 and Recall@10 = 1.0
 possible and must be gated, not assumed away). Otherwise keep the clamp and
 close declined-with-measurements.
 
+### Threads gate result (2026-11-15): DECLINED — the clamp stays
+
+Measured with `bench/thread-default.mjs` on the real pipeline (granite q8,
+2,004-chunk fixture, interleaved A,B,C,D ×2, per-child processes, offline
+cache). The probe's "unset" arm split into two device variants before any
+pipeline run (§ instrument note in the harness header); thresholds unchanged:
+
+| Arm | Config | Median wall | vs clamp | Peak RSS |
+|---|---|---:|---:|---:|
+| A | clamp intra-4 (current) | 263.0 s | base | 926.3 MB |
+| B | unset session options | 251.4 s | ×1.046 | 983.7 MB |
+| C | unset + `device:'cpu'` | 254.7 s | ×1.033 | 992.8 MB |
+| D | env-forced intra-8 | 282.2 s | ×0.932 | 1033.6 MB |
+
+Neither unset arm clears ×1.08 (bar = 243.5 s): B misses by 7.9 s and C by
+11.2 s, and the run-to-run spread INSIDE arms (B 245.6↔257.2 s, C
+262.1↔247.3 s, D 319.4↔245.1 s) is the same order as the effect — the probe's
+~13% did not survive contact with the real pipeline at its actual sequence
+lengths. The AND-rule short-circuits on the wall condition; the golden legs
+were not run. intra-8 confirms the #194 hyperthread-contention finding
+(×0.932, with the widest spread). Verdict: the clamp stays as the default;
+the measurement plumbing was reverted (harness retained, outcome note in its
+header).
+
 ### Decision
 
 No product change from the survey itself: the fastest zero-dependency
