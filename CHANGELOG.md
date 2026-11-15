@@ -6,6 +6,100 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-11-15
+
+**Upgrade notes:** nothing breaking — no index-format migration, no `engines`
+change, no forced re-index. One MCP behavior change to know about:
+`get_lines` without `maxLines` now defaults to a **200-line cap** and reports
+`truncated: true` when clipped (issue #273) — explicit `maxLines` reads are
+honored as-is; the library `getDocLines` is unchanged. The MCP tool surface
+grows **7 → 9** (new `facets`, `reindex`), and the server now teaches agents
+its retrieval workflow through the `initialize` instructions field — clients
+pick both up without any configuration.
+
+### Added
+- **Issue #272 — agent onboarding**: `initialize` carries the
+  `instructions` field (`MCP_SERVER_INSTRUCTIONS`) — the retrieval workflow,
+  the citation contract (`startLine`/`endLine`), the `answerMode`/`abstained`
+  semantics and the snapshot caveat reach the model's context in every MCP
+  client, skill pack installed or not. The npm tarball now ships the agent
+  skill pack (`integrations/agent-skill/`, `docs/agent-integration.md`) and a
+  new `mdss skill` command prints SKILL.md verbatim
+  (`npx md-semantic-search skill`), so agents self-onboard from an installed
+  package; `mdss completions` gains the `skill` command; drift tests pin the
+  tarball contract and the `initialize` instructions content.
+- **Issue #273 — new `facets` tool**: value→count maps for frontmatter fields
+  (`tags`, `type`, `status`, `project`, `custom.<key>`) — the discovery layer
+  behind `filter:` building, the same contract as `GET /facets`. The counting
+  policy moved to `src/facets.ts`, shared verbatim by the HTTP handler and
+  MCP (one validation rule, one limit clamp, one wire format); invalid field
+  names surface as `isError` tool results with the HTTP 400 message.
+- **Issue #273 — `search_markdown` tuning parity with `POST /search`**: the
+  input schema gains `semanticOnly`, `rerank`/`rerankModel`, `recency`,
+  `maxPerFile` and `dimensions`, passed through with the HTTP handler's
+  semantics (recency floor, `maxPerFile` normalization), federated path
+  included.
+- **Issue #273 — richer `index_status`**: reports `files`, `db`, `ageSeconds`
+  and `stale` (newest note mtime vs the build timestamp, the `mdss check`
+  5 s grace; `null` when the db is unreadable) so agents self-diagnose
+  staleness over MCP alone.
+- **Issue #274 — resource subscriptions**: `resources/subscribe` /
+  `resources/unsubscribe` with `mdss://status` as the one subscribable
+  resource (`initialize` advertises `subscribe: true`); the daemon emits
+  `notifications/resources/updated` after every watch re-index and the
+  `reindex` tool notifies identically — long-lived agents stop polling.
+  Notes are static snapshots and are rejected with the reason.
+- **Issue #274 — new `reindex` tool** — the first non-readOnly tool
+  (`readOnly`/`idempotent: false`): incremental rebuild (md5 + chunkHash
+  reuse) under the `<index>/.mdss.lock` with the server's own build inputs;
+  stdio swaps its handler state in place, the HTTP daemon swaps its `loaded`
+  through a hook so `/search` sees the new generation; no-db indexes fail
+  with an actionable error.
+- **Issue #274 — `ask_knowledge_base` `chat: true`**: the session is minted
+  server-side (the HTTP `/ask` contract) — the payload returns
+  `sessionId`/`turnsCount` and the id continues the conversation; agents no
+  longer invent ids.
+- **Issue #274 — progress notifications**: the stdio first build emits
+  `notifications/progress` frames on the wire (start → per-batch → complete;
+  best-effort, stderr stays the universal fallback); the `reindex` tool
+  emits embedding progress on both transports. The HTTP startup build
+  precedes `listen`, so its progress rides stderr.
+- **Issue #275 — host-native integrations**: a **ZCode plugin** marketplace
+  root (`integrations/zcode` — MCP registration + a drift-guarded
+  byte-identical skill copy + an `/mdss-index` command; `.mcp.json` ships
+  without an env block so `MDSS_DB` from the user environment survives
+  plugin updates), **OpenCode** copy-in templates (`opencode.json` mcp
+  block, `/mdss-search` + `/mdss-index` commands), a **Zed integration
+  analysis** (the `context_servers` settings path needs no extension; a
+  native Zed extension analyzed and deferred with the revisit trigger),
+  **Codex CLI** and **Gemini CLI** registration snippets, and the universal
+  `npx md-semantic-search skill >> AGENTS.md` recipe.
+
+### Changed
+- **Issue #273 — `get_lines` context cap**: an omitted `maxLines` defaults to
+  200 lines; every clipped result reports `truncated: true`; explicit
+  `maxLines` reads are honored as-is (the library `getDocLines` is
+  unchanged).
+- **Issue #273 — compact tool text**: MCP `tools/call` text content is
+  compact JSON — pretty-printing doubled the token cost for text-reading
+  clients; `structuredContent` remains the object contract (#205).
+- **Issue #272 — richer tool descriptions** for all MCP tools: hits carry
+  `startLine`/`endLine` for verifiable citations, cross-lingual queries,
+  `get_lines` vs `get_chunk` guidance, `answerMode` semantics. Names,
+  schemas and annotations are unchanged.
+- **Node 26 support (#267 + the variant-б commit)**: the CI matrix runs
+  `[22, 24, 26]` on both OSes and the support docs name all three
+  maintained LTS lines; the Docker image moved to a digest-pinned
+  `node:26-alpine`. `engines` stays `>=22`; the Node 22 retirement is a
+  dated gate tracked by #276 (deprecation warning in 3.x, floor → `>=24` in
+  v4.0.0 at EOL 2027-04-30). `onnxruntime-node` ships ABI-stable N-API
+  binaries, so the native layer needs no per-major rebuild.
+- chore: the `package-lock.json` self-entry engines synced to `>=22` (the
+  v3.0.0 release commit missed it — every local `npm install` produced a
+  noise diff).
+
+Also in this window: `@types/vscode` 1.145 → 1.146 (dev-only, #266).
+
 ## [3.0.0] - 2026-11-15
 
 **Upgrade notes:** Node ≥ 22 is now required — the `engines` floor moved from

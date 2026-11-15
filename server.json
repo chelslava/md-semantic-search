@@ -2,12 +2,12 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.chelslava/md-semantic-search",
   "description": "Local semantic search + citation-first RAG over Markdown. Hybrid dense+BM25F, ANN, MCP server.",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "md-semantic-search",
-      "version": "3.0.0",
+      "version": "3.1.0",
       "transport": {
         "type": "stdio"
       }
