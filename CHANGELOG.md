@@ -7,6 +7,23 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- **Issue #268 — SIMD IVF k-means SHIPPED: trainIVF ×6.1, 100k build wall ×2.43, sidecar
+  digest byte-identical** (`src/ivf.ts`, `src/sweep-kernel.ts`): the k-means sweeps score
+  per-centroid rows against the whole corpus through the §13 WASM SIMD kernel (a new
+  rows constructor copies `Array<Float32Array>` corpora into WASM memory row by row — no
+  intermediate flat copy). Measured on the 4c/8t machine: `trainIVF` on the 100k
+  worst-case corpus 642.4 → **105.9 s (×6.1)**; the §20 fixture 100k build 250.6 →
+  **103.3 s (×2.43)**; maxRSS +88 MB (+7.2%) — the WASM corpus copy during IVF does not
+  become the build peak. Drift: the deterministic clustered-corpus probe (20k × 768,
+  seed 42) produced a **byte-identical `serializeIVF` digest** with recall@10 = 1.0
+  unchanged (the last-ulp accumulation difference flipped no seeding choice or
+  assignment); the golden gate reproduces the baseline byte-exactly (0.8653 → 0.8653).
+  Instrument note recorded in RESEARCH §22: the golden corpus is 112 chunks — below
+  `ANN_THRESHOLD` — so the gate has no IVF sidecar and is blind to IVF drift; the drift
+  side of the rule is verified by the deterministic sidecar probe. Engines are each
+  self-consistent, not cross-identical (#228 contract); the JS path stays as the
+  automatic fallback and as a forced engine (`trainIVF(…, { engine: 'js' })`). 685 tests
+  pass including three new engine tests. Full record: RESEARCH §22.
 - **Issue #265 step 2 — batch-streamed persistence SHIPPED: build peak RSS −48% at 100k,
   persisted bytes unchanged** (`src/indexer.ts`, `src/binary-format.ts`): the final
   persistence no longer materializes the encoded envelope (base64 copies of every vector),

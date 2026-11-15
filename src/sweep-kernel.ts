@@ -107,18 +107,29 @@ export interface WasmSweepEngine {
 
 /**
  * Build the engine over a flat row-major corpus. `corpus` is either an Int8Array
- * (count*dim bytes, `norms` REQUIRED — the JS-cached int8 norms) or a Float32Array
- * (count*dim floats). Returns null when the runtime cannot compile the SIMD module
- * or the arguments do not fit (then callers keep the JS path).
+ * (count*dim bytes, `norms` REQUIRED — the JS-cached int8 norms), a Float32Array
+ * (count*dim floats), or — issue #268 — an array of uniform Float32Array rows
+ * (fp32 only; the rows are copied into WASM memory one by one, so a ragged
+ * row list needs no intermediate flat copy). Returns null when the runtime
+ * cannot compile the SIMD module or the arguments do not fit (then callers
+ * keep the JS path).
  */
 export function createWasmSweepEngine(
-  corpus: Int8Array | Float32Array,
+  corpus: Int8Array | Float32Array | readonly Float32Array[],
   norms: Float32Array | null,
   dim: number,
   count: number,
 ): WasmSweepEngine | null {
-  if (!(dim > 0) || !(count > 0) || corpus.length < count * dim) return null;
-  const isInt8 = corpus instanceof Int8Array;
+  if (!(dim > 0) || !(count > 0)) return null;
+  const isRows = Array.isArray(corpus);
+  if (isRows) {
+    if ((corpus as readonly Float32Array[]).length < count) return null;
+    for (let i = 0; i < count; i++) {
+      const v = (corpus as readonly Float32Array[])[i];
+      if (!(v instanceof Float32Array) || v.length !== dim) return null;
+    }
+  } else if ((corpus as Int8Array | Float32Array).length < count * dim) return null;
+  const isInt8 = !isRows && corpus instanceof Int8Array;
   if (isInt8 && !(norms instanceof Float32Array && norms.length >= count)) return null;
 
   const module = compileKernel();
@@ -150,7 +161,11 @@ export function createWasmSweepEngine(
   const u32 = new Uint32Array(mem.buffer);
   const i8 = new Int8Array(mem.buffer);
   if (isInt8) i8.set(corpus as Int8Array, corpusByte);
-  else f32.set(corpus as Float32Array, corpusByte >> 2);
+  else if (isRows) {
+    for (let i = 0; i < count; i++) {
+      f32.set((corpus as readonly Float32Array[])[i], (corpusByte >> 2) + i * dim);
+    }
+  } else f32.set(corpus as Float32Array, corpusByte >> 2);
   if (isInt8 && norms) f32.set(norms.subarray(0, count), normsByte >> 2);
 
   return {

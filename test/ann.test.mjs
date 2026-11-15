@@ -441,3 +441,73 @@ test('ann: cached dequantized vectors keep results rank-identical across the col
     safeRm(dir);
   }
 });
+
+// ---------------------------------------------------------------------------
+// issue #268 (RESEARCH §22): the k-means sweeps run through the §13 SIMD
+// kernel ('auto', the default) with the JS path as fallback ('js'). The two
+// engines differ in the last ulp (4-lane vs 8-lane accumulation) — each is
+// self-consistent, neither is cross-identical (#228 contract).
+// ---------------------------------------------------------------------------
+
+function mulberry32(seed) {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function clusteredVectors(n, dim, groups) {
+  const rnd = mulberry32(777);
+  const centers = Array.from({ length: groups }, () => {
+    const v = new Float32Array(dim);
+    for (let d = 0; d < dim; d++) v[d] = (rnd() - 0.5) * 2;
+    const norm = Math.hypot(...v) || 1;
+    for (let d = 0; d < dim; d++) v[d] /= norm;
+    return v;
+  });
+  return Array.from({ length: n }, (_, i) => {
+    const center = centers[i % groups];
+    const v = new Float32Array(dim);
+    for (let d = 0; d < dim; d++) v[d] = center[d] + (rnd() - 0.5) * 0.1;
+    const norm = Math.hypot(...v) || 1;
+    for (let d = 0; d < dim; d++) v[d] /= norm;
+    return v;
+  });
+}
+
+function clusterPartition(ivf) {
+  return ivf.clusters.map((members) => [...members].sort((a, b) => a - b).join(',')).sort().join('|');
+}
+
+test('ivf: SIMD engine (auto) is deterministic across runs (issue #268)', () => {
+  const vectors = clusteredVectors(600, 64, 6);
+  const a = trainIVF(vectors, { k: 12, seeding: 'kmeans++', seed: 42 });
+  const b = trainIVF(vectors, { k: 12, seeding: 'kmeans++', seed: 42 });
+  assert.deepEqual(Array.from(a.centroids), Array.from(b.centroids), 'centroids bit-identical');
+  assert.deepEqual(a.clusters, b.clusters, 'clusters identical');
+  assert.equal(serializeIVF(a).centroids, serializeIVF(b).centroids);
+});
+
+test('ivf: SIMD and JS engines agree on well-separated clusters (issue #268)', () => {
+  const vectors = clusteredVectors(400, 32, 4);
+  const simd = trainIVF(vectors, { k: 8, seeding: 'kmeans++', seed: 42 });
+  const js = trainIVF(vectors, { k: 8, seeding: 'kmeans++', seed: 42, engine: 'js' });
+  assert.equal(simd.k, js.k);
+  // well-separated groups must partition identically regardless of the ulp
+  assert.equal(clusterPartition(simd), clusterPartition(js), 'same partition');
+});
+
+test('ivf: engine:"js" forces the fallback path and stays deterministic (issue #268)', () => {
+  const vectors = clusteredVectors(200, 32, 4);
+  const a = trainIVF(vectors, { k: 6, seeding: 'kmeans++', seed: 9, engine: 'js' });
+  const b = trainIVF(vectors, { k: 6, seeding: 'kmeans++', seed: 9, engine: 'js' });
+  assert.deepEqual(Array.from(a.centroids), Array.from(b.centroids));
+  assert.deepEqual(a.clusters, b.clusters);
+  // spread seeding ignores the engine entirely — same result either way
+  const spreadAuto = trainIVF(vectors, { k: 6, seeding: 'spread' });
+  const spreadJs = trainIVF(vectors, { k: 6, seeding: 'spread', engine: 'js' });
+  assert.deepEqual(Array.from(spreadAuto.centroids), Array.from(spreadJs.centroids));
+});

@@ -1065,3 +1065,76 @@ configuration is (probably) already shipped, pending the thread gate above;
 DirectML/GPU recorded as measured non-goals for this hardware class. The
 model-side speed levers route to the new gates: §22 (IVF k-means SIMD), §23
 (granite-97m opt-in profile), §24 (static-embedding fast tier).
+## 22. Research Evaluation: SIMD IVF k-Means (Issue #268)
+
+### Question
+
+After #265 streamed the persistence away, `trainIVF` is the dominant
+mdss-side build-wall term at scale: measured **642.4 s** of pure-JS k-means on
+the 100k worst-case corpus (k=256, ~11 assignment iterations + k-means++
+seeding), and ~80% of the §20 fixture 100k wall. The cost is n × k × dim dot
+products — the same pointwise primitive the shipped §13 sweep kernel
+accelerates ×3.5–3.7 on the search side. Can the k-means sweeps take that
+kernel within the golden-gate tolerance?
+
+### Instrument
+
+- **Worst case**: the synthetic 20-iteration corpus from the §20/§21 probe
+  runs (100k × 768, k=256, `trainIVF` timed standalone).
+- **Fixture build**: the §20 peak-memory harness at 100k fp32 (wall + maxRSS).
+- **Drift probe**: a deterministic clustered corpus (mulberry32-seeded PRNG —
+  Math.random is unseeded and would make runs incomparable), 20k × 768,
+  k-means++ seed 42: recall@10 of the IVF candidates vs the exact brute-force
+  sweep over 25 center-near queries, plus the SHA-256 of `serializeIVF` as
+  the sidecar drift fingerprint.
+- **Golden gate**: `run-bench --slice dev --gate` (overall sanity).
+- **Instrument note (recorded before measuring)**: the golden corpus is
+  **112 chunks — below `ANN_THRESHOLD` (500) — so the gate index has NO IVF
+  sidecar and the gate is blind to IVF drift by construction.** The drift
+  side of the rule is therefore verified by the deterministic sidecar probe
+  above (recall vs brute force + digest), not by the golden gate; the gate
+  still covers overall pipeline sanity.
+- The SIMD arm scores per-centroid whole-corpus sweeps through the §13
+  kernel (rows constructor added: an `Array<Float32Array>` corpus copies into
+  WASM memory row by row — no intermediate flat copy); the JS path stays as
+  the fallback and as a forced engine (`engine: 'js'`), each engine
+  self-consistent, not cross-identical (the #228 contract).
+
+### Measured (2026-11-15, 4c/8t, Node v24.14.1, dim 768)
+
+| Measurement | JS IVF | SIMD IVF | Δ |
+|---|---:|---:|---|
+| trainIVF, 100k worst case | 642.4 s | **105.9 s** | **×6.1** |
+| §20 fixture 100k build (wall) | 250.6 s | **103.3 s** | **×2.43** |
+| Drift-probe trainIVF (20k) | 44.1 s | 7.4 s | ×5.9 |
+| Drift-probe recall@10 (nprobe 8) | 1.0 | **1.0** | unchanged |
+| Drift-probe `serializeIVF` digest | `afe44a2e…` | **`afe44a2e…`** | **identical** |
+| Fixture 100k maxRSS | 1,221.8 MB | 1,310 MB | **+88 MB (+7.2%)** |
+| Golden gate nDCG@10 / Recall@10 | 0.8653 / 1.0 | **0.8653 / 1.0** | byte-exact |
+
+### Findings
+
+1. **×6.1 on the worst-case k-means** — better than the ×3.5 search-side
+   reference because the assignment pass sweeps the WHOLE corpus per centroid
+   (one kernel call per centroid, gather-idx = identity), the kernel's best
+   utilization. The fixture build wall halves (×2.43) with IVF no longer the
+   dominant term.
+2. **Zero drift on the drift corpus**: the digest is byte-identical to the
+   JS engine — the last-ulp accumulation differences did not flip a single
+   seeding choice or cluster assignment there. Recall@10 stays 1.0. The
+   golden gate reproduces the baseline byte-exactly. The engines remain
+   formally non-cross-identical (ulp contract), so the tolerance stays
+   documented rather than assumed away.
+3. **The memory tradeoff is small**: +88 MB of maxRSS (+7.2% over the §20
+   result) — the WASM corpus copy during IVF did not become the peak (the
+   embed phase still dominates the sampled profile). Wall −59% for +7% peak.
+4. The JS path remains reachable (`engine: 'js'`, or automatically when WASM
+   cannot compile / rows are ragged) and stays deterministic.
+
+### Decision (pre-registered rule from issue #268)
+
+SHIP — (a) golden drop 0.0000 ≤ 0.005 with Recall@10 = 1.0 ✓; (b) trainIVF
+×6.1 ≥ ×2.5 worst-case and fixture build ×2.43 ≥ ×2 ✓; (c) bit-identical
+results across repeated runs (determinism tests) ✓. 685 tests pass, including
+the three new engine tests (determinism, cross-engine partition agreement on
+well-separated clusters, forced-JS fallback).

@@ -1,4 +1,5 @@
 import { cosine } from './core.js';
+import { createWasmSweepEngine } from './sweep-kernel.js';
 
 export interface IVFIndex {
   dim: number;
@@ -20,6 +21,16 @@ export interface TrainIVFOptions {
   seeding?: 'kmeans++' | 'spread';
   seed?: number;
   onMetric?: (metric: { emptyClusters: number; iterations: number }) => void;
+  /**
+   * issue #268 (RESEARCH §22): 'auto' (default) scores the k-means sweeps
+   * through the §13 WASM SIMD kernel (per-centroid rows against the corpus
+   * matrix) and silently falls back to the JS path when the module cannot
+   * compile; 'js' forces the historical JS path. The SIMD accumulation order
+   * differs from JS in the last ulp, so the two engines are each
+   * self-consistent but not cross-identical (the #228 contract) — golden-gate
+   * tolerance governs, see §22.
+   */
+  engine?: 'auto' | 'js';
 }
 
 export const ANN_THRESHOLD = 500;
@@ -57,12 +68,72 @@ export function trainIVF(
 
   const centroids = new Float32Array(k * dim);
 
+  // issue #268 (RESEARCH §22): score the k-means sweeps through the §13 SIMD
+  // kernel. The corpus rows are copied into WASM memory once (fp32 rows); a
+  // compile failure or ragged rows degrade to the JS path below. All vectors
+  // are unit-normalized, so the kernel's raw dot IS the cosine — the same
+  // arithmetic class as core.cosine, differing only in the last-ulp
+  // accumulation order (4-lane vs 8-lane).
+  const engine =
+    options.engine === 'js' ? null : createWasmSweepEngine(vectors, null, dim, n);
+
+  // Identity row indices for whole-corpus sweeps (reused across all passes).
+  const identity = engine ? new Uint32Array(n) : null;
+  if (identity) {
+    for (let i = 0; i < n; i++) identity[i] = i;
+  }
+  const sweepScores = engine ? new Float32Array(n) : null;
+
   if (seeding === 'spread' || n <= k) {
     // Deterministic spread
     const step = Math.floor(n / k);
     for (let c = 0; c < k; c++) {
       const src = vectors[c * step];
       centroids.set(src, c * dim);
+    }
+  } else if (engine && identity && sweepScores) {
+    // SIMD k-means++ — same D^2 recurrence as the JS path, each D^2 update
+    // replaced by one whole-corpus sweep against the new centroid.
+    const minDistSq = new Float64Array(n);
+    const sweepD2 = (cOffset: number) => {
+      engine.sweep(centroids.subarray(cOffset, cOffset + dim), identity, sweepScores);
+      for (let i = 0; i < n; i++) {
+        const distSq = Math.max(0, 1 - sweepScores[i]);
+        if (cOffset === 0) minDistSq[i] = distSq;
+        else if (distSq < minDistSq[i]) minDistSq[i] = distSq;
+      }
+    };
+
+    // Deterministic k-means++ seeding with D^2 weighted probability
+    const rng = mulberry32(options.seed ?? 42);
+    const firstIdx = Math.floor(rng() * n);
+    centroids.set(vectors[firstIdx], 0);
+    sweepD2(0);
+
+    for (let c = 1; c < k; c++) {
+      let sumDistSq = 0;
+      for (let i = 0; i < n; i++) {
+        sumDistSq += minDistSq[i];
+      }
+
+      let chosenIdx = -1;
+      if (sumDistSq > 1e-12) {
+        const target = rng() * sumDistSq;
+        let cumulative = 0;
+        for (let i = 0; i < n; i++) {
+          cumulative += minDistSq[i];
+          if (cumulative >= target) {
+            chosenIdx = i;
+            break;
+          }
+        }
+      }
+      if (chosenIdx === -1 || chosenIdx >= n) {
+        chosenIdx = Math.floor(rng() * n);
+      }
+
+      centroids.set(vectors[chosenIdx], c * dim);
+      sweepD2(c * dim);
     }
   } else {
     // Deterministic k-means++ seeding with D^2 weighted probability
@@ -115,30 +186,58 @@ export function trainIVF(
   let totalEmptyClusters = 0;
   let finalIterations = 0;
 
+  // SIMD assignment scratch (allocated once, reset per iteration).
+  const bestScore = engine ? new Float32Array(n) : null;
+  const bestCluster = engine ? new Int32Array(n) : null;
+
   for (let iter = 0; iter < maxIterations; iter++) {
     finalIterations = iter + 1;
     let changed = 0;
     const newClusters: number[][] = Array.from({ length: k }, () => []);
 
     // 1. Assign each vector to closest centroid (highest cosine / dot product)
-    for (let i = 0; i < n; i++) {
-      const v = vectors[i];
-      let bestScore = -Infinity;
-      let bestCluster = 0;
-
+    if (engine && bestScore && bestCluster && identity && sweepScores) {
+      // issue #268: per-centroid whole-corpus sweeps with a running argmax —
+      // the same first-max-wins tie semantics as the JS loop (centroids in
+      // ascending order, strict >).
+      bestScore.fill(-Infinity);
       for (let c = 0; c < k; c++) {
-        const score = cosine(v, centroids, c * dim);
-        if (score > bestScore) {
-          bestScore = score;
-          bestCluster = c;
+        engine.sweep(centroids.subarray(c * dim, (c + 1) * dim), identity, sweepScores);
+        for (let i = 0; i < n; i++) {
+          if (sweepScores[i] > bestScore[i]) {
+            bestScore[i] = sweepScores[i];
+            bestCluster[i] = c;
+          }
         }
       }
-
-      if (assignments[i] !== bestCluster) {
-        assignments[i] = bestCluster;
-        changed++;
+      for (let i = 0; i < n; i++) {
+        const best = bestCluster[i];
+        if (assignments[i] !== best) {
+          assignments[i] = best;
+          changed++;
+        }
+        newClusters[best].push(i);
       }
-      newClusters[bestCluster].push(i);
+    } else {
+      for (let i = 0; i < n; i++) {
+        const v = vectors[i];
+        let bestScoreJs = -Infinity;
+        let bestClusterJs = 0;
+
+        for (let c = 0; c < k; c++) {
+          const score = cosine(v, centroids, c * dim);
+          if (score > bestScoreJs) {
+            bestScoreJs = score;
+            bestClusterJs = c;
+          }
+        }
+
+        if (assignments[i] !== bestClusterJs) {
+          assignments[i] = bestClusterJs;
+          changed++;
+        }
+        newClusters[bestClusterJs].push(i);
+      }
     }
 
     clusters = newClusters;
