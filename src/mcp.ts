@@ -6,6 +6,7 @@
 import readline from 'node:readline';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { buildIndex } from './indexer.js';
 import { loadIndex, searchIndex } from './search.js';
 import { searchFederated } from './federation.js';
@@ -275,6 +276,15 @@ export const MCP_TOOLS = [
     },
   },
   {
+    name: 'reindex',
+    description: 'Rebuild the index from the configured notes folder (incremental: unchanged files and unchanged sections reuse their stored vectors, so it is cheap). Use when index_status reports stale=true — notes edited after the build timestamp are not searchable until this runs. Fails with a clear error while another writer holds the index lock.',
+    annotations: { readOnly: false, idempotent: false },
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
     name: 'ask_knowledge_base',
     description: 'Grounded direct answer with citations synthesized from retrieved knowledge-base passages. answerMode in the payload says how it was produced: "sampling" (the client model wrote it), "extractive" (built-in sentence selection), or "abstained" — no passage carried real support, so tell the user the notes do not cover it and offer different search terms; never fabricate an answer or citations.',
     annotations: { readOnly: true, idempotent: true },
@@ -284,6 +294,7 @@ export const MCP_TOOLS = [
         query: { type: 'string', description: 'Question to ask the knowledge base' },
         k: { type: 'number', description: 'Number of candidate passages to retrieve (default: 5)' },
         sessionId: { type: 'string', description: 'Optional conversation session ID for persistent multi-turn context' },
+        chat: { type: 'boolean', description: 'Start a persistent multi-turn session without inventing an id — the session id comes back in the payload; pass it as sessionId on follow-up turns' },
       },
       required: ['query'],
     },
@@ -400,6 +411,29 @@ export interface McpHandlerState {
   channel?: McpClientChannel;
   clientCapabilities?: any;
   output?: { write(chunk: string): void };
+  /**
+   * issue #274: URIs the client subscribed to via `resources/subscribe`
+   * (currently only the mutable `mdss://status` is subscribable). The SET is
+   * owned by the transport host (stdio: this state; HTTP: the daemon, passed
+   * into each per-request handler object) so subscriptions outlive requests.
+   */
+  subscriptions?: Set<string>;
+  /**
+   * issue #274: transport-owned downlink for server→client NOTIFICATIONS
+   * (requests still go through `channel`). Best-effort by design: an absent
+   * sink or a closed stream drops the notification silently.
+   */
+  notify?: (method: string, params?: any) => void;
+  /** issue #274: the build inputs the server started with — `reindex` reuses them verbatim. */
+  modelName?: string;
+  ignore?: string[];
+  /**
+   * issue #274: called after the `reindex` tool published a new index
+   * generation so the host (the HTTP daemon) can swap its own `loaded`
+   * reference — per-request handler objects are fresh, the daemon's state is
+   * shared. stdio owns its state directly and passes nothing.
+   */
+  onIndexRebuilt?: (loaded: any) => void;
 }
 
 export async function handleMcpRequest(req: any, state: McpHandlerState): Promise<any | null> {
@@ -432,7 +466,9 @@ export async function handleMcpRequest(req: any, state: McpHandlerState): Promis
             listChanged: false,
           },
           resources: {
-            subscribe: false,
+            // issue #274: mdss://status is subscribable — the daemon emits
+            // notifications/resources/updated after every watch re-index.
+            subscribe: true,
             listChanged: false,
           },
           prompts: {
@@ -465,6 +501,32 @@ export async function handleMcpRequest(req: any, state: McpHandlerState): Promis
         tools: MCP_TOOLS,
       },
     };
+  }
+
+  // issue #274: resource subscriptions — the only mutable resource is
+  // mdss://status (the daemon re-publishes it after every watch re-index);
+  // notes are static snapshots, so subscribing to them is rejected with the
+  // reason instead of silently never firing.
+  if (method === 'resources/subscribe') {
+    const uri = params?.uri;
+    if (uri !== 'mdss://status') {
+      return {
+        jsonrpc: '2.0',
+        id,
+        error: {
+          code: -32602,
+          message: `only mdss://status is subscribable — notes are static index snapshots (use search_markdown to re-read them), got: ${uri}`,
+        },
+      };
+    }
+    if (!state.subscriptions) state.subscriptions = new Set();
+    state.subscriptions.add(uri);
+    return { jsonrpc: '2.0', id, result: {} };
+  }
+
+  if (method === 'resources/unsubscribe') {
+    state.subscriptions?.delete(params?.uri);
+    return { jsonrpc: '2.0', id, result: {} };
   }
 
   if (method === 'resources/list') {
@@ -988,6 +1050,51 @@ export async function handleMcpRequest(req: any, state: McpHandlerState): Promis
           ageSeconds,
           stale,
         };
+      } else if (name === 'reindex') {
+        // issue #274: the first non-readOnly tool — closes the freshness loop
+        // for pure-MCP clients (IDE chat without shell access). buildIndex is
+        // incremental (md5 + chunkHash reuse) and takes the <index>/.mdss.lock
+        // itself, so a concurrent writer (watch cycle, manual `mdss index`)
+        // makes this fail with the clear lock error instead of interleaving.
+        const db = state.loaded.index.db;
+        if (!db) {
+          throw new Error('reindex requires the server to have been started with --db — the loaded index records no source folder');
+        }
+        const indexDir = state.indexDir || path.join(db, '.mdss');
+        const modelName = state.modelName || state.loaded.model?.id;
+        await buildIndex({
+          db,
+          indexDir,
+          cacheDir: state.cacheDir,
+          modelName,
+          ignore: state.ignore,
+          offline: state.offline,
+          embedFn: state.embedFn,
+          log: () => {},
+          onProgress: (done: number, total: number) => {
+            state.notify?.('notifications/progress', {
+              progressToken: 'mdss-reindex',
+              progress: done,
+              total,
+              message: `embedding ${done}/${total}`,
+            });
+          },
+        });
+        const reloaded = loadIndex(indexDir);
+        state.loaded = reloaded;
+        state.onIndexRebuilt?.(reloaded);
+        // subscribers learn the snapshot moved — same event the watch cycle emits
+        if (state.subscriptions?.has('mdss://status')) {
+          state.notify?.('notifications/resources/updated', { uri: 'mdss://status' });
+        }
+        const uniqueFiles = new Set(reloaded.index.chunks.map((c: any) => c.file)).size;
+        rawResult = {
+          ok: true,
+          chunks: reloaded.index.chunks.length,
+          files: uniqueFiles,
+          model: reloaded.model.id,
+          built: reloaded.index.built || null,
+        };
       } else if (name === 'facets') {
         // issue #273: the same counting contract as GET /facets (src/facets.ts);
         // an invalid field name surfaces as an isError tool result.
@@ -1000,7 +1107,12 @@ export async function handleMcpRequest(req: any, state: McpHandlerState): Promis
       } else if (name === 'ask_knowledge_base') {
         const query = args.query;
         const k = typeof args.k === 'number' ? args.k : 5;
-        const sessionId = args.sessionId || args.session_id;
+        // issue #274: `chat: true` mints the session server-side — agents no
+        // longer invent ids themselves (the HTTP /ask `chat` contract, over MCP)
+        let sessionId = args.sessionId || args.session_id;
+        if (args.chat === true && (!sessionId || typeof sessionId !== 'string')) {
+          sessionId = crypto.randomUUID().slice(0, 8);
+        }
         // issue #197: with a sampling-capable client, hand the synthesis to
         // the client's own LLM via sampling/createMessage — no local model,
         // no user-side LLM config. Any failure (capability absent, client
@@ -1126,10 +1238,32 @@ export async function startMcpServer(opts: StartMcpServerOptions): Promise<{ sta
   } = opts;
 
   fs.mkdirSync(indexDir, { recursive: true });
+
+  // issue #274: the stdio notification downlink — one JSON-RPC notification
+  // line per event, no id, same wire as responses. Best-effort: write errors
+  // (a client that closed its pipe) never kill the server.
+  const notify = (method: string, params?: any): void => {
+    try {
+      output.write(JSON.stringify({ jsonrpc: '2.0', method, ...(params !== undefined ? { params } : {}) }) + '\n');
+    } catch {}
+  };
+
   if (!fs.existsSync(path.join(indexDir, 'vectors.json'))) {
     if (!db) throw new Error('mcp: no index found and no --db given to build one');
     log(`Building index at ${indexDir} from ${db}…`);
-    await buildIndex({ db, indexDir, cacheDir, modelName, ignore, offline, log, embedFn });
+    // issue #274: the first build downloads the model (~300 MB) and embeds the
+    // whole corpus while the MCP client sits on its initialize — coarse
+    // notifications/progress events give protocol-aware clients something to
+    // surface (unknown notifications are ignorable by design; stderr stays
+    // the universal fallback via `log`).
+    notify('notifications/progress', { progressToken: 'mdss-index-build', progress: 0, total: 0, message: 'index build started' });
+    await buildIndex({
+      db, indexDir, cacheDir, modelName, ignore, offline, log, embedFn,
+      onProgress: (done, total) => {
+        notify('notifications/progress', { progressToken: 'mdss-index-build', progress: done, total, message: `embedding ${done}/${total}` });
+      },
+    });
+    notify('notifications/progress', { progressToken: 'mdss-index-build', progress: 1, total: 1, message: 'index build complete' });
   }
 
   const state: McpHandlerState = {
@@ -1139,6 +1273,10 @@ export async function startMcpServer(opts: StartMcpServerOptions): Promise<{ sta
     embedFn,
     indexDir,
     output,
+    subscriptions: new Set(),
+    notify,
+    modelName,
+    ignore,
   };
 
   // issue #197: over stdio the reverse channel is the transport itself —

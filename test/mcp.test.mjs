@@ -64,17 +64,25 @@ async function makeIndex() {
 
 test('MCP_TOOLS, MCP_RESOURCE_TEMPLATES, MCP_PROMPTS: define valid schemas and annotations', () => {
   assert.equal(Array.isArray(MCP_TOOLS), true);
-  assert.equal(MCP_TOOLS.length, 8);
+  assert.equal(MCP_TOOLS.length, 9);
 
   const toolNames = MCP_TOOLS.map(t => t.name);
-  assert.deepEqual(toolNames.sort(), ['ask_knowledge_base', 'facets', 'get_chunk', 'get_lines', 'index_status', 'list_files', 'related_notes', 'search_markdown']);
+  assert.deepEqual(toolNames.sort(), ['ask_knowledge_base', 'facets', 'get_chunk', 'get_lines', 'index_status', 'list_files', 'reindex', 'related_notes', 'search_markdown']);
 
   for (const tool of MCP_TOOLS) {
     assert.equal(typeof tool.name, 'string');
     assert.equal(typeof tool.description, 'string');
     assert.equal(tool.inputSchema.type, 'object');
-    assert.equal(tool.annotations?.readOnly, true);
-    assert.equal(tool.annotations?.idempotent, true);
+    assert.equal(typeof tool.annotations?.readOnly, 'boolean');
+    assert.equal(typeof tool.annotations?.idempotent, 'boolean');
+  }
+  // issue #274: reindex is the ONE mutating tool — everything else stays read-only
+  const reindexTool = MCP_TOOLS.find(t => t.name === 'reindex');
+  assert.equal(reindexTool.annotations.readOnly, false);
+  assert.equal(reindexTool.annotations.idempotent, false);
+  for (const tool of MCP_TOOLS.filter(t => t.name !== 'reindex')) {
+    assert.equal(tool.annotations.readOnly, true, `${tool.name} stays readOnly`);
+    assert.equal(tool.annotations.idempotent, true, `${tool.name} stays idempotent`);
   }
 
   assert.equal(Array.isArray(MCP_RESOURCE_TEMPLATES), true);
@@ -108,7 +116,7 @@ test('handleMcpRequest: handles initialize with tools, resources, and prompts ca
     // 2. tools/list
     const listRes = await handleMcpRequest({ jsonrpc: '2.0', id: 2, method: 'tools/list' }, state);
     assert.equal(listRes.id, 2);
-    assert.equal(listRes.result.tools.length, 8);
+    assert.equal(listRes.result.tools.length, 9);
   } finally {
     safeRm(dir);
   }
@@ -855,6 +863,130 @@ test('tools/call text content is COMPACT JSON — no pretty-print whitespace (is
     const text = res.result.content[0].text;
     assert.ok(!text.includes('\n'), 'text content carries no pretty-print newlines');
     assert.deepEqual(JSON.parse(text), res.result.structuredContent, 'compact text parses to the same payload');
+  } finally {
+    safeRm(dir);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// issue #274: living MCP — subscriptions, reindex, session auto-create,
+// progress notifications
+// ---------------------------------------------------------------------------
+
+test('resources/subscribe: mdss://status subscribable, notes rejected with the reason (issue #274)', async () => {
+  const { loaded, dir } = await makeIndex();
+  try {
+    const state = { loaded, cacheDir: dir, offline: true, embedFn: fakeEmbed };
+    const ok1 = await handleMcpRequest({ jsonrpc: '2.0', id: 90, method: 'resources/subscribe', params: { uri: 'mdss://status' } }, state);
+    assert.deepEqual(ok1.result, {});
+    const ok2 = await handleMcpRequest({ jsonrpc: '2.0', id: 91, method: 'resources/subscribe', params: { uri: 'mdss://status' } }, state);
+    assert.deepEqual(ok2.result, {});
+    assert.equal(state.subscriptions.size, 1, 'duplicate subscribe is a no-op');
+
+    const note = await handleMcpRequest({ jsonrpc: '2.0', id: 92, method: 'resources/subscribe', params: { uri: 'mdss://note/guide.md' } }, state);
+    assert.equal(note.error?.code, -32602);
+    assert.match(note.error.message, /static index snapshots/);
+
+    const unsub = await handleMcpRequest({ jsonrpc: '2.0', id: 93, method: 'resources/unsubscribe', params: { uri: 'mdss://status' } }, state);
+    assert.deepEqual(unsub.result, {});
+    assert.equal(state.subscriptions.size, 0);
+    const unsubAgain = await handleMcpRequest({ jsonrpc: '2.0', id: 94, method: 'resources/unsubscribe', params: { uri: 'mdss://status' } }, state);
+    assert.deepEqual(unsubAgain.result, {}, 'unsubscribe without subscribe is idempotent');
+
+    const init = await handleMcpRequest({ jsonrpc: '2.0', id: 95, method: 'initialize', params: {} }, state);
+    assert.equal(init.result.capabilities.resources.subscribe, true, 'initialize advertises subscribe');
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('reindex: incremental rebuild, in-place reload, subscriber notification, progress events (issue #274)', async () => {
+  const { loaded, dir, idx } = await makeIndex();
+  try {
+    const state = { loaded, cacheDir: dir, offline: true, embedFn: fakeEmbed, indexDir: idx };
+    state.subscriptions = new Set(['mdss://status']);
+    const notifications = [];
+    state.notify = (method, params) => notifications.push({ method, params });
+
+    fs.writeFileSync(path.join(dir, 'extra.md'), '# Extra\n\nnewly added extra content for reindex\n');
+    const before = state.loaded.index.chunks.length;
+    const res = await handleMcpRequest(
+      { jsonrpc: '2.0', id: 100, method: 'tools/call', params: { name: 'reindex', arguments: {} } },
+      state,
+    );
+    assert.ok(!res.error && !res.result.isError, `reindex ran: ${res.result?.content?.[0]?.text || res.error?.message}`);
+    const payload = res.result.structuredContent;
+    assert.equal(payload.ok, true);
+    assert.ok(payload.chunks > before, `chunks grew (${before} → ${payload.chunks})`);
+    assert.equal(state.loaded.index.chunks.length, payload.chunks, 'handler state reloaded in place');
+    assert.ok(payload.built, 'new build timestamp reported');
+
+    const updated = notifications.find((n) => n.method === 'notifications/resources/updated');
+    assert.ok(updated, 'subscribers got notifications/resources/updated');
+    assert.equal(updated.params.uri, 'mdss://status');
+    assert.ok(notifications.some((n) => n.method === 'notifications/progress'), 'progress events emitted during embedding');
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('reindex: clear error when the loaded index records no db (issue #274)', async () => {
+  const { loaded, dir } = await makeIndex();
+  try {
+    const loadedNoDb = JSON.parse(JSON.stringify(loaded));
+    loadedNoDb.index.db = null;
+    const state = { loaded: loadedNoDb, cacheDir: dir, offline: true, embedFn: fakeEmbed };
+    const res = await handleMcpRequest(
+      { jsonrpc: '2.0', id: 101, method: 'tools/call', params: { name: 'reindex', arguments: {} } },
+      state,
+    );
+    assert.equal(res.result.isError, true);
+    assert.match(res.result.content[0].text, /--db/);
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('ask_knowledge_base chat:true mints a session; the id continues the conversation (issue #274)', async () => {
+  const { loaded, dir, idx } = await makeIndex();
+  try {
+    const state = { loaded, cacheDir: dir, offline: true, embedFn: fakeEmbed, indexDir: idx };
+    const res = await handleMcpRequest(
+      { jsonrpc: '2.0', id: 110, method: 'tools/call', params: { name: 'ask_knowledge_base', arguments: { query: 'search guide', chat: true } } },
+      state,
+    );
+    assert.ok(!res.error && !res.result.isError, `ask ran: ${res.result?.content?.[0]?.text || ''}`);
+    const payload = res.result.structuredContent;
+    assert.equal(typeof payload.sessionId, 'string');
+    assert.ok(payload.sessionId.length > 0, 'server-minted id returned');
+    assert.equal(payload.turnsCount, 1);
+    assert.ok(fs.existsSync(path.join(idx, 'sessions', `${payload.sessionId}.json`)), 'session persisted under the handler indexDir');
+
+    const res2 = await handleMcpRequest(
+      { jsonrpc: '2.0', id: 111, method: 'tools/call', params: { name: 'ask_knowledge_base', arguments: { query: 'more', sessionId: payload.sessionId } } },
+      state,
+    );
+    assert.equal(res2.result.structuredContent.turnsCount, 2, 'the minted id continues the session');
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('stdio first build emits notifications/progress lines on the wire (issue #274)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-progress-'));
+  const idx = path.join(dir, '.mdss');
+  fs.writeFileSync(path.join(dir, 'guide.md'), '# Guide\n\n## Intro\n\nWelcome to mdss search guide\n');
+  const input = new PassThrough();
+  const wire = new PassThrough();
+  const messages = [];
+  readline.createInterface({ input: wire }).on('line', (l) => { try { messages.push(JSON.parse(l)); } catch { /* ignore */ } });
+  try {
+    await startMcpServer({ db: dir, indexDir: idx, cacheDir: dir, embedFn: fakeEmbed, offline: true, input, output: wire });
+    const progresses = messages.filter((m) => m.method === 'notifications/progress');
+    assert.ok(progresses.length >= 2, `progress events on the wire (got ${progresses.length})`);
+    assert.equal(progresses[0].params.message, 'index build started');
+    assert.ok(progresses.some((p) => p.params.message === 'index build complete'));
+    assert.ok(progresses.every((p) => p.id === undefined), 'progress frames are notifications (no id)');
   } finally {
     safeRm(dir);
   }

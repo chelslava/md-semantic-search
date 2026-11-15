@@ -645,7 +645,10 @@ tool payload reports which path produced the result in `answerMode`
 - **`facets`**: Value→count maps for frontmatter fields (`tags`, `type`, `status`, `project`, `custom.<key>`) — the same discovery contract as `GET /facets`, for building `filter:` expressions.
 - **`list_files`**: List indexed Markdown files with chunk counts.
 - **`index_status`**: Inspect index health, chunk/file counts, model metadata, build timestamp, index age (`ageSeconds`), and a staleness flag (`stale`).
-- **`ask_knowledge_base`**: Grounded direct Q&A synthesis with citations; uses the client's own LLM via MCP sampling when available (see below), else the built-in extractive answerer — `answerMode` in the payload tells which.
+- **`reindex`** *(issue #274)*: the one non-readOnly tool — incremental rebuild under the index lock, reloads the served generation and notifies subscribers; closes the freshness loop for MCP clients without shell access.
+- **`ask_knowledge_base`**: Grounded direct Q&A synthesis with citations; `chat: true` mints a persistent session server-side (continue via `sessionId`); uses the client's own LLM via MCP sampling when available (see below), else the built-in extractive answerer — `answerMode` in the payload tells which.
+
+**Subscriptions & progress** *(issue #274)*: `resources/subscribe` with `mdss://status` — a `serve --watch` re-index (or the `reindex` tool) then emits `notifications/resources/updated` over the transport's downlink, so long-lived agents stop polling; first builds emit best-effort `notifications/progress`.
 - *All tools return `structuredContent` alongside text and include `readOnly: true, idempotent: true` annotations.*
 
 #### Available MCP Resources & Templates:

@@ -219,7 +219,10 @@ await startMcpServer({
     const r = spawnSync(process.execPath, [childScript, dir], { input, encoding: 'utf8', timeout: 60_000 });
     assert.equal(r.status, 0, `child exited cleanly, stderr: ${r.stderr?.slice(0, 400)}`);
     const lines = r.stdout.split('\n').filter((l) => l.trim());
-    const responses = lines.map((l) => JSON.parse(l));
+    // issue #274: the wire also carries server→client notifications now —
+    // the first build emits notifications/progress before any response. Only
+    // lines WITH an id (or in-band errors) are responses to our requests.
+    const responses = lines.map((l) => JSON.parse(l)).filter((m) => m.id !== undefined || m.error !== undefined);
     assert.equal(responses.length, 3, `expected 3 responses, got ${responses.length}`);
     assert.equal(responses[0].id, 1);
     assert.ok(Array.isArray(responses[0].result.tools));

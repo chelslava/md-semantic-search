@@ -63,6 +63,15 @@ export interface ServeState {
   mcpClientCapabilities?: any;
   /** issue #197: the open GET /mcp SSE stream doubling as the downlink (newest wins). */
   mcpSseRes?: http.ServerResponse;
+  /** issue #274: URIs subscribed via resources/subscribe — shared across per-request handler objects. */
+  mcpSubscriptions?: Set<string>;
+  /** issue #274: best-effort notification downlink; rides the open GET /mcp SSE stream, drops silently without one. */
+  mcpNotify?: (method: string, params?: any) => void;
+  /** issue #274: the reindex tool rebuilds with the server's own build inputs. */
+  modelName?: string;
+  ignore?: string[];
+  /** issue #274: swaps the daemon's loaded reference after the MCP reindex tool publishes a generation. */
+  mcpOnIndexRebuilt?: (loaded: any) => void;
   /** Extra Host-header values accepted beyond the loopback defaults (issue #120). */
   allowedHosts?: string[];
   /** issue #241: proxy peers trusted for X-Forwarded-For rate-limit keying. */
@@ -370,6 +379,25 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     sse.write(`event: message\ndata: ${JSON.stringify(msg)}\n\n`);
   });
 
+  // issue #274: notifications ride the same downlink as sampling requests but
+  // are strictly best-effort — no open stream just drops the event (unlike a
+  // sampling request, whose failure must degrade the caller's answer).
+  state.mcpSubscriptions = new Set();
+  state.mcpNotify = (method, params) => {
+    const sse = state.mcpSseRes;
+    if (!sse) return;
+    sse.write(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', method, ...(params !== undefined ? { params } : {}) })}\n\n`);
+  };
+  // issue #274: the MCP reindex tool rebuilds with the server's own build
+  // inputs and swaps the daemon's loaded via this hook (mirrors reload()).
+  state.modelName = modelName;
+  state.ignore = ignore;
+  state.mcpOnIndexRebuilt = (loaded) => {
+    state.loaded = loaded;
+    prewarm(state.loaded);
+    state.reindexCount = (state.reindexCount ?? 0) + 1;
+  };
+
   // issue #242: warm the ANN runtime in the background so the first user
   // query never pays the in-query graph/k-means cold build (only engages when
   // no sidecar exists and the corpus is ANN-sized; sidecar probes are already
@@ -434,6 +462,11 @@ export async function createServe(opts: CreateServeOptions): Promise<{
     prewarm(state.loaded);
     state.reindexCount = (state.reindexCount ?? 0) + 1;
     log(`Re-indexed; ${state.loaded.index.chunks.length} chunks in memory.`);
+    // issue #274: subscribed MCP clients learn the snapshot moved — the
+    // mdss://status resource they subscribed to now reports a new build.
+    if (state.mcpSubscriptions?.has('mdss://status')) {
+      state.mcpNotify?.('notifications/resources/updated', { uri: 'mdss://status' });
+    }
     return true;
   };
 
@@ -1668,6 +1701,14 @@ async function handleMcpHttp(req: http.IncomingMessage, res: http.ServerResponse
         indexDir: state.indexDir, // issue #237: sessions resolve here, not via a <db>/.mdss guess
         channel: state.mcpChannel,
         clientCapabilities: state.mcpClientCapabilities,
+        // issue #274: subscriptions and the notify downlink live on the daemon
+        // state (per-request handler objects are fresh); reindex reuses the
+        // server's build inputs and swaps the daemon's loaded via the hook.
+        subscriptions: state.mcpSubscriptions,
+        notify: state.mcpNotify,
+        modelName: state.modelName,
+        ignore: state.ignore,
+        onIndexRebuilt: state.mcpOnIndexRebuilt,
       });
       if (result) responses.push(result);
       else if (!isNotification && msg.method === undefined) continue;

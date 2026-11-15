@@ -32,7 +32,12 @@ snippets: `docs/agent-integration.md`), use the tools instead of the CLI:
 | Explore the graph around a note | `related_notes` (`file`, `direction`, `semantic`) |
 | Discover filter values | `facets` (`field` incl. `custom.<key>`, `prefix`, `limit`) — before composing `filter:` expressions |
 | Inventory / health | `list_files`, `index_status` (reports `ageSeconds`/`stale`) |
-| Grounded answer with citations | `ask_knowledge_base` (`query`) |
+| Close staleness | `reindex` — incremental (unchanged chunks reuse vectors), lock-respecting; the only non-readOnly tool |
+| Grounded answer with citations | `ask_knowledge_base` (`query`; `chat: true` mints a session id for multi-turn — pass it back as `sessionId`) |
+
+**Living sessions:** over the daemon (`mdss serve --watch --mcp`), `resources/subscribe`
+with `mdss://status` makes the server push `notifications/resources/updated`
+after every watch re-index — no index_status polling needed.
 
 Resources: `mdss://note/{path}` (full note), `mdss://note/{path}?fromLine=N&maxLines=M`,
 `mdss://vault/{vault}`, `mdss://status`. Prompts: `search-and-cite`,

@@ -508,3 +508,88 @@ test('mcp-http: response-only POSTs bypass the fairness gates (issue #237)', asy
     safeRm(dir);
   }
 });
+
+// ---------------------------------------------------------------------------
+// issue #274: living MCP over HTTP — reindex swaps the daemon generation and
+// watch re-indexes notify subscribers over the GET /mcp SSE downlink
+// ---------------------------------------------------------------------------
+
+test('mcp-http: reindex tool swaps the daemon loaded and notifies SSE subscribers (issue #274)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-mcph-reidx-'));
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Coffee\n\ncoffee beans roasted ground notes here\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: path.join(dir, '.c'), modelName: 'e5-base', embedFn: fakeEmbed });
+    const svc = await createServe({
+      db: dir, indexDir: idx, cacheDir: path.join(dir, '.c'), embedFn: fakeEmbed,
+      mcp: true, apiKey: 'sekret', ui: false, rateLimit: 0,
+    });
+    await new Promise((r) => svc.server.listen(0, r));
+    const url = `http://127.0.0.1:${svc.server.address().port}`;
+    try {
+      const init = await mcpPost(url, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {} } }, null);
+      const sid = init.headers['mcp-session-id'];
+      const sub = await mcpPost(url, { jsonrpc: '2.0', id: 2, method: 'resources/subscribe', params: { uri: 'mdss://status' } }, sid);
+      assert.deepEqual(sub.body.result, {}, 'subscribe accepted');
+      const sse = await openSse(url, sid);
+
+      // the new note is invisible until the index moves
+      fs.writeFileSync(path.join(dir, 'b.md'), '# Hockey\n\nhockey match puck arena notes\n');
+      const before = await mcpPost(url, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'index_status', arguments: {} } }, sid);
+      assert.equal(before.body.result.structuredContent.chunks, 1, 'old generation still served');
+
+      const reidx = await mcpPost(url, { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'reindex', arguments: {} } }, sid);
+      assert.ok(!reidx.body.result.isError, `reindex ran: ${JSON.stringify(reidx.body.result)}`);
+      assert.ok(reidx.body.result.structuredContent.chunks >= 2, 'new generation has the new note');
+
+      const afterStatus = await mcpPost(url, { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'index_status', arguments: {} } }, sid);
+      assert.ok(afterStatus.body.result.structuredContent.chunks >= 2, 'the handler object sees the swap');
+
+      // the daemon's OWN /search surface sees the new file — the loaded
+      // reference was swapped through onIndexRebuilt, not just locally
+      const search = await fetch(`${url}/search`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer sekret' },
+        body: JSON.stringify({ query: 'hockey puck arena', k: 5 }),
+      }).then((r) => r.json());
+      assert.ok(search.results.some((r) => r.file.includes('b.md')), 'daemon loaded reference swapped');
+
+      const upd = await waitForFrame(sse.frames, (f) => f.method === 'notifications/resources/updated' && f.params?.uri === 'mdss://status', 'resources/updated');
+      assert.ok(upd, 'subscriber got the resources/updated event');
+    } finally {
+      await svc.close();
+    }
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('mcp-http: watch re-index emits notifications/resources/updated to the subscriber (issue #274)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-mcph-watch-'));
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '# Coffee\n\ncoffee beans roasted ground notes here\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: path.join(dir, '.c'), modelName: 'e5-base', embedFn: fakeEmbed });
+    const svc = await createServe({
+      db: dir, indexDir: idx, cacheDir: path.join(dir, '.c'), embedFn: fakeEmbed,
+      watch: true, watchInterval: 60, watchDelay: 150, // fast poll + short settle (same recipe as the #12 watch test)
+      mcp: true, apiKey: 'sekret', ui: false, rateLimit: 0,
+    });
+    await new Promise((r) => svc.server.listen(0, r));
+    const url = `http://127.0.0.1:${svc.server.address().port}`;
+    try {
+      const init = await mcpPost(url, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {} } }, null);
+      const sid = init.headers['mcp-session-id'];
+      await mcpPost(url, { jsonrpc: '2.0', id: 2, method: 'resources/subscribe', params: { uri: 'mdss://status' } }, sid);
+      const sse = await openSse(url, sid);
+
+      fs.appendFileSync(path.join(dir, 'a.md'), '\nmore coffee notes\n');
+      const upd = await waitForFrame(sse.frames, (f) => f.method === 'notifications/resources/updated' && f.params?.uri === 'mdss://status', 'resources/updated', 8000);
+      assert.ok(upd, 'watch re-index notified the subscriber without polling');
+    } finally {
+      await svc.close();
+    }
+  } finally {
+    safeRm(dir);
+  }
+});

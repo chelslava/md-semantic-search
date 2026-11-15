@@ -73,7 +73,7 @@ building filter chips. Full reference: [docs/api-reference.md](api-reference.md)
 
 ## What the agent gets
 
-**8 tools** (all `readOnly`, `idempotent`, `structuredContent`):
+**9 tools** (all `structuredContent`; every one `readOnly`/`idempotent` except `reindex`):
 
 | Tool | Purpose |
 |---|---|
@@ -84,7 +84,15 @@ building filter chips. Full reference: [docs/api-reference.md](api-reference.md)
 | `facets` | value→count maps for frontmatter fields (`tags`, `type`, `status`, `project`, `custom.<key>`) — the discovery layer behind `filter:` building, same contract as `GET /facets` |
 | `list_files` | indexed inventory with chunk counts |
 | `index_status` | health: chunk/file counts, model, build timestamp, `ageSeconds`, `stale` |
-| `ask_knowledge_base` | grounded Q&A synthesis with citations; uses **client sampling** when the client declares the capability (answer written by the client's own model), else the built-in extractive answerer |
+| `reindex` | **the one mutating tool** (`readOnly: false`): incremental rebuild under the index lock, reloads the served generation, notifies subscribers — the freshness loop for clients without shell access |
+| `ask_knowledge_base` | grounded Q&A synthesis with citations; `chat: true` mints a persistent session server-side; uses **client sampling** when the client declares the capability, else the built-in extractive answerer |
+
+**Subscriptions (issue #274):** `resources/subscribe` with `mdss://status` —
+the daemon emits `notifications/resources/updated` after every watch
+re-index (and the `reindex` tool notifies the same way), so long-lived
+agents stop polling `index_status`. Notes are static snapshots and are not
+subscribable. First builds also emit `notifications/progress` (best-effort;
+stderr stays the universal fallback).
 
 **Resources:** `mdss://note/{path}`, `mdss://note/{path}?fromLine=1&maxLines=50`,
 `mdss://vault/{vault}`, `mdss://status`.
