@@ -27,6 +27,17 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
   corpus-side and irreducible under byte-exactness (the IVF k-means needs the fp32 corpus).
 
 ### Added
+- **RESEARCH §21 — execution backend & thread defaults surveyed** (part of the faster-indexing
+  architecture review): direct A/B probes on the granite q8 model file established that
+  transformers.js v4 in Node already executes on the **native onnxruntime-node CPU backend**
+  (pipeline timings fingerprint-match raw ort-node sessions and sit 2.5× away from the raw
+  WASM session; the `env.backends.onnx.node` probe reads `false` in v4 and is unreliable),
+  that the **DirectML GPU EP is a measured 4–5× loss** on integrated graphics (552.4 vs
+  116.5–131.6 ms/chunk — declined for this hardware class), and that the #194 intra-op
+  clamp measured ~13% slower than the native runtime's own thread defaults on the probe —
+  recorded as a pre-registered config gate (unset-by-default iff ≥ ×1.08 on the real
+  pipeline AND the golden gate holds with drop ≤ 0.005). The stale "wasm sessions" comment
+  in `src/core.ts` corrected. Survey only — no product change from the section itself.
 - **Issue #264** — **§19 low-priority indexing gate measured — closed as declined, no product
   code shipped** (`bench/priority-probe.mjs`): a real granite q8 build of a 3,000-chunk corpus
   ran interleaved [normal, below-normal, normal, below] while two spin-preemption probe

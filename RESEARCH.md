@@ -966,3 +966,78 @@ interrupted-build checkpoint resume (#38) and the sha256-manifest integrity
 suites.
 
 
+## 21. Research Evaluation: Execution Backend & Thread Defaults (2026-11-15)
+
+### Question
+
+The #194 throughput work assumed the ONNX session runs on the WASM backend
+("ONNX wasm sessions default to a single intra-op thread") and clamped
+`intraOpNumThreads` to `min(4, cpus >> 1)`. transformers.js v4 ships BOTH
+onnxruntime-web and onnxruntime-node (the Windows package even carries the
+DirectML EP binary). Which backend actually executes on Node, and do the
+alternatives — a forced device, the DirectML GPU EP, or the native runtime's
+own thread defaults — change embedding wall time?
+
+### Instrument
+
+Direct A/B probes on one model file (`granite-multilingual-311m` q8), batch-32
+× 512-token passages, median of 3 reps, offline cache (2026-11-15, Node
+v24.14.1, 4c/8t Windows): (a) transformers.js pipeline, default device (the
+mdss path); (b) transformers.js with `device: 'cpu'`; (c) raw ort-node CPU
+session with explicit `intraOpNumThreads: 4`; (d) raw ort-node CPU session
+with default session options; (e) raw ort-node DirectML EP; (f) raw ort-web
+WASM session (un-tuned default build) as the fallback reference.
+
+### Measured
+
+| Configuration | ms/chunk |
+|---|---:|
+| transformers.js default device (mdss path) | 131.7 |
+| transformers.js `device: 'cpu'` | 115.5 |
+| raw ort-node CPU, default session options | 116.5 |
+| raw ort-node CPU, `intraOpNumThreads: 4` | 131.6 |
+| raw ort-web WASM, `intraOpNumThreads: 4` (un-tuned) | 330.9 |
+| raw ort-node **DirectML** | **552.4** |
+
+### Findings
+
+1. **The native onnxruntime-node CPU backend is already the active path.**
+   The transformers.js pipeline timings fingerprint-match the raw ort-node
+   sessions (default device ≈ intra-4 native: 131.7 ≈ 131.6; `device:'cpu'`
+   ≈ native default options: 115.5 ≈ 116.5), sitting 2.5× away from the raw
+   WASM session. The `env.backends.onnx.node` API probe reads `false` in v4
+   and is NOT a reliable backend indicator — attribution here is by timing
+   fingerprint, stated as such. The "zero native dependencies" product claim
+   is unaffected: `onnxruntime-node` ships inside transformers.js's own
+   dependency tree, prebuilt.
+2. **DirectML is a measured 4–5× LOSS** on this 4c/8t machine with integrated
+   graphics (q8 ops are not accelerated by the DML EP and CPU↔GPU copies
+   dominate). A GPU-execution gate is declined by measurement for this
+   hardware class; it would take a real discrete GPU to re-open the question.
+3. **The explicit intra-op clamp looks 13% slower than the native runtime's
+   own thread defaults** on the probe (131.6 vs 116.5 ms/chunk) — the #194
+   rationale was written for the believed-WASM era. This is ONE probe config,
+   not a pipeline measurement, so it licenses a small config gate below
+   rather than a change.
+4. Doc fix shipped with this section: the stale "wasm sessions" comment in
+   `src/core.ts` corrected to the measured backend reality.
+
+### Open config gate (pre-registered rule — written BEFORE the pipeline measurement)
+
+**Thread-default probe** (config-only, `resolveSessionOptions`): measure the
+REAL mdss pipeline — granite-311m, batch 32, an interleaved equally-warmed
+(#259 discipline) comparison of {current clamp intra-4, unset session options,
+env-forced 8} on a real-model fixture build + the golden bench. SHIP "unset by
+default, env overrides preserved" IFF unset ≥ ×1.08 faster on the fixture
+build AND the golden gate holds with drop ≤ 0.005 and Recall@10 = 1.0
+(thread-count changes may re-partition ORT reductions — numerical drift is
+possible and must be gated, not assumed away). Otherwise keep the clamp and
+close declined-with-measurements.
+
+### Decision
+
+No product change from the survey itself: the fastest zero-dependency
+configuration is (probably) already shipped, pending the thread gate above;
+DirectML/GPU recorded as measured non-goals for this hardware class. The
+model-side speed levers route to the new gates: §22 (IVF k-means SIMD), §23
+(granite-97m opt-in profile), §24 (static-embedding fast tier).

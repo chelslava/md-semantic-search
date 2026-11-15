@@ -219,10 +219,13 @@ export function resolveSessionOptions(model?: ModelDescriptor): Record<string, u
   const intra = envIntra ? parseInt(envIntra, 10) : undefined;
   const inter = envInter ? parseInt(envInter, 10) : undefined;
   const opts = model?.sessionOptions || {};
-  // issue #194: ONNX wasm sessions default to a single intra-op thread — the
-  // build/query sweep leaves most of the CPU idle. Default to the physical
-  // core count (measured 1.2x on a 4c/8t laptop; hyperthreads add contention,
-  // not throughput), still overridable via MDSS_INTRA_OP_THREADS.
+  // issue #194: without explicit intra-op threads the ONNX session was left
+  // under-threaded — default to the physical core count (measured 1.2x on a
+  // 4c/8t laptop at the time; hyperthreads added contention, not throughput),
+  // still overridable via MDSS_INTRA_OP_THREADS. Backend reality (RESEARCH
+  // §21): transformers.js v4 in Node executes on the NATIVE onnxruntime-node
+  // CPU backend, where the runtime's own thread defaults measured ~13% faster
+  // than this clamp on the probe — the §21 config gate re-tests the default.
   const defaultIntra = Math.max(1, Math.min(4, os.cpus().length >> 1));
   const intraOpNumThreads = Number.isSafeInteger(intra) && intra && intra > 0
     ? intra
