@@ -48,42 +48,40 @@ export interface SerializeBinaryOptions {
   quantize?: 'fp32' | 'int8';
 }
 
-export function serializeBinaryIndex(
+export interface BinaryStreamOptions extends SerializeBinaryOptions {
+  /**
+   * issue #265 step 2: drop each chunk's in-memory vector as soon as its row
+   * is written. The final build pass uses this to release the fp32 corpus
+   * progressively instead of holding it until the process exits; callers that
+   * reuse the chunks afterwards must leave it unset.
+   */
+  releaseVectors?: boolean;
+}
+
+/**
+ * issue #265 step 2: the byte-exact pieces of a vectors.bin file, yielded
+ * sequentially (64-byte header, then one zero-padded vector row per chunk,
+ * then the metadata JSON). Concatenating the parts is identical to what the
+ * old materializing serializer produced (frozen in
+ * `test/fixtures/persistence-golden.json`), but only ONE vector row is ever
+ * alive at a time — the count×dim monolith and its full-file copy are gone.
+ */
+export function* binaryFileParts(
   index: PersistedIndex,
+  chunks: ReadonlyArray<IndexChunk>,
   dim: number,
-  options: SerializeBinaryOptions = {}
-): Buffer {
+  options: BinaryStreamOptions = {}
+): Generator<string | Buffer> {
   const isInt8 = options.quantize === 'int8';
   const bytesPerElement = isInt8 ? 1 : 4;
-  const count = index.chunks.length;
+  const count = chunks.length;
   const vectorsBytes = count * dim * bytesPerElement;
   const vectorsOffset = BINARY_HEADER_SIZE;
   const flags = isInt8 ? BINARY_FLAG_INT8 : BINARY_FLAG_FP32;
 
-  // Build contiguous typed array
-  const rawArray = isInt8 ? new Int8Array(count * dim) : new Float32Array(count * dim);
-
-  for (let i = 0; i < count; i++) {
-    const chunk = index.chunks[i];
-    let v: ArrayLike<number>;
-    if (typeof chunk.vec === 'string') {
-      v = decodeVec(chunk.vec, dim);
-    } else if (chunk.vec instanceof Float32Array || chunk.vec instanceof Int8Array || Array.isArray(chunk.vec)) {
-      v = chunk.vec;
-    } else {
-      throw new Error(`chunk ${i} is missing vector for binary serialization`);
-    }
-
-    if (isInt8) {
-      const q = v instanceof Int8Array ? v : quantizeToInt8(v);
-      (rawArray as Int8Array).set(q, i * dim);
-    } else {
-      (rawArray as Float32Array).set(v, i * dim);
-    }
-  }
-
-  // Build metadata JSON omitting per-chunk vec strings to save space
-  const metadataChunks: Array<Omit<IndexChunk, 'vec'>> = index.chunks.map((c) => ({
+  // Build metadata JSON omitting per-chunk vec strings to save space — as one
+  // string, because the 64-byte header (yielded first) needs its exact length.
+  const metadataChunks: Array<Omit<IndexChunk, 'vec'>> = chunks.map((c) => ({
     file: c.file,
     title: c.title,
     heading: c.heading,
@@ -116,27 +114,56 @@ export function serializeBinaryIndex(
   const metadataOffset = vectorsOffset + vectorsBytes;
   const metadataBytes = metadataBuffer.length;
 
-  const totalSize = metadataOffset + metadataBytes;
-  const out = Buffer.alloc(totalSize);
-
   // Write 64-byte header
-  out.write(BINARY_MAGIC, 0, 8, 'ascii');
-  out.writeUInt32LE(BINARY_VERSION, 8);
-  out.writeUInt32LE(flags, 12);
-  out.writeUInt32LE(dim, 16);
-  out.writeUInt32LE(count, 20);
-  out.writeBigUInt64LE(BigInt(vectorsOffset), 24);
-  out.writeBigUInt64LE(BigInt(vectorsBytes), 32);
-  out.writeBigUInt64LE(BigInt(metadataOffset), 40);
-  out.writeBigUInt64LE(BigInt(metadataBytes), 48);
+  const header = Buffer.alloc(BINARY_HEADER_SIZE);
+  header.write(BINARY_MAGIC, 0, 8, 'ascii');
+  header.writeUInt32LE(BINARY_VERSION, 8);
+  header.writeUInt32LE(flags, 12);
+  header.writeUInt32LE(dim, 16);
+  header.writeUInt32LE(count, 20);
+  header.writeBigUInt64LE(BigInt(vectorsOffset), 24);
+  header.writeBigUInt64LE(BigInt(vectorsBytes), 32);
+  header.writeBigUInt64LE(BigInt(metadataOffset), 40);
+  header.writeBigUInt64LE(BigInt(metadataBytes), 48);
+  yield header;
 
-  // Copy vectors
-  Buffer.from(rawArray.buffer, rawArray.byteOffset, rawArray.byteLength).copy(out, vectorsOffset);
+  for (let i = 0; i < count; i++) {
+    const chunk = chunks[i];
+    let v: ArrayLike<number>;
+    if (typeof chunk.vec === 'string') {
+      v = decodeVec(chunk.vec, dim);
+    } else if (chunk.vec instanceof Float32Array || chunk.vec instanceof Int8Array || Array.isArray(chunk.vec)) {
+      v = chunk.vec;
+    } else {
+      throw new Error(`chunk ${i} is missing vector for binary serialization`);
+    }
 
-  // Copy metadata
-  metadataBuffer.copy(out, metadataOffset);
+    // One zero-padded row at a time — same bytes the contiguous rawArray held.
+    if (isInt8) {
+      const row = new Int8Array(dim);
+      row.set(v instanceof Int8Array ? v : quantizeToInt8(v));
+      yield Buffer.from(row.buffer, row.byteOffset, row.byteLength);
+    } else {
+      const row = new Float32Array(dim);
+      row.set(v);
+      yield Buffer.from(row.buffer, row.byteOffset, row.byteLength);
+    }
+    if (options.releaseVectors) chunk.vec = undefined;
+  }
 
-  return out;
+  yield metadataBuffer;
+}
+
+export function serializeBinaryIndex(
+  index: PersistedIndex,
+  dim: number,
+  options: SerializeBinaryOptions = {}
+): Buffer {
+  // issue #265 step 2: thin wrapper over the streaming generator — the
+  // materializing implementation is gone; byte-identity with it is pinned by
+  // the golden fixture test.
+  const parts = Array.from(binaryFileParts(index, index.chunks, dim, options));
+  return Buffer.concat(parts.map((part) => (typeof part === 'string' ? Buffer.from(part, 'utf8') : part)));
 }
 
 export function readBinaryHeader(buffer: Buffer): BinaryIndexHeader {

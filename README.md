@@ -842,6 +842,17 @@ up to 4 — `src/core.ts`) and `--workers 1` (default) make each build gentler a
 the cost of wall-time, and `mdss index` re-uses unchanged chunks via `chunkHash`,
 so watch-mode rebuilds are cheap.
 
+**Memory characteristics** (measured, RESEARCH §20): the build streams every
+persisted artifact — `vectors.json`, checkpoints and `vectors.bin` are written
+per chunk, never materialized as whole-index strings — so the peak RSS grows
+only with the corpus itself (~9 KB/chunk at dim 768). Measured on an 8 GB
+machine: a 100k-chunk dim-768 build peaks at ~1.2 GB (fp32 storage) / ~1.05 GB
+(int8) plus the model working set while embedding (~0.3–1 GB) — a scale that
+could not complete on this machine before the streamed persistence (2.37 GB
+mdss-side at 100k, RESEARCH §20/§13). 50k peaks at ~0.9 GB. If RAM is tight,
+`--dimensions 384` cuts the vector term by half (§14); `--quantize int8`
+shrinks the stored index but does not change the build peak materially.
+
 ## Models
 
 ```bash

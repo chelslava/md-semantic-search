@@ -7,6 +7,7 @@ import {
   serializeBinaryIndex,
   deserializeBinaryIndex,
   readBinaryHeader,
+  binaryFileParts,
   BINARY_HEADER_SIZE,
 } from '../dist/binary-format.js';
 import { buildIndex } from '../dist/indexer.js';
@@ -179,4 +180,46 @@ test('binary: unknown version or flags byte is a clear error, not garbage vector
 
   // known flags still load
   assert.doesNotThrow(() => deserializeBinaryIndex(valid));
+});
+
+// ---------------------------------------------------------------------------
+// issue #265 step 2: the serializer streams per-vector rows instead of
+// materializing the count×dim array + a full-file copy. Byte-identity with the
+// pre-streaming implementation is pinned by test/fixtures/persistence-golden.json,
+// generated from the OLD materializing serializeBinaryIndex before the refactor.
+// ---------------------------------------------------------------------------
+
+function goldenIndex() {
+  const golden = JSON.parse(fs.readFileSync(new URL('./fixtures/persistence-golden.json', import.meta.url), 'utf8'));
+  const chunks = golden.index.chunks.map((c) => ({
+    ...c,
+    vec: typeof c.vec === 'string' ? c.vec : Float32Array.from(c.vec),
+  }));
+  return { golden, index: { ...golden.index, chunks } };
+}
+
+test('binary: streamed binaryFileParts reproduces the pre-streaming golden bytes (issue #265)', () => {
+  const { golden, index } = goldenIndex();
+  for (const quantize of ['fp32', 'int8']) {
+    const expected = Buffer.from(golden[quantize], 'base64');
+    assert.ok(expected.equals(serializeBinaryIndex(index, 4, { quantize })), `serializeBinaryIndex golden ${quantize}`);
+    const streamed = Buffer.concat(
+      Array.from(binaryFileParts(index, index.chunks, 4, { quantize })).map((p) =>
+        typeof p === 'string' ? Buffer.from(p, 'utf8') : p
+      )
+    );
+    assert.ok(expected.equals(streamed), `binaryFileParts golden ${quantize}`);
+  }
+});
+
+test('binary: releaseVectors drops each vec after its row without changing the bytes (issue #265)', () => {
+  const { golden, index } = goldenIndex();
+  const expected = Buffer.from(golden.fp32, 'base64');
+  const streamed = Buffer.concat(
+    Array.from(binaryFileParts(index, index.chunks, 4, { quantize: 'fp32', releaseVectors: true })).map((p) =>
+      typeof p === 'string' ? Buffer.from(p, 'utf8') : p
+    )
+  );
+  assert.ok(expected.equals(streamed), 'bytes unchanged with releaseVectors');
+  assert.ok(index.chunks.every((c) => c.vec === undefined), 'every chunk vec released');
 });

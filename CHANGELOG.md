@@ -6,6 +6,26 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **Issue #265 step 2 — batch-streamed persistence SHIPPED: build peak RSS −48% at 100k,
+  persisted bytes unchanged** (`src/indexer.ts`, `src/binary-format.ts`): the final
+  persistence no longer materializes the encoded envelope (base64 copies of every vector),
+  the whole-index `JSON.stringify` strings (checkpoint snapshots every ~30 s + the final
+  full-index string) or the `serializeBinaryIndex` count×dim array + full-file copy
+  (~614 MB transient at 100k/dim768 fp32) — `vectors.json`, `.checkpoint.json` and
+  `vectors.bin` are written per chunk (`envelopeJsonParts` / `binaryFileParts` /
+  `atomicWriteStreamed`), only one vector row is ever alive at a time, and each chunk's
+  in-memory vec is released as soon as its row is on disk. OS-tracked peak (`resourceUsage()`
+  .maxRSS) at 100k/dim768: 2,366.9 → 1,221.8 MB (fp32) and 2,046.8 → 1,050.4 MB (int8);
+  wall −13…−21%. The step-1 sampled table had understated the old peak ~2.9× — a same-thread
+  timer sampler cannot fire inside the old synchronous persistence blocks; the harness now
+  records maxRSS as the primary metric (RESEARCH §20 instrument note). Output bytes are
+  pinned identical to the materializing implementation by a golden fixture generated from
+  the old code plus a materialized-JSON oracle test; the golden `--gate` reproduces the
+  committed baseline byte-exactly (nDCG@10 0.8653 → 0.8653, Recall@10 1.0); 682 tests pass
+  including the interrupted-build checkpoint resume (#38). The remaining ~9 KB/chunk is
+  corpus-side and irreducible under byte-exactness (the IVF k-means needs the fp32 corpus).
+
 ### Added
 - **Issue #264** — **§19 low-priority indexing gate measured — closed as declined, no product
   code shipped** (`bench/priority-probe.mjs`): a real granite q8 build of a 3,000-chunk corpus

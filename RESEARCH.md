@@ -892,4 +892,77 @@ machine with peak RSS bounded to (model + int8 corpus + measured working set)
 and the golden `--gate` reproduces the committed baseline byte-exactly; else
 decline and document `--dimensions 256` (§14) as the low-RAM build profile.
 
+### Step 2 result (2026-11-15): streamed persistence SHIPPED (issue #265)
+
+**Instrument upgrade, recorded with the rerun.** The step-1 table above turned
+out to understate the old peak ~2–3×: the persistence path is synchronous
+(`map` + `JSON.stringify` + `writeFileSync`), and a timer-based sampler in the
+SAME JS thread cannot fire inside a sync block — it sees the RSS high-water
+only after V8 has partially decommitted, and its readings are GC-dynamics
+sensitive (the first step-2 rerun showed the sampled peak *unchanged* despite
+removing ~1 GB of monoliths — the classic smooth-allocation vs spike-driven-GC
+asymmetry). The harness now also records `process.resourceUsage().maxRSS` —
+the OS-level high-water working set, immune to sampling gaps — as the primary
+peak metric; the sampled per-phase rows stay for attribution context. (Same
+instrument discipline as §19: the fix is justified and documented, the
+pre-registered gate itself was not retuned.)
+
+**Measured** (same machine, same instrument, `bench/peak-memory.mjs`; old = a
+rebuilt f381505 tree under the identical harness; dim 768):
+
+| Chunks | Storage | Peak RSS old | Peak RSS new | Δ | Wall old → new |
+|---:|---|---:|---:|---|---|
+| 10,000 | fp32 | 489.5 MB | 381.7 MB | −22% | 21.1 → 16.6 s |
+| 50,000 | fp32 | 1,355.2 MB | 864.9 MB | −36% | 149.2 → 130.6 s |
+| 100,000 | fp32 | **2,366.9 MB** | **1,221.8 MB** | **−48%** | 316.0 → 250.6 s |
+| 10,000 | int8 | 590.2 MB | 383.2 MB | −35% | 16.0 → 16.3 s |
+| 50,000 | int8 | 1,298.4 MB | 833.3 MB | −36% | 141.3 → 133.6 s |
+| 100,000 | int8 | **2,046.8 MB** | **1,050.4 MB** | **−49%** | 289.0 → 254.0 s |
+
+Findings:
+
+1. **The step-1 "≈1.2 GB" finding was a 2× underestimate**: the true old peak
+   at 100k/dim768 fp32 is 2.37 GB (sampled table read 828 MB). This is what
+   §13's commit-limit kill actually hit: ~2.4 GB mdss-side + the ONNX working
+   set on an 8 GB box. The true per-chunk slope of the OLD architecture was
+   ~21 KB/chunk — the base64 envelope copies (≈410 MB at 100k), the two
+   monolithic `JSON.stringify` strings + their `writeFileSync` buffer twins,
+   the checkpoint snapshots every ~30 s, and the `serializeBinaryIndex`
+   rawArray + full-file copy (~614 MB transient for fp32) all landed on top of
+   the corpus. int8 storage still does not help (−49% now, from the same
+   monoliths, not from quantization).
+2. **The streamed persistence removes exactly those monoliths** — envelope,
+   checkpoints and `vectors.bin` are written per-chunk (`envelopeJsonParts`,
+   `binaryFileParts`, `atomicWriteStreamed`), only one vector row is ever
+   alive at a time, and each chunk's fp32 vec is released as soon as its row
+   is on disk (2c). Output bytes are pinned identical to the materializing
+   implementation by `test/fixtures/persistence-golden.json` (generated from
+   the old code before the refactor) plus an in-test materialized-JSON oracle;
+   the persisted format is unchanged (§11 untripped).
+3. **What remains is corpus-side and irreducible under byte-exactness.** The
+   new slope is ~9 KB/chunk: the fp32 corpus itself (the IVF sidecar's k-means
+   needs random access to every vector — quantizing before training would
+   change `ivf.json` bytes), the chunk texts, and the lexical structures.
+   Reaching the issue's literal "model + int8 corpus + working set" bound
+   would require trading away byte-exact persistence — declined by the §11
+   scope guard, not by measurement.
+4. **Feasibility anchor (real model).** `granite-multilingual-311m` at 10k
+   chunks measured peak RSS 902.6 MB (19.5 min wall; the same fixture with the
+   hash embedder peaks at 381.7 MB) — the ONNX term is additive and
+   scale-constant at ≈ +521 MB (q8 session + transformers.js + batch buffers),
+   so the projected real-model 100k peak ≈ 1.22 GB + 0.52 GB ≈ 1.7 GB,
+   comfortably inside the 8 GB machine (the old configuration projected to
+   ~2.4 GB + ONNX ≈ 2.9 GB, i.e. the observed commit-limit kill).
+5. **Wall time improved too** (−13…−21%): the old wall was dominated by
+   materializing + writing ~0.5–1 GB strings per checkpoint and the full-file
+   binary copy; streaming writes only the bytes that change hands.
+
+Gate verdict: **SHIP** — the dim-768 100k build completes on the 8 GB machine
+with the peak bounded to corpus + working set (no serialization monoliths),
+the golden `--gate` reproduces the committed baseline byte-exactly
+(nDCG@10 0.8653 → 0.8653, Recall@10 1.0), and 682 tests pass, including the
+golden-fixture byte-identity, the streamed-envelope oracle, the
+interrupted-build checkpoint resume (#38) and the sha256-manifest integrity
+suites.
+
 

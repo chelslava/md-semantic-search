@@ -4,10 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { buildIndex, chunkHash, canonicalPassage } from '../dist/indexer.js';
+import { buildIndex, chunkHash, canonicalPassage, envelopeJsonParts, atomicWriteStreamed } from '../dist/indexer.js';
 import { searchIndex, loadIndex } from '../dist/search.js';
 import { resolveModel } from '../dist/models.js';
-import { decodeVec, SCHEMA_VERSION } from '../dist/core.js';
+import { decodeVec, encodeVec, SCHEMA_VERSION } from '../dist/core.js';
 import { _lexicalStats, validateLexicalIndex } from '../dist/lexical.js';
 
 /** Deterministic fake embed: bag-of-hash 8d, L2-normalized. No model, no network. */
@@ -1517,6 +1517,89 @@ test('buildIndex: the build sweeps litter under the lock (issue #253)', async ()
     const res = await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
     assert.ok(res.chunks >= 1);
     assert.equal(fs.readdirSync(idx).some((f) => f.endsWith('.tmp')), false, 'no tmp litter after the build');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// issue #265 step 2: streamed persistence. The envelope is assembled per chunk
+// instead of materializing the encoded copies + one monolithic JSON.stringify
+// string; the oracle below is the OLD materializing formula, implemented here
+// independently of the shipped code.
+// ---------------------------------------------------------------------------
+
+const envelopeChunks = [
+  {
+    file: 'a.md',
+    title: 'Alpha',
+    heading: 'Alpha',
+    headingPath: ['Alpha'],
+    text: 'first chunk — unicode ✓ проверка',
+    vec: new Float32Array([0.5, -0.25, 0.125, 1.0]),
+    chunkHash: 'hash-a',
+    startLine: 1,
+    endLine: 3,
+  },
+  { file: 'a.md', title: 'Alpha', heading: 'Alpha > Beta', headingPath: ['Alpha', 'Beta'], text: 'second chunk', vec: 'AAECAwQFBgcIBA==', chunkHash: 'hash-b' },
+  // a chunk still awaiting its vector — the mid-run checkpoint shape
+  { file: 'b.md', title: 'Gamma', heading: 'Gamma', headingPath: ['Gamma'], text: 'third chunk', chunkHash: 'hash-c' },
+];
+const envelopeHead = {
+  schemaVersion: 3,
+  format: 'binary-v1',
+  model: 'granite-multilingual-311m@main',
+  modelAlias: 'granite',
+  adapterFingerprint: 'fp',
+  chunkBudget: 512,
+  dim: 4,
+  db: '/db',
+  built: '2026-01-01T00:00:00.000Z',
+  chunkCount: envelopeChunks.length,
+  hashes: { 'a.md': 'aa', 'b.md': 'bb' },
+  lexical: { format: 'bm25-v2', avgLen: 3, terms: { first: [[0, 1]] } },
+  chunks: [],
+};
+const oracleEncodedVecOf = (c) => (c.vec ? (typeof c.vec === 'string' ? c.vec : encodeVec(c.vec)) : undefined);
+const oracleMaterialized = (head) =>
+  JSON.stringify({ ...head, chunks: envelopeChunks.map((c) => ({ ...c, vec: oracleEncodedVecOf(c) })) });
+
+test('indexer: streamed envelope bytes are identical to the materialized JSON.stringify (issue #265)', () => {
+  // chunks last (vectors.json and mid-run checkpoints)
+  const streamed = Array.from(envelopeJsonParts(envelopeHead, envelopeChunks, oracleEncodedVecOf)).join('');
+  assert.equal(streamed, oracleMaterialized(envelopeHead));
+  // chunks NOT last (the final complete checkpoint: complete/hashes follow)
+  const finalHead = { ...envelopeHead, complete: true, hashes: envelopeHead.hashes };
+  const streamedFinal = Array.from(envelopeJsonParts(finalHead, envelopeChunks, oracleEncodedVecOf)).join('');
+  assert.equal(streamedFinal, oracleMaterialized(finalHead));
+  // empty index
+  const streamedEmpty = Array.from(envelopeJsonParts(envelopeHead, [], oracleEncodedVecOf)).join('');
+  assert.equal(streamedEmpty, JSON.stringify(envelopeHead));
+});
+
+test('indexer: atomicWriteStreamed writes identical bytes + the sha256 manifest (issue #265)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-streamed-'));
+  try {
+    const target = path.join(dir, 'vectors.json');
+    atomicWriteStreamed(target, envelopeJsonParts(envelopeHead, envelopeChunks, oracleEncodedVecOf));
+    assert.equal(fs.readFileSync(target, 'utf8'), oracleMaterialized(envelopeHead));
+    const digest = crypto.createHash('sha256').update(fs.readFileSync(target)).digest('hex');
+    assert.equal(fs.readFileSync(`${target}.sha256`, 'utf8'), `${digest}  vectors.json\n`);
+    // non-vector targets get no manifest — same rule as atomicWrite
+    atomicWriteStreamed(path.join(dir, 'other.json'), ['hello']);
+    assert.equal(fs.existsSync(path.join(dir, 'other.json.sha256')), false);
+    assert.equal(fs.readFileSync(path.join(dir, 'other.json'), 'utf8'), 'hello');
+    // a failing part stream leaves no litter and no target
+    assert.throws(() =>
+      atomicWriteStreamed(path.join(dir, 'broken.json'), [
+        'ok,',
+        (() => {
+          throw new Error('boom');
+        })(),
+      ])
+    );
+    assert.equal(fs.existsSync(path.join(dir, 'broken.json')), false);
+    assert.equal(fs.readdirSync(dir).some((f) => f.endsWith('.tmp')), false, 'no tmp litter after failure');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }

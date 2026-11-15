@@ -20,6 +20,15 @@
  * arrayBuffers) with the build phase tagged from onProgress — peak-during-embed
  * vs peak-during-finalize attributes the spike to persistence vs embedding.
  *
+ * Instrument note (recorded with the step-2 rerun): a timer-based sampler
+ * inside the SAME JS thread cannot fire during the build's synchronous
+ * persistence blocks (materialized map + JSON.stringify + writeFileSync), and
+ * V8 may decommit freed pages afterwards — the sampled series under-reports
+ * those spikes and its peak is GC-dynamics-sensitive. The step-2 rerun
+ * therefore also records process.resourceUsage().maxRSS — the OS-level
+ * high-water working set, immune to sampling gaps — as the primary peak
+ * metric; the sampled per-phase rows stay for attribution context.
+ *
  * No decision rule is pre-registered beyond the §11 scope guard: this run
  * MEASURES; the streaming-persistence prototype decision rides on the table
  * (ship iff a dim-768 100k build completes on the 8 GB machine with bounded
@@ -137,6 +146,9 @@ async function childMain(chunks, quantize, dim, tmpDir) {
   const peakRss = peak('rss');
   const peakExternal = peak('external');
   const peakAb = peak('arrayBuffers');
+  // OS-level high-water working set (KB on all platforms libuv supports) —
+  // sees through the sync-phase sampling blindness described in the header.
+  const maxRssMB = +(process.resourceUsage().maxRSS / 1024).toFixed(1);
   const summary = {
     meta: {
       date: new Date().toISOString(),
@@ -149,7 +161,8 @@ async function childMain(chunks, quantize, dim, tmpDir) {
     result: { chunks: result.chunks, dim: result.dim },
     wallMs: Math.round(wallMs),
     peak: {
-      rssMB: +(peakRss.rss / 2 ** 20).toFixed(1),
+      maxRssMB,
+      sampledRssMB: +(peakRss.rss / 2 ** 20).toFixed(1),
       externalMB: +(peakExternal.external / 2 ** 20).toFixed(1),
       arrayBuffersMB: +(peakAb.arrayBuffers / 2 ** 20).toFixed(1),
       peakPhase: peakRss.phase,
@@ -212,7 +225,7 @@ async function runnerMain(args) {
     const peak = row.summary?.peak;
     process.stderr.write(
       `[peak-memory] scale ${scale}: ${row.code === 0 ? 'ok' : `exit ${row.code} (${row.signal || 'code'})`} ` +
-        (peak ? `peak rss ${peak.rssMB} MB (${peak.peakPhase}), wall ${(row.wallMs / 1000).toFixed(1)}s` : `stderr: ${row.stderrTail}`) +
+        (peak ? `peak rss ${peak.maxRssMB} MB (sampled ${peak.sampledRssMB}, ${peak.peakPhase}), wall ${(row.wallMs / 1000).toFixed(1)}s` : `stderr: ${row.stderrTail}`) +
         '\n'
     );
   }
@@ -243,7 +256,7 @@ async function main() {
       const p = r.summary?.peak;
       process.stdout.write(
         r.summary
-          ? `${String(r.scale).padStart(7)} chunks dim ${r.dim} ${r.quantize}: peak rss ${String(p.rssMB).padStart(8)} MB (external ${p.externalMB}, ab ${p.arrayBuffersMB}) at ${p.peakPhase}, wall ${(r.wallMs / 1000).toFixed(1)}s\n`
+          ? `${String(r.scale).padStart(7)} chunks dim ${r.dim} ${r.quantize}: peak rss ${String(p.maxRssMB).padStart(8)} MB (sampled ${p.sampledRssMB}, external ${p.externalMB}, ab ${p.arrayBuffersMB}) at ${p.peakPhase}, wall ${(r.wallMs / 1000).toFixed(1)}s\n`
           : `${String(r.scale).padStart(7)} chunks dim ${r.dim} ${r.quantize}: FAILED exit ${r.code} ${r.signal || ''} after ${(r.wallMs / 1000).toFixed(1)}s — ${r.stderrTail}\n`
       );
     }

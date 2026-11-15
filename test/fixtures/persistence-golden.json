@@ -1,0 +1,102 @@
+{
+  "meta": {
+    "generatedBy": "pre-#265-step2 serializeBinaryIndex (materializing algorithm)",
+    "node": "v24.14.1"
+  },
+  "index": {
+    "schemaVersion": 3,
+    "format": "binary-v1",
+    "model": "granite-multilingual-311m@main",
+    "modelAlias": "granite",
+    "adapterFingerprint": "fp-golden",
+    "chunkBudget": 512,
+    "dim": 4,
+    "db": "/golden/db",
+    "built": "2026-01-01T00:00:00.000Z",
+    "chunkCount": 3,
+    "lexical": {
+      "format": "bm25-v2",
+      "avgLen": 3,
+      "terms": {
+        "first": [
+          [
+            0,
+            1
+          ]
+        ],
+        "second": [
+          [
+            1,
+            1
+          ]
+        ],
+        "third": [
+          [
+            2,
+            1
+          ]
+        ]
+      }
+    },
+    "chunks": [
+      {
+        "file": "a.md",
+        "title": "Alpha",
+        "heading": "Alpha",
+        "headingPath": [
+          "Alpha"
+        ],
+        "text": "first chunk",
+        "vec": [
+          0.5,
+          -0.25,
+          0.125,
+          1
+        ],
+        "chunkHash": "hash-a",
+        "startLine": 1,
+        "endLine": 3
+      },
+      {
+        "file": "a.md",
+        "title": "Alpha",
+        "heading": "Alpha > Beta",
+        "headingPath": [
+          "Alpha",
+          "Beta"
+        ],
+        "text": "second chunk — unicode ✓ эings",
+        "vec": [
+          -1.5,
+          2.75,
+          0,
+          0.5
+        ],
+        "chunkHash": "hash-b",
+        "startLine": 4,
+        "endLine": 8,
+        "meta": {
+          "tags": [
+            "x",
+            "y"
+          ]
+        }
+      },
+      {
+        "file": "b.md",
+        "title": "Gamma",
+        "heading": "Gamma",
+        "headingPath": [
+          "Gamma"
+        ],
+        "text": "third chunk",
+        "vec": "zczMPc3MTD6amZk+zczMvg==",
+        "chunkHash": "hash-c",
+        "startLine": 9,
+        "endLine": 12
+      }
+    ]
+  },
+  "fp32": "TURTU0JJTjEBAAAAAAAAAAQAAAADAAAAQAAAAAAAAAAwAAAAAAAAAHAAAAAAAAAAQwMAAAAAAAAAAAAAAAAAAAAAAD8AAIC+AAAAPgAAgD8AAMC/AAAwQAAAAAAAAAA/zczMPc3MTD6amZk+zczMvnsic2NoZW1hVmVyc2lvbiI6MywiZm9ybWF0IjoiYmluYXJ5LXYxIiwibW9kZWwiOiJncmFuaXRlLW11bHRpbGluZ3VhbC0zMTFtQG1haW4iLCJtb2RlbEFsaWFzIjoiZ3Jhbml0ZSIsImFkYXB0ZXJGaW5nZXJwcmludCI6ImZwLWdvbGRlbiIsImRpbSI6NCwiZGIiOiIvZ29sZGVuL2RiIiwiYnVpbHQiOiIyMDI2LTAxLTAxVDAwOjAwOjAwLjAwMFoiLCJjaHVua0NvdW50IjozLCJxdWFudGl6ZWQiOiJmcDMyIiwibGV4aWNhbCI6eyJmb3JtYXQiOiJibTI1LXYyIiwiYXZnTGVuIjozLCJ0ZXJtcyI6eyJmaXJzdCI6W1swLDFdXSwic2Vjb25kIjpbWzEsMV1dLCJ0aGlyZCI6W1syLDFdXX19LCJjaHVua3MiOlt7ImZpbGUiOiJhLm1kIiwidGl0bGUiOiJBbHBoYSIsImhlYWRpbmciOiJBbHBoYSIsImhlYWRpbmdQYXRoIjpbIkFscGhhIl0sInRleHQiOiJmaXJzdCBjaHVuayIsImNodW5rSGFzaCI6Imhhc2gtYSIsInN0YXJ0TGluZSI6MSwiZW5kTGluZSI6M30seyJmaWxlIjoiYS5tZCIsInRpdGxlIjoiQWxwaGEiLCJoZWFkaW5nIjoiQWxwaGEgPiBCZXRhIiwiaGVhZGluZ1BhdGgiOlsiQWxwaGEiLCJCZXRhIl0sInRleHQiOiJzZWNvbmQgY2h1bmsg4oCUIHVuaWNvZGUg4pyTINGNaW5ncyIsImNodW5rSGFzaCI6Imhhc2gtYiIsInN0YXJ0TGluZSI6NCwiZW5kTGluZSI6OCwibWV0YSI6eyJ0YWdzIjpbIngiLCJ5Il19fSx7ImZpbGUiOiJiLm1kIiwidGl0bGUiOiJHYW1tYSIsImhlYWRpbmciOiJHYW1tYSIsImhlYWRpbmdQYXRoIjpbIkdhbW1hIl0sInRleHQiOiJ0aGlyZCBjaHVuayIsImNodW5rSGFzaCI6Imhhc2gtYyIsInN0YXJ0TGluZSI6OSwiZW5kTGluZSI6MTJ9XX0=",
+  "int8": "TURTU0JJTjEBAAAAAQAAAAQAAAADAAAAQAAAAAAAAAAMAAAAAAAAAEwAAAAAAAAAQwMAAAAAAAAAAAAAAAAAAEDgEH+BfwBADRkmzXsic2NoZW1hVmVyc2lvbiI6MywiZm9ybWF0IjoiYmluYXJ5LXYxIiwibW9kZWwiOiJncmFuaXRlLW11bHRpbGluZ3VhbC0zMTFtQG1haW4iLCJtb2RlbEFsaWFzIjoiZ3Jhbml0ZSIsImFkYXB0ZXJGaW5nZXJwcmludCI6ImZwLWdvbGRlbiIsImRpbSI6NCwiZGIiOiIvZ29sZGVuL2RiIiwiYnVpbHQiOiIyMDI2LTAxLTAxVDAwOjAwOjAwLjAwMFoiLCJjaHVua0NvdW50IjozLCJxdWFudGl6ZWQiOiJpbnQ4IiwibGV4aWNhbCI6eyJmb3JtYXQiOiJibTI1LXYyIiwiYXZnTGVuIjozLCJ0ZXJtcyI6eyJmaXJzdCI6W1swLDFdXSwic2Vjb25kIjpbWzEsMV1dLCJ0aGlyZCI6W1syLDFdXX19LCJjaHVua3MiOlt7ImZpbGUiOiJhLm1kIiwidGl0bGUiOiJBbHBoYSIsImhlYWRpbmciOiJBbHBoYSIsImhlYWRpbmdQYXRoIjpbIkFscGhhIl0sInRleHQiOiJmaXJzdCBjaHVuayIsImNodW5rSGFzaCI6Imhhc2gtYSIsInN0YXJ0TGluZSI6MSwiZW5kTGluZSI6M30seyJmaWxlIjoiYS5tZCIsInRpdGxlIjoiQWxwaGEiLCJoZWFkaW5nIjoiQWxwaGEgPiBCZXRhIiwiaGVhZGluZ1BhdGgiOlsiQWxwaGEiLCJCZXRhIl0sInRleHQiOiJzZWNvbmQgY2h1bmsg4oCUIHVuaWNvZGUg4pyTINGNaW5ncyIsImNodW5rSGFzaCI6Imhhc2gtYiIsInN0YXJ0TGluZSI6NCwiZW5kTGluZSI6OCwibWV0YSI6eyJ0YWdzIjpbIngiLCJ5Il19fSx7ImZpbGUiOiJiLm1kIiwidGl0bGUiOiJHYW1tYSIsImhlYWRpbmciOiJHYW1tYSIsImhlYWRpbmdQYXRoIjpbIkdhbW1hIl0sInRleHQiOiJ0aGlyZCBjaHVuayIsImNodW5rSGFzaCI6Imhhc2gtYyIsInN0YXJ0TGluZSI6OSwiZW5kTGluZSI6MTJ9XX0="
+}

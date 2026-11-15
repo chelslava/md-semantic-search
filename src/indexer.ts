@@ -25,7 +25,7 @@ import {
   resolveIndexDimension,
   ModelAdapter,
 } from './core.js';
-import { validateIndexEnvelope, validateNumericVector } from './index-format.js';
+import { validateCurrentChunk, validateIndexEnvelope, validateNumericVector } from './index-format.js';
 import {
   analyzeLexicalDocument,
   buildLexicalIndex,
@@ -39,7 +39,7 @@ import { embeddingAdapterFingerprint, legacyEmbeddingAdapterFingerprint } from '
 import { trainIVF, serializeIVF, ANN_THRESHOLD } from './ivf.js';
 import { buildHnsw, insertHnsw, remapHnsw, serializeHnsw, deserializeHnsw, HnswIndex } from './hnsw.js';
 import { DocumentMetadata } from './frontmatter.js';
-import { serializeBinaryIndex } from './binary-format.js';
+import { binaryFileParts } from './binary-format.js';
 import { defaultChunkTokenBudget } from './markdown-parser.js';
 
 export interface IndexChunk {
@@ -182,6 +182,81 @@ function atomicWrite(target: string, data: string | Buffer): void {
     fs.writeFileSync(shaTmp, `${digest}  ${base}\n`);
     fs.renameSync(shaTmp, shaPath);
   }
+}
+
+/**
+ * issue #265 step 2: streaming twin of `atomicWrite` — same tmp+rename
+ * discipline and the same `.sha256` manifest for vectors.json/vectors.bin,
+ * but the payload arrives as an iterable of parts (strings / buffers) so a
+ * huge envelope is never materialized as one string. The digest is computed
+ * over the exact bytes written, in file order.
+ */
+export function atomicWriteStreamed(target: string, parts: Iterable<string | Buffer>): void {
+  const tmp = `${target}.${process.pid}.tmp`;
+  const base = path.basename(target);
+  const sha =
+    base === 'vectors.json' || base === 'vectors.bin' ? crypto.createHash('sha256') : null;
+  const fd = fs.openSync(tmp, 'w');
+  try {
+    for (const part of parts) {
+      const buf = typeof part === 'string' ? Buffer.from(part, 'utf8') : part;
+      sha?.update(buf);
+      let written = 0;
+      while (written < buf.byteLength) {
+        written += fs.writeSync(fd, buf, written, buf.byteLength - written);
+      }
+    }
+    fs.closeSync(fd);
+  } catch (err) {
+    try {
+      fs.closeSync(fd);
+    } catch {
+      /* already closed */
+    }
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* best-effort */
+    }
+    throw err;
+  }
+  fs.renameSync(tmp, target);
+
+  if (sha) {
+    const shaPath = `${target}.sha256`;
+    const shaTmp = `${shaPath}.${process.pid}.tmp`;
+    fs.writeFileSync(shaTmp, `${sha.digest('hex')}  ${base}\n`);
+    fs.renameSync(shaTmp, shaPath);
+  }
+}
+
+/**
+ * issue #265 step 2: the per-chunk pieces of an index envelope document.
+ * Concatenating the yielded strings is byte-identical to
+ * `JSON.stringify({ ...headDoc, chunks: chunks.map(encodedCopy) })` — the
+ * persisted shape the search side parses — without materializing the encoded
+ * copies or the monolithic string. `headDoc` must carry an empty `"chunks": []`
+ * placeholder exactly where the materialized envelope has its chunks key.
+ */
+export function* envelopeJsonParts(
+  headDoc: object,
+  chunks: ReadonlyArray<IndexChunk>,
+  encodedVecOf: (c: IndexChunk) => unknown,
+  onEncodedChunk?: (chunk: object, position: number) => void
+): Generator<string> {
+  const headJson = JSON.stringify(headDoc);
+  const marker = '"chunks":[]';
+  const at = headJson.lastIndexOf(marker);
+  if (at < 0) throw new Error('internal: envelope head is missing the empty chunks placeholder');
+  yield headJson.slice(0, at + 9) + '['; // `..."chunks":[`
+  for (let position = 0; position < chunks.length; position++) {
+    const c = chunks[position];
+    const encoded = typeof c.vec === 'string' ? c : { ...c, vec: encodedVecOf(c) };
+    onEncodedChunk?.(encoded, position);
+    const chunkJson = JSON.stringify(encoded);
+    yield position === 0 ? chunkJson : ',' + chunkJson;
+  }
+  yield ']' + headJson.slice(at + marker.length);
 }
 
 function normalize(s?: string): string {
@@ -498,7 +573,16 @@ async function _buildIndexInner({
     lexicalRecords.push(record ?? analyzeLexicalDocument(chunk));
   };
 
-  const checkpointSnapshot = (complete: boolean) => ({
+  // issue #265 step 2: the persisted `vec` encoding (canonical base64),
+  // computed per chunk at stream time instead of materialized for the whole
+  // index at once.
+  const encodedVecOf = (c: IndexChunk): string | undefined =>
+    c.vec ? (typeof c.vec === 'string' ? c.vec : encodeVec(c.vec)) : undefined;
+
+  // issue #265 step 2: checkpoints stream per chunk (see envelopeJsonParts);
+  // the head keeps the exact key order of the old materialized snapshot with
+  // `chunks` as the last key holding an empty-array placeholder.
+  const checkpointHead = (complete: boolean) => ({
     schemaVersion: SCHEMA_VERSION,
     format: INDEX_FORMAT,
     model: modelIdentity,
@@ -512,7 +596,7 @@ async function _buildIndexInner({
     chunkCount: chunks.length,
     hashes: newHashes,
     lexical: buildLexicalIndex(lexicalRecords),
-    chunks: chunks.map((c) => ({ ...c, vec: c.vec ? (typeof c.vec === 'string' ? c.vec : encodeVec(c.vec)) : undefined })),
+    chunks: [] as never[],
   });
 
   for (const abs of files) {
@@ -602,7 +686,7 @@ async function _buildIndexInner({
         completedBatches++;
         if (completedBatches % CHECKPOINT_BATCHES === 0 && Date.now() - lastCheckpointAt >= CHECKPOINT_MIN_INTERVAL_MS) {
           lastCheckpointAt = Date.now();
-          atomicWrite(checkpointPath, JSON.stringify(checkpointSnapshot(false)));
+          atomicWriteStreamed(checkpointPath, envelopeJsonParts(checkpointHead(false), chunks, encodedVecOf));
         }
         const done = Math.min(i + BATCH, toEmbed.length);
         const elapsedSec = (Date.now() - embedStartTime) / 1000;
@@ -649,7 +733,7 @@ async function _buildIndexInner({
           embeddedCount += slice.length;
           if (completedBatches % CHECKPOINT_BATCHES === 0 && Date.now() - lastCheckpointAt >= CHECKPOINT_MIN_INTERVAL_MS) {
             lastCheckpointAt = Date.now();
-            atomicWrite(checkpointPath, JSON.stringify(checkpointSnapshot(false)));
+            atomicWriteStreamed(checkpointPath, envelopeJsonParts(checkpointHead(false), chunks, encodedVecOf));
           }
           const elapsedSec = (Date.now() - embedStartTime) / 1000;
           const chunksPerSec = elapsedSec > 0 ? embeddedCount / elapsedSec : 0;
@@ -672,7 +756,7 @@ async function _buildIndexInner({
   for (const chunk of chunks) acceptBuildVector(chunk.vec);
   const dim = buildDim ?? (model.dim > 0 ? model.dim : undefined);
   resolveIndexDimension(dim, model.dim);
-  const index = {
+  const indexHead = {
     schemaVersion: SCHEMA_VERSION,
     format: INDEX_FORMAT,
     model: modelIdentity,
@@ -684,27 +768,46 @@ async function _buildIndexInner({
     built: new Date().toISOString(),
     chunkCount: chunks.length,
     lexical: buildLexicalIndex(lexicalRecords),
-    chunks: chunks.map((c) => ({ ...c, vec: c.vec ? (typeof c.vec === 'string' ? c.vec : encodeVec(c.vec)) : undefined })),
+    chunks: [] as never[],
   };
 
-  validateIndexEnvelope(index, 'generated index', { encoding: 'stored' });
-
-  atomicWrite(checkpointPath, JSON.stringify({ ...index, complete: true, hashes: newHashes }));
-  atomicWrite(vectorsPath, JSON.stringify(index));
-  atomicWrite(hashesPath, JSON.stringify(newHashes, null, 2));
-
-  const vectorsBinPath = path.join(indexDir, 'vectors.bin');
-  if (dim !== undefined && dim > 0) {
-    const binBuffer = serializeBinaryIndex(index as any, dim, { quantize });
-    atomicWrite(vectorsBinPath, binBuffer);
+  // issue #265 step 2: the same coverage as validating the materialized
+  // envelope — scalar envelope fields here, every chunk during the streamed
+  // vectors.json write below — without materializing the encoded copies.
+  validateIndexEnvelope({ ...indexHead, chunkCount: 0 }, 'generated index', {
+    validateVectors: false,
+    validateLexical: false,
+  });
+  if (chunks.length > 0 && dim === undefined) {
+    throw new Error('nonempty schema v3 custom index requires explicit dim — run `mdss index` to rebuild');
   }
+  const lexicalError = validateLexicalIndex(indexHead.lexical, chunks.length);
+  if (lexicalError) {
+    throw new Error(`schema v3 lexical index is invalid (${lexicalError}) — run \`mdss index\` to rebuild`);
+  }
+
+  // issue #265 step 2: the final persistence streams every artifact instead of
+  // materializing the encoded envelope (base64 copies of all vectors) and the
+  // monolithic JSON.stringify strings — the build-time peak measured in
+  // RESEARCH §20. All output bytes are identical to the materializing writes.
+  atomicWriteStreamed(
+    checkpointPath,
+    envelopeJsonParts({ ...indexHead, complete: true, hashes: newHashes }, chunks, encodedVecOf)
+  );
 
   // issue #201: ANN sidecar engine — explicit 'hnsw' builds the graph
   // instead of IVF; `true`/undefined/'ivf' keep the historical ivf.json path.
+  // The sidecar INDEX is built before vectors.json is streamed: trainIVF/HNSW
+  // need random access to every fp32 vector, so this is the one phase where
+  // the vector memory is irreducible; the FILE writes defer until the streamed
+  // artifacts are on disk.
   const annEngine = ann === 'hnsw' ? 'hnsw' : 'ivf';
   const buildSidecar = Boolean(ann) || chunks.length >= ANN_THRESHOLD;
   const ivfPath = path.join(indexDir, 'ivf.json');
   const hnswPath = path.join(indexDir, 'hnsw.json');
+  let sidecarTarget: string | null = null;
+  let sidecarData: string | null = null;
+  let sidecarRemove: string | null = null;
   if (buildSidecar) {
     const rawVecs = chunks.map((c) => (c.vec instanceof Float32Array ? c.vec : Float32Array.from(c.vec as number[])));
     if (annEngine === 'hnsw') {
@@ -757,28 +860,40 @@ async function _buildIndexInner({
         // match); otherwise buildHnsw silently keeps the closure path.
         hnswIndex = buildHnsw(rawVecs, { vectors: rawVecs, distance: hnswDistance(rawVecs), engine: 'auto' });
       }
-      atomicWrite(hnswPath, JSON.stringify(serializeHnsw(hnswIndex)));
-      if (fs.existsSync(ivfPath)) {
-        try {
-          fs.unlinkSync(ivfPath);
-        } catch {}
-      }
+      sidecarTarget = hnswPath;
+      sidecarData = JSON.stringify(serializeHnsw(hnswIndex));
+      sidecarRemove = ivfPath;
     } else {
-      const ivfIndex = trainIVF(rawVecs);
-      atomicWrite(ivfPath, JSON.stringify(serializeIVF(ivfIndex)));
-      if (fs.existsSync(hnswPath)) {
-        try {
-          fs.unlinkSync(hnswPath);
-        } catch {}
-      }
+      sidecarTarget = ivfPath;
+      sidecarData = JSON.stringify(serializeIVF(trainIVF(rawVecs)));
+      sidecarRemove = hnswPath;
     }
-  } else {
-    for (const sidecar of [ivfPath, hnswPath]) {
-      if (fs.existsSync(sidecar)) {
-        try {
-          fs.unlinkSync(sidecar);
-        } catch {}
-      }
+  }
+
+  atomicWriteStreamed(
+    vectorsPath,
+    envelopeJsonParts(indexHead, chunks, encodedVecOf, (chunk, position) =>
+      validateCurrentChunk(chunk, position, { dim, encoding: 'stored' })
+    )
+  );
+  atomicWrite(hashesPath, JSON.stringify(newHashes, null, 2));
+
+  const vectorsBinPath = path.join(indexDir, 'vectors.bin');
+  if (dim !== undefined && dim > 0) {
+    // releaseVectors: the binary write is the LAST consumer of the in-memory
+    // vectors — each chunk's vec is dropped as soon as its row is on disk
+    // (issue #265 step 2c).
+    atomicWriteStreamed(vectorsBinPath, binaryFileParts(indexHead, chunks, dim, { quantize, releaseVectors: true }));
+  }
+
+  if (sidecarTarget !== null && sidecarData !== null) {
+    atomicWrite(sidecarTarget, sidecarData);
+  }
+  for (const sidecar of sidecarRemove === null ? [ivfPath, hnswPath] : [sidecarRemove]) {
+    if (fs.existsSync(sidecar)) {
+      try {
+        fs.unlinkSync(sidecar);
+      } catch {}
     }
   }
 
