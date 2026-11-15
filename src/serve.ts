@@ -17,6 +17,7 @@ import { WEBUI_HTML, WEBUI_JS, WEBUI_CSS } from './webui.js';
 import { handleMcpRequest, createClientChannel } from './mcp.js';
 import { findRelatedNotes } from './wikilinks.js';
 import { searchFederated } from './federation.js';
+import { computeFacets, validateFacetFields } from './facets.js';
 import { ChatProviderId } from './providers.js';
 
 const DEFAULT_PORT = 8747;
@@ -1389,57 +1390,22 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       json(res, 429, { error: 'rate limit exceeded — slow down', retryAfterSec: limited.retryAfterSec });
       return;
     }
-    const fields = new Set<string>();
-    for (const raw of url.searchParams.getAll('field')) {
-      for (const f of raw.split(',')) {
-        const name = f.trim();
-        if (!name) continue;
-        if (!/^[a-zA-Z_][a-zA-Z0-9_.-]*$/.test(name) || name.includes('..')) {
-          json(res, 400, { error: `invalid field name: "${name}"` });
-          return;
-        }
-        fields.add(name);
-      }
-    }
-    if (fields.size === 0) {
-      for (const f of ['tags', 'type', 'status', 'project']) fields.add(f);
-    }
-    const prefix = (url.searchParams.get('prefix') || '').toLowerCase();
-    const limitRaw = Number(url.searchParams.get('limit'));
-    const limit = Number.isInteger(limitRaw) && limitRaw > 0 && limitRaw <= 500 ? limitRaw : 50;
+    // issue #273: the counting/prefix/limit policy lives in src/facets.ts,
+    // shared verbatim with the MCP `facets` tool — one contract, two surfaces.
     try {
-      const chunks = state.loaded.index.chunks;
-      const counters = new Map<string, Map<string, number>>();
-      for (const f of fields) counters.set(f, new Map());
-      const bump = (field: string, rawValue: unknown): void => {
-        if (rawValue === undefined || rawValue === null || rawValue === '') return;
-        const values = Array.isArray(rawValue) ? rawValue : [rawValue];
-        const counter = counters.get(field)!;
-        for (const value of values) {
-          const str = String(value);
-          if (!str) continue;
-          counter.set(str, (counter.get(str) || 0) + 1);
-        }
-      };
-      for (const c of chunks) {
-        const meta = c.meta || {};
-        for (const f of fields) {
-          if (f === 'tags' || f === 'aliases') bump(f, meta[f]);
-          else if (f === 'type' || f === 'status' || f === 'project' || f === 'canonicalRef') bump(f, meta[f]);
-          else if (f.startsWith('custom.') && meta.custom) bump(f, meta.custom[f.slice('custom.'.length)]);
-          else if (meta.custom && meta.custom[f] !== undefined) bump(f, meta.custom[f]);
-        }
-      }
-      const facetOutput: Record<string, Array<{ value: string; count: number }>> = {};
-      for (const [f, counter] of counters) {
-        facetOutput[f] = [...counter.entries()]
-          .filter(([value]) => !prefix || value.toLowerCase().startsWith(prefix))
-          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-          .slice(0, limit)
-          .map(([value, count]) => ({ value, count }));
-      }
-      json(res, 200, { fields: facetOutput, chunks: chunks.length });
+      const fields = validateFacetFields(url.searchParams.getAll('field'));
+      const result = computeFacets(
+        state.loaded.index.chunks,
+        fields,
+        url.searchParams.get('prefix') || undefined,
+        Number(url.searchParams.get('limit')) || undefined,
+      );
+      json(res, 200, result);
     } catch (e: any) {
+      if (/invalid field name/.test(e?.message || '')) {
+        json(res, 400, { error: e.message });
+        return;
+      }
       process.stderr.write(`serve: /facets failed: ${e?.stack || e}
 `);
       json(res, 500, { error: 'internal server error' });

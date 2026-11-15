@@ -26,11 +26,12 @@ snippets: `docs/agent-integration.md`), use the tools instead of the CLI:
 
 | Task | Tool |
 |---|---|
-| Find passages by meaning or keyword | `search_markdown` (`query`, `k`, `path` glob, `tag`/`filter`, `graphBoost`) |
+| Find passages by meaning or keyword | `search_markdown` (`query`, `k`, `path` glob, `tag`/`filter`, `graphBoost`; tuning: `semanticOnly`, `rerank`, `recency`, `maxPerFile`) |
 | Read one section | `get_chunk` (`file` + `heading`) |
-| Read exact lines (cite-precision) | `get_lines` (`file`, `fromLine`, `maxLines`) |
+| Read exact lines (cite-precision) | `get_lines` (`file`, `fromLine`, `maxLines` — omitted `maxLines` caps at 200 lines and reports `truncated`) |
 | Explore the graph around a note | `related_notes` (`file`, `direction`, `semantic`) |
-| Inventory / health | `list_files`, `index_status` |
+| Discover filter values | `facets` (`field` incl. `custom.<key>`, `prefix`, `limit`) — before composing `filter:` expressions |
+| Inventory / health | `list_files`, `index_status` (reports `ageSeconds`/`stale`) |
 | Grounded answer with citations | `ask_knowledge_base` (`query`) |
 
 Resources: `mdss://note/{path}` (full note), `mdss://note/{path}?fromLine=N&maxLines=M`,

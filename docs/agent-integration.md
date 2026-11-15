@@ -73,16 +73,17 @@ building filter chips. Full reference: [docs/api-reference.md](api-reference.md)
 
 ## What the agent gets
 
-**7 tools** (all `readOnly`, `idempotent`, `structuredContent`):
+**8 tools** (all `readOnly`, `idempotent`, `structuredContent`):
 
 | Tool | Purpose |
 |---|---|
-| `search_markdown` | hybrid semantic + BM25F + fuzzy search; `path` glob, `tag`/`filter` DSL, `graphBoost`, `k` |
+| `search_markdown` | hybrid semantic + BM25F + fuzzy search; `path` glob, `tag`/`filter` DSL, `graphBoost`, `k`, plus the `/search` tuning parity: `semanticOnly`, `rerank`/`rerankModel`, `recency`, `maxPerFile`, `dimensions` |
 | `get_chunk` | exact section by `file` + `heading` |
-| `get_lines` | exact line span (`fromLine`, `maxLines`) — citation-precision reads |
+| `get_lines` | exact line span (`fromLine`, `maxLines`) — citation-precision reads; an omitted `maxLines` caps at 200 lines and reports `truncated` |
 | `related_notes` | graph (outgoing/backlinks/2-hop) + semantic neighbors of a note |
+| `facets` | value→count maps for frontmatter fields (`tags`, `type`, `status`, `project`, `custom.<key>`) — the discovery layer behind `filter:` building, same contract as `GET /facets` |
 | `list_files` | indexed inventory with chunk counts |
-| `index_status` | health: chunk count, model, staleness |
+| `index_status` | health: chunk/file counts, model, build timestamp, `ageSeconds`, `stale` |
 | `ask_knowledge_base` | grounded Q&A synthesis with citations; uses **client sampling** when the client declares the capability (answer written by the client's own model), else the built-in extractive answerer |
 
 **Resources:** `mdss://note/{path}`, `mdss://note/{path}?fromLine=1&maxLines=50`,

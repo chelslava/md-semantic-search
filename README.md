@@ -638,12 +638,13 @@ tool payload reports which path produced the result in `answerMode`
 (`sampling` / `extractive`).
 
 #### Available MCP Tools:
-- **`search_markdown`**: Hybrid semantic vector + BM25 search with optional `path` glob, `tag`, rich `filter`, and `graphBoost`.
+- **`search_markdown`**: Hybrid semantic vector + BM25 search with optional `path` glob, `tag`, rich `filter`, `graphBoost`, and the `/search` tuning parity — `semanticOnly`, `rerank`/`rerankModel`, `recency`, `maxPerFile`, `dimensions`.
 - **`get_chunk`**: Retrieve a specific section by file and heading.
-- **`get_lines`**: Retrieve exact line spans (`fromLine`, `maxLines`) from an indexed Markdown document.
+- **`get_lines`**: Retrieve exact line spans (`fromLine`, `maxLines`) from an indexed Markdown document; an omitted `maxLines` caps at 200 lines and the payload reports `truncated`.
 - **`related_notes`**: Find graph-connected (outgoing, backlinks, 2-hop) and semantically related notes for a document.
+- **`facets`**: Value→count maps for frontmatter fields (`tags`, `type`, `status`, `project`, `custom.<key>`) — the same discovery contract as `GET /facets`, for building `filter:` expressions.
 - **`list_files`**: List indexed Markdown files with chunk counts.
-- **`index_status`**: Inspect index health, chunk counts, and model metadata.
+- **`index_status`**: Inspect index health, chunk/file counts, model metadata, build timestamp, index age (`ageSeconds`), and a staleness flag (`stale`).
 - **`ask_knowledge_base`**: Grounded direct Q&A synthesis with citations; uses the client's own LLM via MCP sampling when available (see below), else the built-in extractive answerer — `answerMode` in the payload tells which.
 - *All tools return `structuredContent` alongside text and include `readOnly: true, idempotent: true` annotations.*
 

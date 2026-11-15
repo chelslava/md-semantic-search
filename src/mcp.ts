@@ -10,8 +10,9 @@ import { buildIndex } from './indexer.js';
 import { loadIndex, searchIndex } from './search.js';
 import { searchFederated } from './federation.js';
 import { askQuestion, chatTurn, loadChatSession } from './rag.js';
-import { assertSafePath, globToRegExp, getDocLines } from './core.js';
+import { assertSafePath, globToRegExp, getDocLines, walkMarkdown } from './core.js';
 import { findRelatedNotes } from './wikilinks.js';
+import { computeFacets } from './facets.js';
 
 /**
  * Package version reported via MCP initialize → serverInfo.
@@ -79,6 +80,13 @@ export interface McpClientChannel {
 export const DEFAULT_SAMPLING_TIMEOUT_MS = 60_000;
 /** `sampling/createMessage` requires maxTokens — a grounded citation answer fits comfortably. */
 export const DEFAULT_SAMPLING_MAX_TOKENS = 1024;
+/**
+ * issue #273: agent context guard for `get_lines` — an omitted `maxLines` used
+ * to stream the whole file into the model's context. The cap applies only to
+ * the omitted case; explicit reads are honored as-is, and every clipped
+ * result reports `truncated: true`.
+ */
+export const DEFAULT_GET_LINES_MAX_LINES = 200;
 
 export function samplingTimeoutMs(envValue?: string): number {
   const raw = Number(envValue ?? process.env.MDSS_SAMPLING_TIMEOUT_MS);
@@ -169,7 +177,7 @@ export function createSamplingSynthesizer(state: {
 export const MCP_TOOLS = [
   {
     name: 'search_markdown',
-    description: 'Hybrid search over the local Markdown knowledge base: dense cross-lingual vector similarity (ask in any language) fused with BM25F lexical ranking. Hits carry file, title, heading, snippet, score, and startLine/endLine — cite as file.md#Heading with the line range; for exact quoting pull the span with get_lines. Optional path glob, frontmatter tag/boolean filter, and wikilink-graph boost.',
+    description: 'Hybrid search over the local Markdown knowledge base: dense cross-lingual vector similarity (ask in any language) fused with BM25F lexical ranking. Hits carry file, title, heading, snippet, score, and startLine/endLine — cite as file.md#Heading with the line range; for exact quoting pull the span with get_lines. Optional path glob, frontmatter tag/boolean filter, graph boost, reranking, recency decay, and per-file collapse.',
     annotations: { readOnly: true, idempotent: true },
     inputSchema: {
       type: 'object',
@@ -181,6 +189,12 @@ export const MCP_TOOLS = [
         tag: { type: 'array', items: { type: 'string' }, description: 'Optional frontmatter tag filters' },
         filter: { type: 'string', description: 'Optional rich boolean filter expression (e.g. "tag:engineering AND status != archived")' },
         graphBoost: { type: 'number', description: 'Optional boost weight for graph PageRank / wikilinks (0.0 to 1.0)' },
+        semanticOnly: { type: 'boolean', description: 'Skip lexical/RRF fusion — pure vector ranking (default: false)' },
+        rerank: { type: 'boolean', description: 'Re-rank the candidate pool with a cross-encoder for sharper results (the ~144 MB reranker downloads on first use)' },
+        rerankModel: { type: 'string', description: 'Reranker registry alias, e.g. "gte-reranker-modernbert" (default) or "bge-reranker-base"' },
+        recency: { type: 'number', description: 'Time-decay half-life in days — passages get a 0.5^(age/halfLife) boost after fusion' },
+        maxPerFile: { type: 'number', description: 'Collapse results to at most N hits per file (default: unlimited)' },
+        dimensions: { type: 'number', description: 'Query-time MRL truncation — sweep a full-dim index at a reduced dimension (e.g. 384); no re-index needed' },
       },
       required: ['query'],
     },
@@ -207,7 +221,7 @@ export const MCP_TOOLS = [
       properties: {
         file: { type: 'string', description: 'Relative file path (e.g. "guides/api.md")' },
         fromLine: { type: 'number', description: '1-based starting line number (default: 1)' },
-        maxLines: { type: 'number', description: 'Optional maximum number of lines to return' },
+        maxLines: { type: 'number', description: 'Optional maximum number of lines to return (default cap 200 when omitted; the result carries truncated=true when the span does not reach the end of the file)' },
       },
       required: ['file'],
     },
@@ -240,11 +254,24 @@ export const MCP_TOOLS = [
   },
   {
     name: 'index_status',
-    description: 'Index health snapshot: chunk count, embedding model, dimension, and the build timestamp. The index is a snapshot — notes edited after the build timestamp are not searchable until re-indexed.',
+    description: 'Index health snapshot: chunk/file counts, embedding model, dimension, build timestamp, index age (ageSeconds), and a staleness flag (stale=true when a note was edited after the build — re-index to pick it up). The index is a snapshot.',
     annotations: { readOnly: true, idempotent: true },
     inputSchema: {
       type: 'object',
       properties: {},
+    },
+  },
+  {
+    name: 'facets',
+    description: 'Facet discovery for filter building: value→count maps for frontmatter fields (tags, type, status, project, or custom.<key>) computed from the loaded index. Use to learn which tag/filter values exist before composing a filter: expression. Same contract as the daemon GET /facets.',
+    annotations: { readOnly: true, idempotent: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        field: { type: 'array', items: { type: 'string' }, description: 'Frontmatter fields to count (default: tags, type, status, project); custom frontmatter keys are addressable as "custom.<key>"' },
+        prefix: { type: 'string', description: 'Case-insensitive value prefix filter' },
+        limit: { type: 'number', description: 'Maximum values per field (1-500, default: 50)' },
+      },
     },
   },
   {
@@ -814,6 +841,12 @@ export async function handleMcpRequest(req: any, state: McpHandlerState): Promis
       if (name === 'search_markdown') {
         const query = typeof args.query === 'string' ? args.query : '';
         const k = Number.isInteger(args.k) && args.k > 0 ? args.k : 6;
+        // issue #273: tuning parity with the daemon's POST /search — the same
+        // pass-through semantics (recency floor, maxPerFile alias handling)
+        // the HTTP handler applies.
+        const recency = typeof args.recency === 'number' && args.recency > 0 ? args.recency : undefined;
+        const maxPerFile = Number.isInteger(args.maxPerFile) && args.maxPerFile > 0 ? args.maxPerFile : undefined;
+        const dimensions = typeof args.dimensions === 'number' && args.dimensions > 0 ? args.dimensions : undefined;
         if (Array.isArray(args.vaults) && args.vaults.length > 0) {
           // issue #179: the vaults argument must never name an arbitrary
           // directory (silent index read + query-cache write outside the
@@ -835,6 +868,11 @@ export async function handleMcpRequest(req: any, state: McpHandlerState): Promis
             tag: args.tag,
             filter: typeof args.filter === 'string' ? args.filter : undefined,
             graphBoost: typeof args.graphBoost === 'number' ? args.graphBoost : undefined,
+            semanticOnly: !!args.semanticOnly,
+            ...(args.rerank ? { rerank: true } : {}),
+            ...(typeof args.rerankModel === 'string' && args.rerankModel ? { rerankModel: args.rerankModel } : {}),
+            maxPerFile,
+            recency,
             offline: state.offline,
             embedFn: state.embedFn,
           });
@@ -851,6 +889,12 @@ export async function handleMcpRequest(req: any, state: McpHandlerState): Promis
             tag: args.tag,
             filter: typeof args.filter === 'string' ? args.filter : undefined,
             graphBoost: typeof args.graphBoost === 'number' ? args.graphBoost : undefined,
+            semanticOnly: !!args.semanticOnly,
+            ...(args.rerank ? { rerank: true } : {}),
+            ...(typeof args.rerankModel === 'string' && args.rerankModel ? { rerankModel: args.rerankModel } : {}),
+            maxPerFile,
+            recency,
+            dimensions,
             offline: state.offline,
             embedFn: state.embedFn,
           });
@@ -869,14 +913,22 @@ export async function handleMcpRequest(req: any, state: McpHandlerState): Promis
           throw new Error('missing "file" argument');
         }
         const fromLine = typeof args.fromLine === 'number' ? args.fromLine : 1;
-        const maxLines = typeof args.maxLines === 'number' ? args.maxLines : undefined;
-        rawResult = getDocLines({
+        // issue #273: an omitted maxLines no longer streams the whole file —
+        // default-cap it; explicit maxLines values are honored as-is.
+        const maxLines = typeof args.maxLines === 'number' && args.maxLines > 0
+          ? args.maxLines
+          : DEFAULT_GET_LINES_MAX_LINES;
+        const linesRes = getDocLines({
           file,
           fromLine,
           maxLines,
           dbDir: state.loaded.index.db,
           chunks: state.loaded.index.chunks,
         });
+        rawResult = {
+          ...linesRes,
+          truncated: linesRes.toLine < linesRes.totalLines,
+        };
       } else if (name === 'related_notes' || name === 'related_documents') {
         const file = args.file || args.note || args.target;
         if (!file || typeof file !== 'string') {
@@ -904,13 +956,47 @@ export async function handleMcpRequest(req: any, state: McpHandlerState): Promis
         }
         rawResult = files;
       } else if (name === 'index_status') {
+        // issue #273: staleness + location so an agent can self-diagnose over
+        // MCP alone. Stale follows the `mdss check` rule — newest note mtime
+        // vs the build timestamp with the same 5 s grace; a missing/unreadable
+        // db reports stale: null (the loaded index stays searchable).
+        const builtMs = state.loaded.index.built ? Date.parse(state.loaded.index.built) : NaN;
+        const ageSeconds = Number.isFinite(builtMs) ? Math.floor((Date.now() - builtMs) / 1000) : null;
+        const dbDir = state.loaded.index.db || null;
+        let stale: boolean | null = null;
+        if (dbDir && Number.isFinite(builtMs)) {
+          try {
+            let newest = 0;
+            for (const f of walkMarkdown(dbDir)) {
+              const st = fs.statSync(f);
+              if (st.mtimeMs > newest) newest = st.mtimeMs;
+            }
+            stale = newest > builtMs + 5000;
+          } catch {
+            stale = null;
+          }
+        }
+        const fileCount = new Set(state.loaded.index.chunks.map((c: any) => c.file)).size;
         rawResult = {
           ok: true,
           chunks: state.loaded.index.chunks.length,
+          files: fileCount,
           model: state.loaded.model.id,
           dim: state.loaded.index.dim || state.loaded.model.dim || 0,
           built: state.loaded.index.built || null,
+          db: dbDir,
+          ageSeconds,
+          stale,
         };
+      } else if (name === 'facets') {
+        // issue #273: the same counting contract as GET /facets (src/facets.ts);
+        // an invalid field name surfaces as an isError tool result.
+        rawResult = computeFacets(
+          state.loaded.index.chunks,
+          Array.isArray(args.field) ? args.field : undefined,
+          typeof args.prefix === 'string' ? args.prefix : undefined,
+          typeof args.limit === 'number' ? args.limit : undefined,
+        );
       } else if (name === 'ask_knowledge_base') {
         const query = args.query;
         const k = typeof args.k === 'number' ? args.k : 5;
@@ -970,7 +1056,10 @@ export async function handleMcpRequest(req: any, state: McpHandlerState): Promis
 
       // issue #205: the MCP spec requires structuredContent to be an OBJECT
       // when present — strict clients reject bare arrays outright. Text content
-      // keeps the raw result verbatim for clients reading content[0].text.
+      // keeps the raw result verbatim for clients reading content[0].text, in
+      // COMPACT form (issue #273): pretty-printing doubled the token cost for
+      // text-reading clients with redundant whitespace; structuredContent
+      // remains the object contract.
       const structured =
         Array.isArray(rawResult)
           ? name === 'list_files'
@@ -984,7 +1073,7 @@ export async function handleMcpRequest(req: any, state: McpHandlerState): Promis
         jsonrpc: '2.0',
         id,
         result: {
-          content: [{ type: 'text', text: JSON.stringify(rawResult, null, 2) }],
+          content: [{ type: 'text', text: JSON.stringify(rawResult) }],
           structuredContent: structured,
         },
       };

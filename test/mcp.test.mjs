@@ -64,10 +64,10 @@ async function makeIndex() {
 
 test('MCP_TOOLS, MCP_RESOURCE_TEMPLATES, MCP_PROMPTS: define valid schemas and annotations', () => {
   assert.equal(Array.isArray(MCP_TOOLS), true);
-  assert.equal(MCP_TOOLS.length, 7);
+  assert.equal(MCP_TOOLS.length, 8);
 
   const toolNames = MCP_TOOLS.map(t => t.name);
-  assert.deepEqual(toolNames.sort(), ['ask_knowledge_base', 'get_chunk', 'get_lines', 'index_status', 'list_files', 'related_notes', 'search_markdown']);
+  assert.deepEqual(toolNames.sort(), ['ask_knowledge_base', 'facets', 'get_chunk', 'get_lines', 'index_status', 'list_files', 'related_notes', 'search_markdown']);
 
   for (const tool of MCP_TOOLS) {
     assert.equal(typeof tool.name, 'string');
@@ -108,7 +108,7 @@ test('handleMcpRequest: handles initialize with tools, resources, and prompts ca
     // 2. tools/list
     const listRes = await handleMcpRequest({ jsonrpc: '2.0', id: 2, method: 'tools/list' }, state);
     assert.equal(listRes.id, 2);
-    assert.equal(listRes.result.tools.length, 7);
+    assert.equal(listRes.result.tools.length, 8);
   } finally {
     safeRm(dir);
   }
@@ -715,5 +715,147 @@ test('ask_knowledge_base with a sessionId resolves sessions from the handler ind
   } finally {
     safeRm(dirA);
     safeRm(dirB);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// issue #273: MCP/HTTP surface parity + agent context hygiene
+// ---------------------------------------------------------------------------
+
+test('search_markdown schema exposes the POST /search parity params (issue #273)', () => {
+  const tool = MCP_TOOLS.find((t) => t.name === 'search_markdown');
+  const props = Object.keys(tool.inputSchema.properties);
+  for (const p of ['semanticOnly', 'rerank', 'rerankModel', 'recency', 'maxPerFile', 'dimensions']) {
+    assert.ok(props.includes(p), `search_markdown inputSchema must expose ${p}`);
+  }
+});
+
+test('facets: value→count maps match the GET /facets contract (issue #273)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdss-mcp-facets-'));
+  const idx = path.join(dir, '.mdss');
+  try {
+    fs.writeFileSync(path.join(dir, 'a.md'), '---\ntitle: A\ntags: [engineering, rust]\ntype: guide\nstatus: draft\nteam: core\n---\n\n# A\n\ncoffee beans roasted ground to a fine powder for brewing methods\n');
+    fs.writeFileSync(path.join(dir, 'b.md'), '---\ntitle: B\ntags: [engineering, obsidian]\ntype: guide\nstatus: released\n---\n\n# B\n\ntea leaves steeped at a lower temperature than coffee usually requires\n');
+    fs.writeFileSync(path.join(dir, 'c.md'), '---\ntitle: C\ntags: [rust]\ntype: reference\n---\n\n# C\n\nrust ownership rules keep memory safe without any garbage collector\n');
+    await buildIndex({ db: dir, indexDir: idx, cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const loaded = loadIndex(idx);
+    const state = { loaded, cacheDir: dir, offline: true, embedFn: fakeEmbed };
+
+    const call = (id, args) => handleMcpRequest(
+      { jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'facets', arguments: args } },
+      state,
+    );
+
+    // default fields + counts
+    const res = await call(50, {});
+    assert.ok(!res.error && !res.result.isError, `facets ran: ${res.result?.content?.[0]?.text || res.error?.message}`);
+    const payload = res.result.structuredContent;
+    assert.equal(typeof payload, 'object', 'structuredContent is an object');
+    assert.equal(payload.chunks, 3);
+    const tagCounts = Object.fromEntries(payload.fields.tags.map((t) => [t.value, t.count]));
+    assert.equal(tagCounts['engineering'], 2);
+    assert.equal(tagCounts['rust'], 2);
+    const typeCounts = Object.fromEntries(payload.fields.type.map((t) => [t.value, t.count]));
+    assert.equal(typeCounts['guide'], 2);
+
+    // custom frontmatter keys are addressable as custom.<key> — explicitly
+    const custom = await call(54, { field: ['custom.team'] });
+    assert.deepEqual(custom.result.structuredContent.fields['custom.team'], [{ value: 'core', count: 1 }]);
+
+    // prefix narrows values; limit caps per field
+    const prefixed = await call(51, { field: ['tags'], prefix: 'eng' });
+    assert.deepEqual(prefixed.result.structuredContent.fields.tags.map((t) => t.value), ['engineering']);
+    const limited = await call(52, { field: ['tags'], limit: 1 });
+    assert.deepEqual(limited.result.structuredContent.fields.tags.map((t) => t.value), ['engineering']);
+
+    // invalid field name → isError tool result with the shared message
+    const bad = await call(53, { field: ['evil$$'] });
+    assert.equal(bad.result.isError, true);
+    assert.match(bad.result.content[0].text, /invalid field name/);
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('get_lines: omitted maxLines defaults to a 200-line cap with an explicit truncated marker (issue #273)', async () => {
+  const { dir } = await makeIndex();
+  try {
+    // a 250-line file: 3 real lines + padding
+    const long = ['# Long', '', ...Array.from({ length: 250 }, (_, i) => `line ${i + 1}`)].join('\n');
+    fs.writeFileSync(path.join(dir, 'long.md'), long + '\n');
+    await buildIndex({ db: dir, indexDir: path.join(dir, '.mdss'), cacheDir: dir, modelName: 'e5-base', embedFn: fakeEmbed });
+    const state = { loaded: loadIndex(path.join(dir, '.mdss')), cacheDir: dir, offline: true, embedFn: fakeEmbed };
+
+    const call = (id, args) => handleMcpRequest(
+      { jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'get_lines', arguments: args } },
+      state,
+    );
+
+    // omitted maxLines → capped at 200, truncated reported
+    const capped = await call(60, { file: 'long.md' });
+    assert.ok(!capped.result.isError, `capped read ran: ${capped.result?.content?.[0]?.text || ''}`);
+    const cappedPayload = capped.result.structuredContent;
+    assert.equal(cappedPayload.lineCount, 200, `default cap applies (got ${cappedPayload.lineCount})`);
+    assert.equal(cappedPayload.toLine, 200);
+    assert.equal(cappedPayload.totalLines, 253);
+    assert.equal(cappedPayload.truncated, true, 'clipping is reported explicitly');
+
+    // explicit maxLines beyond the cap is honored as-is
+    const explicit = await call(61, { file: 'long.md', maxLines: 300 });
+    const explicitPayload = explicit.result.structuredContent;
+    assert.equal(explicitPayload.lineCount, 253, 'explicit large reads are preserved');
+    assert.equal(explicitPayload.truncated, false);
+
+    // a span that reaches the end is not truncated, even under the cap
+    const tail = await call(62, { file: 'long.md', fromLine: 100 });
+    assert.equal(tail.result.structuredContent.truncated, false, 'reaching the end is not truncation');
+
+    // small makeIndex fixture: guide.md has 6 lines, no truncation
+    const small = await call(63, { file: 'guide.md' });
+    assert.equal(small.result.structuredContent.truncated, false);
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('index_status: staleness + location fields (issue #273)', async () => {
+  const { loaded, dir } = await makeIndex();
+  try {
+    const state = { loaded, cacheDir: dir, offline: true, embedFn: fakeEmbed };
+    const res = await handleMcpRequest(
+      { jsonrpc: '2.0', id: 70, method: 'tools/call', params: { name: 'index_status' } },
+      state,
+    );
+    assert.ok(!res.error && !res.result.isError, `index_status ran: ${res.result?.content?.[0]?.text || ''}`);
+    const payload = res.result.structuredContent;
+    assert.equal(payload.ok, true);
+    assert.equal(payload.chunks > 0, true);
+    assert.equal(payload.files, 2, 'unique file count');
+    assert.equal(typeof payload.model, 'string');
+    assert.ok(payload.dim > 0);
+    assert.equal(typeof payload.built, 'string');
+    assert.equal(payload.db, dir, 'the indexed db root is reported');
+    assert.equal(typeof payload.ageSeconds, 'number');
+    assert.equal(payload.stale, false, 'a fresh index is not stale');
+  } finally {
+    safeRm(dir);
+  }
+});
+
+test('tools/call text content is COMPACT JSON — no pretty-print whitespace (issue #273)', async () => {
+  const { loaded, dir } = await makeIndex();
+  try {
+    const state = { loaded, cacheDir: dir, offline: true, embedFn: fakeEmbed };
+    // index_status's rawResult is an object, so text and structuredContent
+    // must agree exactly (array results are text-raw vs object-wrapped, #205)
+    const res = await handleMcpRequest(
+      { jsonrpc: '2.0', id: 80, method: 'tools/call', params: { name: 'index_status' } },
+      state,
+    );
+    const text = res.result.content[0].text;
+    assert.ok(!text.includes('\n'), 'text content carries no pretty-print newlines');
+    assert.deepEqual(JSON.parse(text), res.result.structuredContent, 'compact text parses to the same payload');
+  } finally {
+    safeRm(dir);
   }
 });
