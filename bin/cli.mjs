@@ -400,6 +400,7 @@ Usage:
   mdss chat   --db <dir> [options]            Multi-turn persistent chat with citation manifest
   mdss serve  --db <dir> [--port <n>] [--host <ip>] [--watch]  Daemon: warm model + index
   mdss mcp    --db <dir> [--list-tools]       Start MCP server over stdio for LLM agents / IDEs
+  mdss skill                                   Print the agent skill pack (SKILL.md) for agent onboarding
   mdss models                                  List available models
   mdss completions <bash|zsh|fish|powershell>  Print a self-contained shell completion script
 
@@ -1819,6 +1820,21 @@ async function cmdServe(opts) {
   if (process.platform === 'win32') process.on('SIGBREAK', () => stop('SIGBREAK'));
 }
 
+// issue #272: the agent skill pack ships inside the npm package, so an agent
+// can self-onboard with one command (`npx md-semantic-search skill`) instead
+// of browsing the GitHub repo. stdout is the artifact — the SKILL.md text
+// itself; nothing here loads a model or reads an index.
+async function cmdSkill() {
+  const skillUrl = new URL('../integrations/agent-skill/SKILL.md', import.meta.url);
+  let skill;
+  try {
+    skill = fs.readFileSync(skillUrl, 'utf8');
+  } catch {
+    die('skill pack not found in this installation (integrations/agent-skill/SKILL.md missing) — read it at https://github.com/chelslava/md-semantic-search/blob/main/integrations/agent-skill/SKILL.md');
+  }
+  process.stdout.write(skill.endsWith('\n') ? skill : skill + '\n');
+}
+
 async function cmdMcp(opts) {
   if (opts.listTools) {
     const { MCP_TOOLS } = await import('../dist/mcp.js');
@@ -1989,6 +2005,7 @@ async function main() {
       case 'tui': return await cmdTui(opts);
       case 'serve': return await cmdServe(opts);
       case 'mcp': return await cmdMcp(opts);
+      case 'skill': return await cmdSkill(opts);
       case 'models': return await cmdModels();
       case 'completions': return await cmdCompletions(opts);
       default: die(`unknown command: ${cmd}. Try \`mdss --help\`.`);

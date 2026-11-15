@@ -98,6 +98,12 @@ test('handleMcpRequest: handles initialize with tools, resources, and prompts ca
     assert.ok(initRes.result.capabilities.tools);
     assert.ok(initRes.result.capabilities.resources);
     assert.ok(initRes.result.capabilities.prompts);
+    // issue #272: initialize instructions reach the model's context in every
+    // MCP client — pin the contracts they must teach.
+    assert.equal(typeof initRes.result.instructions, 'string');
+    assert.ok(initRes.result.instructions.includes('search_markdown'), 'instructions teach the retrieval workflow');
+    assert.ok(initRes.result.instructions.includes('startLine'), 'instructions teach the citation contract');
+    assert.ok(initRes.result.instructions.includes('abstained'), 'instructions teach answerMode semantics');
 
     // 2. tools/list
     const listRes = await handleMcpRequest({ jsonrpc: '2.0', id: 2, method: 'tools/list' }, state);

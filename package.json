@@ -21,6 +21,8 @@
     "bin/",
     "dist/",
     "src/",
+    "integrations/agent-skill/",
+    "docs/agent-integration.md",
     "README.md",
     "RESEARCH.md",
     "LICENSE"

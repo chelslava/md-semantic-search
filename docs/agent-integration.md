@@ -9,8 +9,11 @@ opt-in endpoint (`--llm-endpoint`, `--embedder`).
 The agent-facing artifact of record is
 [`integrations/agent-skill/SKILL.md`](../integrations/agent-skill/SKILL.md) —
 drop it into any agent that loads skills (Claude Code style) or paste its
-rules into your agent's system prompt. This page is the human companion:
-what to register, what the agent gets, and the honest limitations.
+rules into your agent's system prompt. It ships inside the npm package:
+`mdss skill` (or `npx md-semantic-search skill`) prints it, and the MCP
+server's `initialize` result carries a short `instructions` block teaching
+the same workflow to clients that never saw a skill. This page is the human
+companion: what to register, what the agent gets, and the honest limitations.
 
 ## Setup paths (pick one)
 

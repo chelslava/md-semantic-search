@@ -22,6 +22,23 @@ const MCP_VERSION: string = JSON.parse(
 ).version;
 
 /**
+ * issue #272: the `initialize` result's optional `instructions` field — the
+ * only agent-facing onboarding text that reaches the model's context in EVERY
+ * MCP client, skill pack installed or not. Kept short because it is billed
+ * into every session: the retrieval workflow, the citation contract, the
+ * answerMode/abstention semantics, and the snapshot caveat.
+ */
+export const MCP_SERVER_INSTRUCTIONS = [
+  "Retrieval over the user's local Markdown notes. Workflow: search_markdown finds passages by meaning",
+  '(cross-lingual; hits carry file, heading, snippet, startLine/endLine) -> get_lines or get_chunk reads the exact span',
+  '-> cite as file.md#Heading with the line range; never cite from memory.',
+  'ask_knowledge_base returns a grounded answer with citations — respect answerMode:',
+  '"abstained" means no passage supports the answer, so say the notes do not cover it instead of inventing one.',
+  'index_status reports the build timestamp; the index is a snapshot — notes edited since are not searchable until re-indexed.',
+  'Everything runs locally; note content never leaves the machine.',
+].join(' ');
+
+/**
  * Protocol versions this server can speak (issue #197), newest first.
  * `initialize` echoes the client's requested version when we support it,
  * otherwise answers with MCP_SUPPORTED_VERSIONS[0].
@@ -152,7 +169,7 @@ export function createSamplingSynthesizer(state: {
 export const MCP_TOOLS = [
   {
     name: 'search_markdown',
-    description: 'Search local Markdown knowledge base by meaning and hybrid BM25 lexical ranking',
+    description: 'Hybrid search over the local Markdown knowledge base: dense cross-lingual vector similarity (ask in any language) fused with BM25F lexical ranking. Hits carry file, title, heading, snippet, score, and startLine/endLine — cite as file.md#Heading with the line range; for exact quoting pull the span with get_lines. Optional path glob, frontmatter tag/boolean filter, and wikilink-graph boost.',
     annotations: { readOnly: true, idempotent: true },
     inputSchema: {
       type: 'object',
@@ -170,7 +187,7 @@ export const MCP_TOOLS = [
   },
   {
     name: 'get_chunk',
-    description: 'Retrieve a specific chunk or section by file path and optional heading label',
+    description: 'Read the full text of stored chunks from an indexed Markdown file by file path and optional heading title (case-insensitive). Use to read a search hit in full; for an exact line span (citation-precision quoting) prefer get_lines.',
     annotations: { readOnly: true, idempotent: true },
     inputSchema: {
       type: 'object',
@@ -183,7 +200,7 @@ export const MCP_TOOLS = [
   },
   {
     name: 'get_lines',
-    description: 'Retrieve an exact range of lines from an indexed Markdown document by file path and line span',
+    description: 'Read an exact 1-based line range (fromLine, optional maxLines) from an indexed Markdown document. Citation-precision read: search hits carry startLine/endLine — pull that exact span here before quoting it in an answer.',
     annotations: { readOnly: true, idempotent: true },
     inputSchema: {
       type: 'object',
@@ -197,7 +214,7 @@ export const MCP_TOOLS = [
   },
   {
     name: 'related_notes',
-    description: 'Find notes related to a specific document via backlinks, outgoing links, 2-hop graph neighborhood, and semantic similarity',
+    description: 'Map the neighborhood of a note: wikilink graph (outgoing links, backlinks, 2-hop) plus dense semantic similarity. Cheaper than speculative re-searches — run it on a promising hit to surface connected notes before digging deeper.',
     annotations: { readOnly: true, idempotent: true },
     inputSchema: {
       type: 'object',
@@ -212,7 +229,7 @@ export const MCP_TOOLS = [
   },
   {
     name: 'list_files',
-    description: 'List all indexed Markdown files and their chunk counts',
+    description: 'Inventory the knowledge base: every indexed Markdown file with its chunk count, optionally filtered by a path glob. Use before deep searches to see what exists.',
     annotations: { readOnly: true, idempotent: true },
     inputSchema: {
       type: 'object',
@@ -223,7 +240,7 @@ export const MCP_TOOLS = [
   },
   {
     name: 'index_status',
-    description: 'Get current index status, model metadata, chunk count, and build timestamp',
+    description: 'Index health snapshot: chunk count, embedding model, dimension, and the build timestamp. The index is a snapshot — notes edited after the build timestamp are not searchable until re-indexed.',
     annotations: { readOnly: true, idempotent: true },
     inputSchema: {
       type: 'object',
@@ -232,7 +249,7 @@ export const MCP_TOOLS = [
   },
   {
     name: 'ask_knowledge_base',
-    description: 'Synthesize a grounded direct answer with citations from the local Markdown knowledge base',
+    description: 'Grounded direct answer with citations synthesized from retrieved knowledge-base passages. answerMode in the payload says how it was produced: "sampling" (the client model wrote it), "extractive" (built-in sentence selection), or "abstained" — no passage carried real support, so tell the user the notes do not cover it and offer different search terms; never fabricate an answer or citations.',
     annotations: { readOnly: true, idempotent: true },
     inputSchema: {
       type: 'object',
@@ -382,6 +399,7 @@ export async function handleMcpRequest(req: any, state: McpHandlerState): Promis
       id,
       result: {
         protocolVersion: negotiateProtocolVersion(params?.protocolVersion),
+        instructions: MCP_SERVER_INSTRUCTIONS,
         capabilities: {
           tools: {
             listChanged: false,

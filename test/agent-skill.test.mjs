@@ -80,3 +80,29 @@ test('agent-skill: guide documents abstention and honest-limitations behavior', 
   assert.match(skill, /abstained/i, 'skill must teach "refuse, do not fabricate"');
   assert.match(skill, /Citation discipline/i, 'skill must pin citation rules');
 });
+
+// ---------------------------------------------------------------------------
+// issue #272: the pack must be reachable FROM the npm package, not just the
+// repo — the tarball ships it and `mdss skill` prints it verbatim so an agent
+// can self-onboard with `npx md-semantic-search skill`.
+// ---------------------------------------------------------------------------
+
+test('agent-skill: npm tarball ships the pack and the integration guide', () => {
+  const pkg = JSON.parse(read('package.json'));
+  assert.ok(
+    pkg.files.some((f) => f.replace(/\/$/, '') === 'integrations/agent-skill'),
+    'package.json files must include integrations/agent-skill/ (issue #272)'
+  );
+  assert.ok(
+    pkg.files.includes('docs/agent-integration.md'),
+    'package.json files must include docs/agent-integration.md (issue #272)'
+  );
+});
+
+test('agent-skill: `mdss skill` prints SKILL.md verbatim', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const expected = read('integrations/agent-skill/SKILL.md');
+  assert.ok(expected.endsWith('\n'), 'SKILL.md must end with a newline');
+  const out = execFileSync(process.execPath, [path.join(root, 'bin', 'cli.mjs'), 'skill'], { encoding: 'utf8' });
+  assert.equal(out.replace(/\r\n/g, '\n'), expected, 'mdss skill output must equal the shipped SKILL.md');
+});

@@ -108,7 +108,7 @@ export const FLAGS: FlagSpec[] = [
 
 export const COMMANDS = [
   'index', 'stats', 'check', 'doctor', 'export', 'search',
-  'ask', 'chat', 'tui', 'serve', 'mcp', 'models', 'completions', 'related',
+  'ask', 'chat', 'tui', 'serve', 'mcp', 'skill', 'models', 'completions', 'related',
 ];
 
 export const COMPLETION_SHELLS = ['bash', 'zsh', 'fish', 'powershell'] as const;

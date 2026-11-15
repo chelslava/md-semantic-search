@@ -29,5 +29,9 @@ The recipe was validated end-to-end against the published npm package:
 carry `startLine`/`endLine`, a `get_lines` citation read, and an extractive
 `ask_knowledge_base` call with a citation manifest (`answerMode: extractive`).
 
-No packaging or release automation — the pack ships with the repo and the npm
-package's repository.
+Distribution (issue #272): `integrations/agent-skill/` and
+`docs/agent-integration.md` are listed in package.json `files`, so the npm
+tarball carries the pack — `mdss skill` (or `npx md-semantic-search skill`)
+prints SKILL.md verbatim for agents that self-onboard from an installed
+package. Over MCP the server additionally teaches the same workflow through
+the `instructions` field of the `initialize` result.

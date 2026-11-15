@@ -690,7 +690,11 @@ Add to your `claude_desktop_config.json`:
 teaches agents the retrieval workflow (search → read → cite, `answerMode`
 semantics, abstention handling) and [`docs/agent-integration.md`](./docs/agent-integration.md)
 is the human companion — setup paths, tool reference, raw-HTTP recipes for
-custom agents. The published MCP Registry listing:
+custom agents. Both ship **inside the npm package**, so an agent can
+self-onboard with `npx md-semantic-search skill` (prints SKILL.md); over MCP
+the server also carries a short `instructions` block in `initialize` that
+teaches the same workflow to every client, skill installed or not. The
+published MCP Registry listing:
 [`io.github.chelslava/md-semantic-search`](https://registry.modelcontextprotocol.io).
 
 ### Options
