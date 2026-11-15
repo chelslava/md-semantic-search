@@ -104,7 +104,7 @@ function parseArgs(argv) {
   const args = {
     fixture: path.join(REPO, 'bench/fixtures/dev-golden.json'),
     slice: 'dev', k: 10, model: DEFAULT_MODEL,
-    indexDir: null, cacheDir: null, json: false, fast: false, fake: false,
+    indexDir: null, cacheDir: null, json: false, fast: false, fake: false, offline: false,
     gate: null, updateBaseline: null,
     // issue #203: reranker/multi-query measurement passthrough
     rerank: false, rerankModel: null, multiQuery: 0, sweepKernel: null,
@@ -127,6 +127,7 @@ function parseArgs(argv) {
     else if (a === '--json') args.json = true;
     else if (a === '--fast') args.fast = true;
     else if (a === '--fake') args.fake = true;
+    else if (a === '--offline') args.offline = true;
     else if (a === '--rerank') args.rerank = true;
     else if (a === '--rerank-model') args.rerankModel = next();
     else if (a === '--multi-query') args.multiQuery = Number(next());
@@ -212,7 +213,9 @@ async function main() {
   }
 
   const embedFn = args.fake ? fakeEmbed : undefined;
-  const offline = args.fake;
+  // issue #270: --offline runs the REAL model against a pre-seeded --cache-dir
+  // (pinned-revision adapters resolve locally) without swapping the embedder.
+  const offline = args.fake || args.offline;
   const build = await buildIndex({ db, indexDir, cacheDir, modelName: args.model, embedFn, offline });
   const loaded = loadIndex(indexDir);
 

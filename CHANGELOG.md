@@ -7,6 +7,18 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- **Issue #270 — static-embedding fast tier gate closed DECLINED — the measured quality/speed
+  frontier is recorded** (`scripts/run-bench.mjs` + RESEARCH §24): a `potion-multilingual-128m`
+  static-embedding adapter path (safetensors token-embedding matrix + tokenizer lookup +
+  mean-pool + normalize, no ONNX session) was prototyped and measured through the real mdss
+  hybrid. Golden v2 dev nDCG@10 **0.8100 (−0.0553** vs the 0.8653 default — outside the
+  pre-registered 0.05 bar; Recall@10 unchanged) at **×50.8 faster** 50,004-chunk indexing
+  (115.2 s vs the ~5,850 s 311m rate extrapolation; 2.3 ms/chunk end-to-end). The AND-rule
+  fails on quality → the product code was reverted per the declined-gate discipline; the
+  measurement is the documented frontier: a ×50 indexing speed-up exists at −5.5 golden
+  nDCG points if a future corpus/model needs it. Harness addition kept: `run-bench
+  --offline` runs the REAL model against a pre-seeded `--cache-dir` (pinned-revision
+  adapters resolve locally) without swapping the embedder.
 - **Issue #269 — `granite-97m` opt-in fast profile SHIPPED** (`src/models.ts`): a
   `granite-97m` adapter alias for `onnx-community/granite-embedding-97m-multilingual-r2-ONNX`
   (IBM Granite r2 small — 97M params, dim 384, CLS pooling, ModernBERT 32k context,

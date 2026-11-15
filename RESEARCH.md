@@ -1185,3 +1185,63 @@ inside the bar, Recall@10 unchanged); (b) real-model fixture build ×2.33 ≥
 without a decisive quality case); `granite-97m` ships as `--model granite-97m`
 / the `granite-97m` adapter alias for speed- and memory-constrained builds,
 with the measured trade-off documented in the README models table.
+
+## 24. Research Evaluation: Static-Embedding Fast Tier (Issue #270)
+
+### Question
+
+The fresh 2025 static-embedding wave (model2vec `potion-multilingual-128M`,
+MIT) replaces the transformer pass with a tokenizer lookup + mean-pool —
+~100–150× cheaper on CPU. mdss hybrid fuses BM25F + dense via RRF; a static
+dense tier slots into the same pipeline. What does the speed win cost in
+golden-set quality, and does it clear the pre-registered bar?
+
+### Instrument
+
+- A static-embedding adapter path was prototyped (`static: true` descriptor,
+  safetensors fp32 matrix loaded chunk-wise, `AutoTokenizer` wordpiece ids,
+  mean-pool + L2-normalize — no ONNX session; ~40 lines in `src/core.ts` +
+  one adapter entry).
+- **Quality**: golden v2 dev slice through the real mdss hybrid (26-file
+  corpus, 186 queries, 112 chunks) via `run-bench --model potion-…`.
+  **Harness addition (kept)**: `run-bench --offline` — runs the REAL model
+  against a pre-seeded `--cache-dir` (pinned-revision adapters resolve
+  locally) without swapping the embedder; without it run-bench can only go
+  online or switch to the fake embedder.
+- **Speed**: the §20 anchor protocol at 50,004 chunks with the same fixture
+  shape; the 311m baseline is the measured ~117 ms/chunk real-model rate
+  (RESEARCH §20 anchor) extrapolated to 50k ≈ 5,850 s.
+
+### Measured (2026-11-15, 4c/8t, Node v24.14.1, potion-multilingual-128M)
+
+| Measurement | granite-311m default | potion 128M | Δ |
+|---|---:|---:|---|
+| Golden v2 dev nDCG@10 (hybrid) | 0.8653 | **0.8100** | **−0.0553** |
+| Golden Recall@10 | 1.0 | 1.0 | unchanged |
+| 50k real-model-equivalent build wall | ~5,850 s (rate × 50k) | **115.2 s** | **×50.8** |
+| 50k maxRSS | ~1.2 GB (model-dependent) | 1,662.5 MB (489 MB fp32 matrix) | +~0.4 GB |
+| Vector size per chunk | 768 × 4 B | 256 × 4 B | −67% |
+
+### Findings
+
+1. **The wall bar passes massively** (×50.8 ≥ ×20; 2.3 ms/chunk end-to-end
+   including walk + IVF + streamed persistence) — static embeddings are
+   everything the survey promised on the speed axis.
+2. **The quality bar fails narrowly**: golden hybrid nDCG@10 drop
+   −0.0553 vs the 0.05 bar (Recall@10 unchanged at 1.0 — the misses are
+   ranking-order losses, not lost documents). Notably strong for a static
+   model — only 5.5 nDCG points behind the 311m transformer default — but
+   the pre-registered rule is the rule.
+3. The fp32 matrix costs 489 MB resident (an int8 load variant would be
+   ~130 MB) — a secondary concern, recorded for completeness.
+
+### Decision (pre-registered rule from issue #270)
+
+DECLINED — the AND-rule fails on quality (−0.0553 > 0.05). The product code
+(the static adapter path and descriptor field) was reverted per the
+declined-gate discipline; the harness addition (`run-bench --offline`) is
+kept as measurement infrastructure. The measurement stands as the documented
+quality/speed frontier for this corpus family: **a ×50 indexing speed-up is
+available at −5.5 golden nDCG points** — if a future corpus or a stronger
+static model crosses the 0.05 bar, the prototype recovers trivially from the
+git history and the §24 numbers.
