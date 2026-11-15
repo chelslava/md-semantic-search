@@ -1,0 +1,36 @@
+name: oidc-check
+
+# TEMPORARY one-shot proof for the publish.yml mcp-registry job: verifies the
+# GitHub OIDC exchange (mcp-publisher login github-oidc) works for this repo.
+# Deleted right after the run — do not rely on it.
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  oidc:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Install mcp-publisher (checksum-verified)
+        shell: bash
+        env:
+          PUBLISHER_VERSION: v1.8.9
+        run: |
+          mkdir publisher
+          curl -sfL -o publisher/pub.tar.gz \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          curl -sfL -o publisher/checksums.txt \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${PUBLISHER_VERSION}/registry_${PUBLISHER_VERSION#v}_checksums.txt"
+          HASH=$(grep -E 'mcp-publisher_linux_amd64\.tar\.gz$' publisher/checksums.txt | awk '{print $1}')
+          echo "${HASH}  publisher/pub.tar.gz" | sha256sum -c -
+          tar -xzf publisher/pub.tar.gz -C publisher
+          publisher/mcp-publisher --version
+
+      - name: OIDC login
+        shell: bash
+        run: publisher/mcp-publisher login github-oidc
