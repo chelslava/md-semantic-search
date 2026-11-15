@@ -98,6 +98,7 @@ market-driven packaging item.
 - **Learned sparse (SPLADE-family)** — BM25F is sufficient at the current corpus scale; revisit if target corpora grow an order of magnitude.
 - **WASM SIMD sweep kernels** — closed by #259: the pointwise SIMD sweep kernel landed as the default (−23.5%/−15.2% warm-hybrid p50 at 50k/100k, golden gate byte-exact); the #228 batching kernel observation stays true — batching amortizes only with multiple queries in flight, and the win came from one-crossing-per-sweep SIMD, not from batching.
 - **Vector databases / distributed indexes** — out of the project segment (10k–50k chunks, zero-infra), unchanged.
+- **Node 22 retirement** — supported surface is 22/24/26 (all maintained LTS); drop 22 at its EOL (2027-04-30) via the #224 playbook — deprecation warning in 3.x, floor → `>=24` in v4.0.0. Tracked by [#276](https://github.com/chelslava/md-semantic-search/issues/276); earlier exit only on a dependency-forced trigger.
 
 ---
 
