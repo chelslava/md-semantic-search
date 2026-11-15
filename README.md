@@ -867,6 +867,7 @@ mdss models
 | `bge-m3` | `Xenova/bge-m3` | 1024 | ~2.3 GB. Best cross-lingual separation in tests. |
 | `qwen3-embedding-0.6b` | `onnx-community/Qwen3-Embedding-0.6B-ONNX` | 1024 | ~613 MB q8. Opt-in; instruction-prefixed queries and last-token pooling. |
 | `granite-multilingual-311m` ⭐ | `onnx-community/granite-embedding-311m-multilingual-r2-ONNX` | 768 (MRL 128–768) | **Default.** ~298 MB q8. IBM Granite r2 — ModernBERT 8k context, CLS pooling, **Apache-2.0**. Measured nDCG@10 0.8653 on golden v2 (issue #227); query-time MRL measured in RESEARCH §14 (issue #248). |
+| `granite-97m` | `onnx-community/granite-embedding-97m-multilingual-r2-ONNX` | 384 | Opt-in **fast profile** (issue #269, RESEARCH §23). ~93 MB q8, IBM Granite r2 small, ModernBERT 32k context, CLS pooling, Apache-2.0. Measured on golden v2: nDCG@10 0.8594 (−0.0059 vs the default) at **×2.33 faster** real-model indexing and ~⅓ the vector size. |
 | `embeddinggemma-300m` | `onnx-community/embeddinggemma-300m-ONNX` | 768 | ~300 MB q8. Measured leader (nDCG@10 0.8691) but **license-blocked from being the npm default**: Gemma Terms of Use, not MIT/Apache (issue #227). |
 
 Switching models invalidates the stored vectors automatically — the next

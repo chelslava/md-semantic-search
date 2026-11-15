@@ -7,6 +7,19 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- **Issue #269 — `granite-97m` opt-in fast profile SHIPPED** (`src/models.ts`): a
+  `granite-97m` adapter alias for `onnx-community/granite-embedding-97m-multilingual-r2-ONNX`
+  (IBM Granite r2 small — 97M params, dim 384, CLS pooling, ModernBERT 32k context,
+  Apache-2.0, ~93 MB q8; mirrors the default's adapter shape: pipeline path, `pooling:
+  'cls'`, no pooled-export assumption). Measured per the pre-registered rule (issue #269,
+  RESEARCH §23): golden v2 dev **nDCG@10 0.8594 (−0.0059** vs the granite-311m default's
+  0.8653 — 5× inside the 0.03 bar) with Recall@10 unchanged, real-model 10,008-chunk
+  fixture build **502.3 s vs 1,170.7 s (×2.33**, bar ≥ ×1.3), anchor maxRSS 799.2 vs
+  902.6 MB. Weakest slices: cross-lingual 0.7643, long-doc-section 0.7943. The DEFAULT
+  stays granite-multilingual-311m (§15 contract); `--model granite-97m` is the documented
+  fast/memory profile (README models table). No MRL `dimensions` entry — the 97m card
+  vendor-specs no Matryoshka support, so the §14 query-time truncation sweep does not
+  advertise for it.
 - **Issue #268 — SIMD IVF k-means SHIPPED: trainIVF ×6.1, 100k build wall ×2.43, sidecar
   digest byte-identical** (`src/ivf.ts`, `src/sweep-kernel.ts`): the k-means sweeps score
   per-centroid rows against the whole corpus through the §13 WASM SIMD kernel (a new

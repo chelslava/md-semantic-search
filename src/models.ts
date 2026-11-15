@@ -126,6 +126,22 @@ export const MODELS: Record<string, ModelAdapter> = {
     family: 'granite',
     note: '~298 MB q8. IBM Granite r2, ModernBERT (8k context), CLS pooling, Apache-2.0, MRL 128-768. Issue #200.',
   },
+  'granite-97m': {
+    id: 'onnx-community/granite-embedding-97m-multilingual-r2-ONNX',
+    revision: '536a9f241cb3f02a9c5995a1e708c784bd274859',
+    nativeDim: 384,
+    dim: 384,
+    // No vendor-spec'd MRL on the 97m card — no `dimensions` entry, so the
+    // query-time MRL sweep (§14) does not advertise truncation for it.
+    queryPrefix: '',
+    passagePrefix: '',
+    pooling: 'cls',
+    normalize: true,
+    dtype: 'q8',
+    maxTokens: 32768,
+    family: 'granite',
+    note: '~93 MB q8. IBM Granite r2 small multilingual, ModernBERT (32k context), CLS pooling, Apache-2.0. Opt-in fast profile (issue #269, RESEARCH §23).',
+  },
   'embeddinggemma-300m': {
     id: 'onnx-community/embeddinggemma-300m-ONNX',
     revision: '5090578d9565bb06545b4552f76e6bc2c93e4a66',

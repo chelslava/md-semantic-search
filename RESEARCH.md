@@ -1138,3 +1138,50 @@ SHIP — (a) golden drop 0.0000 ≤ 0.005 with Recall@10 = 1.0 ✓; (b) trainIVF
 results across repeated runs (determinism tests) ✓. 685 tests pass, including
 the three new engine tests (determinism, cross-engine partition agreement on
 well-separated clusters, forced-JS fallback).
+
+## 23. Research Evaluation: granite-97m Opt-in Fast Profile (Issue #269)
+
+### Question
+
+The default `granite-multilingual-311m` embeds at ~117 ms/chunk on the
+measurement machine — model inference is ~90% of a real build. The same IBM
+family ships `granite-embedding-97m-multilingual-r2` (3× fewer parameters,
+dim 384, CLS pooling, 32k context, Apache-2.0, onnx-community export).
+Would a `granite-97m` opt-in alias hold retrieval quality within the
+pre-registered bar while indexing materially faster?
+
+### Instrument
+
+- **Quality**: the golden v2 dev slice (26-file frozen corpus, 186 queries,
+  112 chunks — the standard `run-bench` protocol, real model) compared
+  against the committed granite-311m baseline (nDCG@10 0.8653, RESEARCH §15).
+- **Speed / memory**: the §20 real-model anchor protocol (deterministic
+  10,008-chunk fixture, granite q8, offline cache) — the 311m anchor is the
+  committed §20 step-2 measurement (1,170.7 s / 902.6 MB maxRSS); the 97m arm
+  ran the identical fixture.
+- Adapter shape mirrors granite-311m exactly: pipeline path, `pooling: 'cls'`,
+  `dtype: 'q8'`, no MRL `dimensions` entry (no vendor-spec'd MRL on the 97m
+  card — the §14 query-time truncation sweep does not advertise for it).
+
+### Measured (2026-11-15, 4c/8t, Node v24.14.1)
+
+| Measurement | granite-311m (default) | granite-97m | Δ |
+|---|---:|---:|---|
+| Golden v2 dev nDCG@10 (186 queries) | 0.8653 | **0.8594** | **−0.0059** |
+| Golden Recall@10 | 1.0 | 1.0 | unchanged |
+| 10,008-chunk real-model build (wall) | 1,170.7 s | **502.3 s** | **×2.33** |
+| Anchor maxRSS | 902.6 MB | 799.2 MB | −103 MB |
+| Vector size per chunk | 768 × 4 B | 384 × 4 B | −50% |
+
+Slice detail (97m): cross-lingual 0.7643 and long-doc-section 0.7943 are the
+weakest slices (as expected for the smaller model); hard-negative 0.8569,
+identifier 0.8986, alias 0.8973 stay close to the 311m profile.
+
+### Decision (pre-registered rule from issue #269)
+
+SHIP the opt-in alias — (a) golden dev nDCG@10 drop −0.0059 ≤ 0.03 ✓ (5×
+inside the bar, Recall@10 unchanged); (b) real-model fixture build ×2.33 ≥
+×1.3 ✓. The DEFAULT stays granite-311m (§15 contract — no default swap
+without a decisive quality case); `granite-97m` ships as `--model granite-97m`
+/ the `granite-97m` adapter alias for speed- and memory-constrained builds,
+with the measured trade-off documented in the README models table.
