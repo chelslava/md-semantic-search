@@ -4,6 +4,8 @@ For complete release notes, see [`CHANGELOG.md`](https://github.com/chelslava/md
 
 ### Latest Highlights
 
+- **v3.1.1**:
+  - Wikilink graph fixes: a note name shared by several files resolves to the nearest note (own folder first, then the closest ancestor) instead of the alphabetically-first match; path-qualified links work without the `.md` extension, by a unique path suffix and relative to the linking note.
 - **v3.1.0**:
   - MCP tool surface 7 → 9: new `facets` (filter-value discovery) and `reindex` (first non-readOnly tool — incremental rebuild under the index lock).
   - Living MCP: `resources/subscribe` on `mdss://status` — watch re-indexes push `notifications/resources/updated`; `chat: true` mints ask sessions server-side; `notifications/progress` on first build.

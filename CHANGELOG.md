@@ -6,6 +6,8 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-11-25
+
 ### Fixed
 
 - **Wikilink graph resolves duplicate note names by proximity.** A bare
