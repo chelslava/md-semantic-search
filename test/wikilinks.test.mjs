@@ -56,6 +56,85 @@ test('resolveLinks resolves targets against file names, titles, and aliases', ()
   assert.equal(resolved[2].status, 'broken');
 });
 
+test('resolveLinks: a bare name shared by several folders resolves to the nearest note', () => {
+  // Walk order is alphabetical, so "first match wins" used to send every
+  // projects/beta link to projects/alpha — the per-project layout repeats
+  // the same document names (decisions.md, architecture.md, …) everywhere.
+  const docs = [
+    { file: 'projects/alpha/decisions.md', title: 'Alpha — Решения' },
+    { file: 'projects/alpha/development-log.md', title: 'Alpha — Лог' },
+    { file: 'projects/beta/decisions.md', title: 'Beta — Решения' },
+    { file: 'projects/beta/development-log.md', title: 'Beta — Лог' },
+    { file: 'projects/beta/wiki/plan.md', title: 'Beta — План' },
+    { file: 'decisions.md', title: 'Global decisions' },
+    { file: 'index.md', title: 'Index' },
+  ];
+  const resolve = (file, target) =>
+    resolveLinks([{ type: 'wikilink', target, raw: `[[${target}]]`, line: 1 }], file, docs)[0];
+
+  // a sibling note wins over the alphabetically-first duplicate
+  assert.equal(resolve('projects/beta/development-log.md', 'decisions').resolvedFile, 'projects/beta/decisions.md');
+  // a nested note falls back to the nearest ancestor folder
+  assert.equal(resolve('projects/beta/wiki/plan.md', 'decisions').resolvedFile, 'projects/beta/decisions.md');
+  // a self-reference stays a self-reference instead of becoming an edge into another project
+  assert.equal(resolve('projects/beta/decisions.md', 'decisions').resolvedFile, 'projects/beta/decisions.md');
+  // an extension does not turn a bare name into a path: proximity still applies
+  assert.equal(resolve('projects/beta/wiki/plan.md', 'decisions.md').resolvedFile, 'projects/beta/decisions.md');
+  // nothing nearby (vault-root note, duplicates only inside sibling folders): walk order is kept
+  assert.equal(resolve('index.md', 'development-log').resolvedFile, 'projects/alpha/development-log.md');
+  // a root-level sibling still outranks the duplicates in other folders
+  assert.equal(resolve('index.md', 'decisions').resolvedFile, 'decisions.md');
+  // case and separators are not significant
+  assert.equal(resolve('projects/beta/wiki/plan.md', 'Decisions').resolvedFile, 'projects/beta/decisions.md');
+});
+
+test('resolveLinks: path-qualified and relative links match the exact path, then a path suffix', () => {
+  const docs = [
+    { file: 'projects/alpha/development-log.md' },
+    { file: 'projects/alpha/development-log/2026-08.md' },
+    { file: 'projects/beta/development-log.md' },
+    { file: 'projects/beta/development-log/2026-08.md' },
+    { file: 'shared/patterns/guard.md' },
+    { file: 'index.md' },
+  ];
+  const resolve = (file, target, type = 'wikilink') =>
+    resolveLinks([{ type, target, raw: target, line: 1 }], file, docs)[0];
+
+  // exact vault-relative path, extension optional
+  assert.equal(resolve('index.md', 'shared/patterns/guard').status, 'resolved');
+  assert.equal(resolve('index.md', 'shared/patterns/guard').resolvedFile, 'shared/patterns/guard.md');
+  assert.equal(resolve('index.md', 'shared/patterns/guard.markdown').resolvedFile, 'shared/patterns/guard.md');
+  // an explicit path beats proximity
+  assert.equal(resolve('projects/beta/decisions.md', 'projects/alpha/development-log').resolvedFile, 'projects/alpha/development-log.md');
+  // a partial path shared by both projects → the one near the linking note
+  assert.equal(resolve('projects/beta/decisions.md', 'development-log/2026-08').resolvedFile, 'projects/beta/development-log/2026-08.md');
+  assert.equal(resolve('projects/alpha/wiki/plan.md', 'development-log/2026-08.md').resolvedFile, 'projects/alpha/development-log/2026-08.md');
+  // a partial path that is unique resolves from anywhere
+  assert.equal(resolve('projects/beta/decisions.md', 'patterns/guard').resolvedFile, 'shared/patterns/guard.md');
+  // relative Markdown links resolve against the linking note's folder
+  assert.equal(resolve('projects/alpha/decisions.md', './development-log.md', 'markdown').resolvedFile, 'projects/alpha/development-log.md');
+  assert.equal(resolve('projects/alpha/wiki/plan.md', '../development-log/2026-08.md', 'markdown').resolvedFile, 'projects/alpha/development-log/2026-08.md');
+  // an unknown path stays broken
+  assert.equal(resolve('index.md', 'shared/patterns/missing').status, 'broken');
+});
+
+test('buildRelationshipGraph keeps same-name project documents from cross-linking', () => {
+  // Each project links to its own decisions/technical-debt by bare name.
+  const docs = [
+    { file: 'projects/a/decisions.md', text: 'See [[technical-debt]]' },
+    { file: 'projects/a/technical-debt.md', text: 'See [[decisions]]' },
+    { file: 'projects/b/decisions.md', text: 'See [[technical-debt]]' },
+    { file: 'projects/b/technical-debt.md', text: 'See [[decisions]]' },
+  ];
+  const graph = buildRelationshipGraph(docs);
+  const backlinkFiles = (file) => (graph.backlinks.get(file) || []).map((e) => e.file);
+
+  assert.deepEqual(backlinkFiles('projects/a/decisions.md'), ['projects/a/technical-debt.md']);
+  assert.deepEqual(backlinkFiles('projects/b/decisions.md'), ['projects/b/technical-debt.md']);
+  assert.deepEqual(backlinkFiles('projects/a/technical-debt.md'), ['projects/a/decisions.md']);
+  assert.deepEqual(backlinkFiles('projects/b/technical-debt.md'), ['projects/b/decisions.md']);
+});
+
 test('buildRelationshipGraph & getRelatedNotes builds outgoing links and backlinks', () => {
   const docs = [
     { file: 'a.md', text: 'See [[b.md]]' },

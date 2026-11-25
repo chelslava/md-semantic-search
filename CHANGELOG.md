@@ -6,6 +6,23 @@ versioning follows [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Wikilink graph resolves duplicate note names by proximity.** A bare
+  `[[decisions]]` used to resolve to whichever note the directory walk
+  listed first, so in a vault whose project folders repeat the same file
+  names, every project's links were attributed to the alphabetically-first
+  one (`related_notes`, `--graph-boost`). A name shared by several notes
+  now resolves to the note nearest the linking one: same folder first, then
+  the closest ancestor folder; ties keep walk order. Path-qualified links
+  also resolve without the `.md`/`.markdown` extension, by a unique path
+  suffix (`[[development-log/2026-08]]`) and relative to the linking note
+  (`[[../decisions]]`, `[text](./note.md)`) — all three used to be reported
+  as broken. A title or alias shared by several notes stays `ambiguous`.
+  Measured on a 140-document / 2,310-chunk vault: cross-project graph edges
+  971 → 64 (the remaining ones are explicit cross-references), unresolved
+  links 406 → 41.
+
 ## [3.1.0] - 2026-11-15
 
 **Upgrade notes:** nothing breaking — no index-format migration, no `engines`

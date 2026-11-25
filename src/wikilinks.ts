@@ -74,6 +74,119 @@ export function extractLinks(text?: string): RawLink[] {
   return links;
 }
 
+/** Path key shared by notes and link targets: lowercase, `/`-separated, extension-less. */
+function pathKey(p: string): string {
+  return p.trim().toLowerCase().replace(/\\/g, '/').replace(/^\.?\//, '').replace(/\.(md|markdown)$/i, '');
+}
+
+function folderOf(p: string): string[] {
+  const segments = pathKey(p).split('/');
+  segments.pop();
+  return segments;
+}
+
+/**
+ * Path key of a link target. Targets written relative to the linking note
+ * (`./note`, `../folder/note`) are rebased onto the vault root.
+ */
+function targetKey(target: string, sourceFolder: string[]): string {
+  const key = pathKey(target);
+  if (!key.startsWith('../')) return key;
+  const segments = sourceFolder.slice();
+  for (const segment of key.split('/')) {
+    if (segment === '..') segments.pop();
+    else if (segment !== '.') segments.push(segment);
+  }
+  return segments.join('/');
+}
+
+interface LinkIndex {
+  paths: Map<string, string>; // full path key → note
+  suffixes: Map<string, string[]>; // every path suffix (`note`, `folder/note`, …) → notes in walk order
+  titles: Map<string, string[]>;
+  aliases: Map<string, string[]>;
+}
+
+// Built once per document list: buildRelationshipGraph resolves every note
+// against the same `docs` array, so the index is reused across those calls.
+const linkIndexCache = new WeakMap<LinkDoc[], LinkIndex>();
+
+function getLinkIndex(docs: LinkDoc[]): LinkIndex {
+  let index = linkIndexCache.get(docs);
+  if (index) return index;
+
+  index = { paths: new Map(), suffixes: new Map(), titles: new Map(), aliases: new Map() };
+  for (const doc of docs) {
+    const relFile = doc.file;
+    const key = pathKey(relFile);
+    index.paths.set(key, relFile);
+
+    const segments = key.split('/');
+    for (let i = 0; i < segments.length; i++) {
+      const suffix = segments.slice(i).join('/');
+      if (!suffix) continue;
+      const notes = index.suffixes.get(suffix) || [];
+      notes.push(relFile);
+      index.suffixes.set(suffix, notes);
+    }
+
+    if (doc.title) {
+      const titleKey = doc.title.toLowerCase();
+      const existing = index.titles.get(titleKey) || [];
+      existing.push(relFile);
+      index.titles.set(titleKey, existing);
+    }
+
+    if (doc.meta?.aliases) {
+      for (const alias of doc.meta.aliases) {
+        const aliasKey = alias.toLowerCase();
+        const existing = index.aliases.get(aliasKey) || [];
+        existing.push(relFile);
+        index.aliases.set(aliasKey, existing);
+      }
+    }
+  }
+
+  linkIndexCache.set(docs, index);
+  return index;
+}
+
+/**
+ * Rank of a note relative to the linking note's folder: the number of shared
+ * folder segments, with the linking folder itself ranking above any ancestor.
+ */
+function proximity(noteFile: string, sourceFolder: string[]): number {
+  const folder = folderOf(noteFile);
+  let shared = 0;
+  while (shared < folder.length && shared < sourceFolder.length && folder[shared] === sourceFolder[shared]) {
+    shared++;
+  }
+  return shared === folder.length && folder.length === sourceFolder.length ? shared + 1 : shared;
+}
+
+function nearestNote(notes: string[], sourceFolder: string[]): string {
+  let best = notes[0];
+  let bestRank = proximity(best, sourceFolder);
+  for (let i = 1; i < notes.length; i++) {
+    const rank = proximity(notes[i], sourceFolder);
+    if (rank > bestRank) {
+      best = notes[i];
+      bestRank = rank;
+    }
+  }
+  return best;
+}
+
+/**
+ * Resolves raw links against the indexed notes. A target is tried, in order,
+ * as a note path (exact, then any path suffix), a title, an alias.
+ *
+ * Notes often share a name — per-project folders that repeat `decisions.md`,
+ * `architecture.md`, … are the common layout — so a bare name or a partial
+ * path picks the note nearest to the linking one: its own folder first, then
+ * the closest ancestor folder. Ties keep walk order; a title or alias shared
+ * by several notes stays `ambiguous`.
+ */
 export function resolveLinks(
   rawLinks: RawLink[],
   currentFile: string,
@@ -81,46 +194,26 @@ export function resolveLinks(
 ): ResolvedLink[] {
   if (!rawLinks || rawLinks.length === 0) return [];
 
-  const pathMap = new Map<string, string>();
-  const titleMap = new Map<string, string[]>();
-  const aliasMap = new Map<string, string[]>();
-
-  for (const doc of docs) {
-    const relFile = doc.file;
-    pathMap.set(relFile.toLowerCase(), relFile);
-    const basename = relFile.replace(/\.md$/i, '').split(/[/\\]/).pop()?.toLowerCase();
-    if (basename && !pathMap.has(basename)) {
-      pathMap.set(basename, relFile);
-    }
-
-    if (doc.title) {
-      const titleKey = doc.title.toLowerCase();
-      const existing = titleMap.get(titleKey) || [];
-      existing.push(relFile);
-      titleMap.set(titleKey, existing);
-    }
-
-    if (doc.meta?.aliases) {
-      for (const alias of doc.meta.aliases) {
-        const aliasKey = alias.toLowerCase();
-        const existing = aliasMap.get(aliasKey) || [];
-        existing.push(relFile);
-        aliasMap.set(aliasKey, existing);
-      }
-    }
-  }
+  const index = getLinkIndex(docs);
+  const sourceFolder = folderOf(currentFile);
 
   return rawLinks.map((link) => {
-    const targetKey = link.target.toLowerCase().replace(/\.md$/i, '');
-    let matches: string[] = [];
+    const key = targetKey(link.target, sourceFolder);
 
-    if (pathMap.has(targetKey)) {
-      const found = pathMap.get(targetKey);
-      if (found) matches.push(found);
-    } else if (titleMap.has(targetKey)) {
-      matches = titleMap.get(targetKey) || [];
-    } else if (aliasMap.has(targetKey)) {
-      matches = aliasMap.get(targetKey) || [];
+    let matches: string[] = [];
+    if (key) {
+      // A bare name is never read as a vault-root path: it is one of the
+      // candidates, and proximity decides.
+      const exact = key.includes('/') ? index.paths.get(key) : undefined;
+      if (exact) {
+        matches.push(exact);
+      } else if (index.suffixes.has(key)) {
+        matches.push(nearestNote(index.suffixes.get(key) || [], sourceFolder));
+      } else if (index.titles.has(key)) {
+        matches = index.titles.get(key) || [];
+      } else if (index.aliases.has(key)) {
+        matches = index.aliases.get(key) || [];
+      }
     }
 
     matches = [...new Set(matches)];
